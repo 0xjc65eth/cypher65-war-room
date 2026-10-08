@@ -26,7 +26,9 @@ def test_initial_dashboard_uses_unknown_counts_and_operational_heading():
     assert 'id="sb-pool-workers">—</span>' in html
     assert 'id="sb-fleet-online">—</span>' in html
     assert 'id="sb-fleet-total">—</span>' in html
-    assert "COMMAND CENTER · ADVISORY" in html
+    assert '<h2 class="panel__eyebrow">DIAGNÓSTICOS</h2>' in html
+    assert 'id="cc-mode-badge"' in html
+    assert "READ-ONLY" in html
     assert "O QUE FAZER AGORA?" not in html
 
 

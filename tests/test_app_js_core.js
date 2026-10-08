@@ -1,8 +1,7 @@
 #!/usr/bin/env node
 /**
  * CYPHER65 // WAR ROOM — Core JS Unit Tests
- * ===========================================
- *
+ * ==================================== *
  * Testa funções puras críticas do cliente. Como `static/app.js` é ARTEFATO
  * GERADO de `static/src/*.js` (RFC #478 · Issue #489), os helpers puros são
  * carregados do FRAGMENTO REAL via `loadFragment()` — o mesmo código que roda
@@ -192,6 +191,8 @@ const classifyRevokeRefusal = _fleet.classifyRevokeRefusal;
 const cloudWizardView = _fleet.cloudWizardView;
 const deviceAddOutcome = _fleet.deviceAddOutcome;
 const poolDetectionView = _dashboard.poolDetectionView;
+const _rentalEvidence = loadFragment('46-rentals.js',
+  '{ _rentalEvidenceStatus, _rentalEvidenceUtc, _rentalEvidenceNumber }');
 
 // ── Test counters ─────────────────────────────────────────────────────────
 let passed = 0;
@@ -5498,6 +5499,186 @@ for (const [origin, token] of [
   assertEqual('cloud error prefers message over error', denied.message, 'Instale o AGENTE LOCAL');
   assertEqual('cloud error keeps is_cloud', denied.isCloud, true);
 })();
+
+// Sampled rental evidence never turns stale/missing values into delivery.
+assertEqual('rental evidence preserves observed zero', _rentalEvidence._rentalEvidenceNumber(0, ' TH/s'), '0 TH/s');
+assertEqual('rental evidence null is absent', _rentalEvidence._rentalEvidenceNumber(null, ' TH/s'), '—');
+assertEqual('rental evidence empty is absent', _rentalEvidence._rentalEvidenceNumber('', ' TH/s'), '—');
+assertEqual('rental evidence nonfinite is absent', _rentalEvidence._rentalEvidenceNumber(Infinity, '%'), '—');
+assertEqual('rental evidence observation UTC', _rentalEvidence._rentalEvidenceUtc(1800000000), '2027-01-15 08:00:00 UTC');
+assertEqual('rental evidence missing observation has no invented timestamp', _rentalEvidence._rentalEvidenceUtc(null), '—');
+assertEqual('rental evidence invalid timestamp has no invented timestamp', _rentalEvidence._rentalEvidenceUtc(-1), '—');
+assertEqual('rental evidence stale stays warning', _rentalEvidence._rentalEvidenceStatus({status: 'stale'}), {label: 'Dados antigos', tone: 'is-warn'});
+assertEqual('rental evidence missing stays warning', _rentalEvidence._rentalEvidenceStatus({status: 'missing'}), {label: 'Sem observações', tone: 'is-warn'});
+assertEqual('rental evidence confirmed verdict is sampled', _rentalEvidence._rentalEvidenceStatus({status: 'under_delivery'}), {label: 'Leituras abaixo do limite', tone: 'is-bad'});
+assertEqual('rental evidence unknown verdict is unavailable', _rentalEvidence._rentalEvidenceStatus({status: 'unexpected'}), {label: 'Avaliação indisponível', tone: 'is-warn'});
+let evidenceReads = 0;
+const evidenceRetry = loadFragment('46-rentals.js', '_rentalEvidenceRequest', {
+  AbortController, setTimeout, clearTimeout,
+  authFetch: async () => {
+    evidenceReads++;
+    return evidenceReads === 1 ? {ok: false, status: 503} : {ok: true, json: async () => ({success: true, binding: null})};
+  },
+});
+assertEqual('rental evidence safe GET retry returns server payload', await evidenceRetry('/api/evidence'), {success: true, binding: null});
+assertEqual('rental evidence safe GET retries once', evidenceReads, 2);
+let evidenceWrites = 0;
+const evidenceWrite = loadFragment('46-rentals.js', '_rentalEvidenceRequest', {
+  AbortController, setTimeout, clearTimeout,
+  authFetch: async () => { evidenceWrites++; return {ok: false, status: 503}; },
+});
+try { await evidenceWrite('/api/evidence', {method: 'POST'}); } catch (error) { /* Expected server failure. */ }
+assertEqual('rental evidence uncertain write never retries', evidenceWrites, 1);
+let evidenceTimeouts = 0;
+const evidenceSignals = [];
+const evidenceTimeout = loadFragment('46-rentals.js', '_rentalEvidenceRequest', {
+  AbortController, clearTimeout,
+  setTimeout: callback => setTimeout(callback, 0),
+  authFetch: (url, options) => {
+    evidenceTimeouts++;
+    evidenceSignals.push(options.signal);
+    return new Promise(() => {});
+  },
+});
+try { await evidenceTimeout('/api/evidence'); } catch (error) { /* Expected bounded read failure. */ }
+assertEqual('rental evidence stalled auth/read remains bounded', evidenceTimeouts, 2);
+assertTruthy('rental evidence timeout aborts every attempted read', evidenceSignals.every(signal => signal.aborted));
+
+const poolBlockView = loadFragment('39b-dashboard.js', 'poolLastBlock');
+const blockNow = 1800000000;
+for (const payload of [{lastBlockTime: 958527}, {}, {lastBlockTime: 0}, {lastBlockTime: NaN}, {lastBlockTimestamp: Infinity}, {lastBlockTimestamp: blockNow + 1}]) {
+  assertEqual('pool block does not fabricate a timestamp: ' + JSON.stringify(payload), poolBlockView(payload, blockNow).timestamp, null);
+}
+assertEqual('legacy block height', poolBlockView({lastBlockTime: 958527}, blockNow).height, 958527);
+for (const timestamp of [blockNow - 60, (blockNow - 60) * 1000, String(blockNow - 60)]) {
+  const view = poolBlockView({lastBlockHeight: 958527, lastBlockTime: timestamp}, blockNow);
+  assertEqual('explicit height with timestamp', view.height, 958527);
+  assertEqual('seconds and milliseconds normalized', view.timestamp, blockNow - 60);
+}
+assertEqual('timestamp alone never becomes height', poolBlockView({lastBlockTime: blockNow - 60}, blockNow).height, null);
+const blockDom = { pLastBlock: {}, pLastBlockTime: {} };
+const renderBlockPool = loadFragment('39b-dashboard.js', 'renderPool', { dom: blockDom, fmt, document: {getElementById: () => null} });
+renderBlockPool({lastBlockHeight: 958527, lastBlockTimestamp: blockNow - 60});
+renderBlockPool(null);
+assertEqual('missing pool clears old block age', blockDom.pLastBlockTime.textContent, 'Timestamp unavailable');
+assertEqual('missing pool clears old block height', blockDom.pLastBlock.textContent, '—');
+
+const topbarNodes = Object.fromEntries(['tbar-status', 'tbar-best', 'tbar-workers', 'tbar-btc'].map(id => [id, {}]));
+const topbarRender = loadFragment('39b-dashboard.js', 'renderTopbarMetrics', { fmt, snapshotFreshness, document: {getElementById: id => topbarNodes[id]} });
+for (const [worker, expected] of [[{hashrate: 0}, 'IDLE'], [{hashrate: -1}, 'NO DATA'], [{hashrate: 1, stale: true}, 'STALE'], [null, 'NO DATA']]) {
+  topbarRender({ts: Date.now()/1000, worker, all_workers: []});
+  assertEqual('topbar distinguishes missing, zero and stale', topbarNodes['tbar-status'].textContent, expected);
+}
+topbarRender({ts: 1, worker: {hashrate: 1}});
+assertEqual('old snapshot does not present topbar as online', topbarNodes['tbar-status'].textContent, 'STALE');
+topbarRender({worker: {hashrate: 1}});
+assertEqual('unknown snapshot age does not present topbar as online', topbarNodes['tbar-status'].textContent, 'UNKNOWN');
+const comparisonDom = { hrReported: {}, hrObserved: {}, hrDeviationVal: {}, hrDeviationBadge: {} };
+const renderEvidenceComparison = loadFragment('42-probability.js', 'renderComparison', { window: {}, dom: comparisonDom, fmt, document: { getElementById: () => null } });
+renderEvidenceComparison({worker: {hashrate: 82.2e12}, proximity: {live_calc: {ticker: [{instantaneous_hr_hps: 3.19e18}]}}});
+assertEqual('unscoped share difficulty is not observed hashrate', comparisonDom.hrObserved.textContent, '—');
+assertEqual('incomparable data cannot yield deviation', comparisonDom.hrDeviationVal.textContent, '—');
+assertEqual('comparison explains missing evidence', comparisonDom.hrDeviationBadge.textContent, 'NOT COMPARABLE');
+
+// Issue #746: source-real coverage and freshness regressions.
+const consoleModel = loadFragment('39b-dashboard.js', 'buildOperationConsoleModel', {fmt});
+const numConsole = loadFragment('39b-dashboard.js', 'consoleNumber');
+for (const value of [null, undefined, true, false, '', ' ', [], {}, -1, Infinity]) {
+  assertEqual('console rejects absent/invalid numbers ' + String(value), numConsole(value), null);
+}
+assertEqual('observed zero is retained', numConsole(0), 0);
+const consoleNow = 2000000000;
+const consoleSnap = {ts:consoleNow,worker:{hashrate:82e12},all_workers:[{name:'one'},{name:'two'}]};
+const consolePool = consoleModel(consoleSnap,{fleet_stats:{total_devices:0},device_health:[]},false,'',consoleNow,consoleNow);
+assertEqual('pool-only boot has useful pool rows', consolePool.rows.length, 2);
+assertEqual('pool-only boot has no healthy zero', consolePool.attention, null);
+assertEqual('selected worker HR never distributed', consolePool.rows[0].hash, null);
+const consoleFleet = {fleet_stats:{total_devices:2},device_health:[
+  {id:'on',name:'Online ASIC',status:'ONLINE',telemetry:{ts:consoleNow-10,hashrate_hs:1e12}},
+  {id:'off',name:'Offline ASIC',status:'OFFLINE',telemetry:{ts:consoleNow-30,hashrate_hs:0,last_known_hashrate_hs:2e12}}
+]};
+const consoleLive = consoleModel(consoleSnap,consoleFleet,false,'',consoleNow,consoleNow);
+assertEqual('default uses observed Fleet entities', consoleLive.mode, 'fleet');
+assertEqual('attention first sorting', consoleLive.rows[0].id, 'off');
+const rankedFleet = {fleet_stats:{total_devices:4},device_health:[
+  {id:'on',name:'Online',status:'ONLINE',telemetry:{ts:consoleNow-10,hashrate_hs:1e12}},
+  {id:'off',name:'Offline',status:'OFFLINE',telemetry:{ts:consoleNow-10,hashrate_hs:1e12}},
+  {id:'stale',name:'Stale',status:'STALE',telemetry:{ts:consoleNow-10,hashrate_hs:1e12}},
+  {id:'pause',name:'Paused',status:'PAUSED',telemetry:{ts:consoleNow-10,hashrate_hs:1e12}}
+]};
+const rankedRows = consoleModel(consoleSnap,rankedFleet,false,'fleet',consoleNow,consoleNow).rows.map(function(row) { return row.id; });
+assertEqual('paused, stale and offline outrank a healthy machine', rankedRows.join(','), 'pause,stale,off,on');
+assertEqual('offline historical HR remains visible', consoleLive.rows[0].hash, 2e12);
+assertEqual('offline historical HR excluded from current sum', consoleLive.hashrate, 1e12);
+assertEqual('attention count requires recent evidence', consoleLive.attention, 1);
+const consoleFailed = consoleModel(consoleSnap,consoleFleet,true,'fleet',consoleNow,consoleNow);
+assertEqual('failed request retains last rows', consoleFailed.rows.length, 2);
+assertEqual('failed request does not invent offline state', consoleFailed.rows[1].state, 'Último estado: Online');
+assertEqual('failed request has unknown attention', consoleFailed.attention, null);
+assertEqual('failed request has no current hashrate sum', consoleFailed.hashrate, null);
+assertEqual('failed request does not alter sample timestamp age', consoleFailed.recent, 2);
+assertEqual('old telemetry ages between HTTP reads', consoleModel(consoleSnap,consoleFleet,false,'fleet',consoleNow,consoleNow+180).recent, 0);
+const consoleFuture = {fleet_stats:{total_devices:1},device_health:[{id:'future',status:'ONLINE',telemetry:{ts:consoleNow+30,age_seconds:0,hashrate_hs:1e12}}]};
+assertEqual('future timestamp cannot become fresh via age fallback', consoleModel(consoleSnap,consoleFuture,false,'fleet',consoleNow,consoleNow).recent, 0);
+assertEqual('explicit pool choice survives available Fleet', consoleModel(consoleSnap,consoleFleet,false,'pool',consoleNow,consoleNow).mode, 'pool');
+
+// Premium visualization: real source regressions (zero, gaps and current scope).
+const consoleHistorySeries = loadFragment('39b-dashboard.js', 'buildConsoleHistorySeries');
+const historySeries = consoleHistorySeries([
+  {ts:consoleNow-100,hashrate:0,temperature:51},
+  {ts:consoleNow-80,hashrate:null},
+  {ts:consoleNow-60,hashrate:2e12},
+  {ts:consoleNow-40,hashrate:'3e12'},
+  {ts:consoleNow-20,hashrate:true},
+  {ts:consoleNow+1,hashrate:8e12},
+  {ts:'invalid',hashrate:9e12}
+], 'hashrate', consoleNow);
+assertEqual('history retains genuine zero hashrate', historySeries.measured[0].value, 0);
+assertEqual('history ignores future and invalid timestamps', historySeries.points.length, 5);
+assertEqual('absent/boolean measurements create gaps', historySeries.measured.length, 3);
+assertEqual('unknown points do not become continuous curves', historySeries.segments.length, 2);
+assertEqual('history min includes zero', historySeries.min, 0);
+assertEqual('history max includes numeric source string', historySeries.max, 3e12);
+const separatedHistory = consoleHistorySeries([{ts:(consoleNow-1000)*1000,hashrate:1e12},{ts:consoleNow-500,hashrate:2e12}], 'hashrate', consoleNow);
+assertEqual('millisecond timestamps normalize', separatedHistory.points[0].ts, consoleNow-1000);
+assertEqual('telemetry gaps over 150s are not connected', separatedHistory.segments.length, 2);
+assertEqual('one-point history has one observation without invented points', consoleHistorySeries([{ts:consoleNow-5,hashrate:1e12}], 'hashrate', consoleNow).points.length, 1);
+assertEqual('missing metric does not fall back to another measurement', consoleHistorySeries([{ts:consoleNow-5,hashrate:1e12}], 'temperature', consoleNow).measured.length, 0);
+const premiumModel = loadFragment('39b-dashboard.js', 'buildPremiumOperationModel');
+const poweredFleet = structuredClone(consoleFleet);
+poweredFleet.device_health[0].telemetry.power_watts = 19;
+poweredFleet.device_health[1].telemetry.power_watts = 3500;
+const premiumLive = premiumModel(consoleModel(consoleSnap,poweredFleet,false,'fleet',consoleNow,consoleNow),consoleSnap);
+assertEqual('offline power excluded from measured fleet total', premiumLive.power, 19);
+assertEqual('power coverage counts only current contributing devices', premiumLive.powered, 1);
+assertEqual('failed Fleet query cannot report current power', premiumModel(consoleModel(consoleSnap,poweredFleet,true,'fleet',consoleNow,consoleNow),consoleSnap).power, null);
+assertEqual('stale Fleet query cannot report current power', premiumModel(consoleModel(consoleSnap,poweredFleet,false,'fleet',consoleNow,consoleNow+300),consoleSnap).power, null);
+const comparisonRows = {rows:[{kind:'pool',name:'unknown',hash:null},{kind:'pool',name:'zero',hash:0},{kind:'pool',name:'high',hash:10}],localRows:[],recent:0,unknown:0};
+assertEqual('worker comparison excludes unknown but retains zero', premiumModel(comparisonRows,{}).workers.length, 2);
+assertEqual('comparison sorting uses absolute source hashrate', premiumModel(comparisonRows,{}).workers[0].name, 'high');
+
+const historySession = loadFragment('39b-dashboard.js', '{syncConsoleHistorySession,seed:()=>{_consoleHistory.rows=[{ts:1,hashrate:1}];_consoleHistory.id="one";},state:()=>_consoleHistory,request:()=>_consoleHistoryRequest}', {document:{getElementById:()=>null}});
+historySession.syncConsoleHistorySession('one',true);historySession.seed();
+historySession.syncConsoleHistorySession('one',true);
+assertEqual('same session keeps history observations',historySession.state().rows.length,1);
+historySession.syncConsoleHistorySession('two',true);
+assertEqual('tenant switch drops cached individual history',historySession.state().rows.length,0);
+assertEqual('tenant switch invalidates pending history request',historySession.request(),1);
+historySession.seed();historySession.syncConsoleHistorySession('default',false);
+assertEqual('logout drops individual history cache',historySession.state().rows.length,0);
+// Issue #750: Celsius is signed and bounded, unlike power/rate/counter values.
+for (const temperature of [-40, -5, 0, 150, '-5', '53.5']) {
+  const sample = {device_health:[{id:'signed',status:'ONLINE',telemetry:{ts:consoleNow,temperature,hashrate_hs:-1,power_watts:-1,shares_accepted:-1}}]};
+  const observed = consoleModel(consoleSnap,sample,false,'fleet',consoleNow,consoleNow).rows[0];
+  assertEqual('console retains valid Celsius '+temperature, observed.temperature, Number(temperature));
+  assertEqual('signed Celsius does not permit negative power '+temperature, observed.power, null);
+  assertEqual('signed Celsius does not permit negative rate '+temperature, observed.hash, null);
+  assertEqual('signed Celsius does not permit negative shares '+temperature, observed.accepted, null);
+}
+for (const temperature of [-41, 151, Infinity, NaN, null, undefined, true, false, '', ' ', [], {}, 'invalid']) {
+  const sample = {device_health:[{id:'invalid',status:'ONLINE',telemetry:{ts:consoleNow,temperature}}]};
+  assertEqual('console rejects invalid Celsius '+String(temperature), consoleModel(consoleSnap,sample,false,'fleet',consoleNow,consoleNow).rows[0].temperature, null);
+}
 
 //  RESULTS
 // ═══════════════════════════════════════════════════════════════════════════

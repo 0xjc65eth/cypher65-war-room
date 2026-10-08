@@ -85,7 +85,7 @@ test.describe('ADMIN — audit trail de recomendações aceitas (Issue #96)', ()
 
     await page.goto('/', { waitUntil: 'domcontentloaded' });
     await page.waitForSelector('#app-shell', { timeout: 15000 });
-    await page.waitForSelector('#open-wallet', { timeout: 10000 });
+    await page.waitForSelector('#open-wallet', { state: 'attached', timeout: 10000 });
     await page.waitForFunction(() => {
       return document.querySelectorAll('.skel-overlay').length === 0;
     }, { timeout: 10000 }).catch(() => {});
@@ -157,7 +157,7 @@ test.describe('ADMIN — audit trail de recomendações aceitas (Issue #96)', ()
 
     await page.goto('/', { waitUntil: 'domcontentloaded' });
     await page.waitForSelector('#app-shell', { timeout: 15000 });
-    await page.waitForSelector('#open-wallet', { timeout: 10000 });
+    await page.waitForSelector('#open-wallet', { state: 'attached', timeout: 10000 });
     await page.waitForFunction(() => {
       return document.querySelectorAll('.skel-overlay').length === 0;
     }, { timeout: 10000 }).catch(() => {});
@@ -233,7 +233,7 @@ test.describe('ADMIN — audit trail de recomendações aceitas (Issue #96)', ()
 
     await page.goto('/', { waitUntil: 'domcontentloaded' });
     await page.waitForSelector('#app-shell', { timeout: 15000 });
-    await page.waitForSelector('#open-wallet', { timeout: 10000 });
+    await page.waitForSelector('#open-wallet', { state: 'attached', timeout: 10000 });
     await page.waitForFunction(() => {
       return document.querySelectorAll('.skel-overlay').length === 0;
     }, { timeout: 10000 }).catch(() => {});
@@ -303,7 +303,7 @@ test.describe('ADMIN — audit trail de recomendações aceitas (Issue #96)', ()
 
     await page.goto('/', { waitUntil: 'domcontentloaded' });
     await page.waitForSelector('#app-shell', { timeout: 15000 });
-    await page.waitForSelector('#open-wallet', { timeout: 10000 });
+    await page.waitForSelector('#open-wallet', { state: 'attached', timeout: 10000 });
     await page.waitForFunction(() => {
       return document.querySelectorAll('.skel-overlay').length === 0;
     }, { timeout: 10000 }).catch(() => {});

@@ -185,9 +185,11 @@ test.describe('FLEET COMMAND CENTER — Restart via agent', () => {
     // ── Baseline de execuções no agente (prova de round-trip) ──
     const before = countAgentExecutions(agentLogPath);
 
-    // ── Clique no Restart: aceita o confirm do navegador ──
-    page.once('dialog', d => d.accept());
+    // ── Clique no Restart: aceita a confirmação modal acessível ──
     await restartBtn.click();
+    const restartDialog = page.getByRole('dialog', { name: 'Confirmar comando no minerador' });
+    await expect(restartDialog).toBeVisible();
+    await restartDialog.getByRole('button', { name: 'Confirmar reinício', exact: true }).click();
 
     // ── Toast de sucesso com a mensagem do servidor (some após ~3.3s) ──
     //    Filtra pelo texto ÚNICO do comando: o locator loose por substring

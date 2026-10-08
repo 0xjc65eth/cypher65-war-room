@@ -19,10 +19,12 @@ Endpoints:
   GET    /api/axe-fleet/health           — fleet-wide health stats
 """
 
+import ipaddress
 import json
 import logging
 import math
 import os
+import re
 import socket
 import sqlite3
 import threading
@@ -36,6 +38,13 @@ from services.command_confirmation import (
     consume_confirmation,
     issue_confirmation,
     requires_confirmation,
+)
+from services.observability import (
+    emit_event,
+    get_request_id,
+    new_request_id,
+    set_request_id,
+    clear_request_id,
 )
 from services.tenant import (
     auth_configured,
@@ -57,7 +66,7 @@ from .models import (
     derive_device_status,
     validate_agent_telemetry,
 )
-from .registry import DeviceRegistry
+from .registry import DeviceRegistry, TelemetryIdempotencyConflict
 
 log = logging.getLogger("cypher65.axe.routes")
 
@@ -70,6 +79,15 @@ def init_routes(registry: DeviceRegistry):
     """Inject the DeviceRegistry instance. Called from app.py."""
     global _registry
     _registry = registry
+
+
+def _safe_telemetry_quarantines(tenant_id: str) -> dict:
+    """Read quarantine metadata when the injected registry supports it."""
+    getter = getattr(_registry, "get_telemetry_quarantines", None)
+    if not callable(getter):
+        return {}
+    quarantines = getter(tenant_id=tenant_id)
+    return quarantines if isinstance(quarantines, dict) else {}
 
 
 axe_fleet_bp = Blueprint("axe_fleet", __name__)
@@ -400,6 +418,7 @@ def add_device(tenant_id: str = ""):
 
     if not ip:
         return jsonify({"error": "ip_address is required"}), 400
+    emit_event("manual_add.started", tenant_id=tenant_id)
 
     # Check if already registered (tenant-scoped — the same IP may exist in
     # another tenant's fleet and must not 409 this request). Runs BEFORE the
@@ -407,6 +426,7 @@ def add_device(tenant_id: str = ""):
     # (the operator may have registered it before this deployment change).
     existing = _registry.get_device_by_ip(ip, tenant_id=tenant_id)
     if existing:
+        emit_event("manual_add.failed", tenant_id=tenant_id, reason="duplicate")
         return jsonify({"error": "device already registered", "device": existing}), 409
 
     # ── SaaS topology guard: on a cloud deploy a private LAN IP is
@@ -430,6 +450,11 @@ def add_device(tenant_id: str = ""):
             params={"ip": ip, "name": name},
             tenant_id=tenant_id,
         )
+        emit_event(
+            "manual_add.success" if queued else "manual_add.failed",
+            tenant_id=tenant_id,
+            reason="queued_for_local_agent" if queued else "agent_queue_unavailable",
+        )
         _log_audit(
             tenant_id,
             "fleet.device_probe_queued",
@@ -440,25 +465,26 @@ def add_device(tenant_id: str = ""):
                 "tombstone_cleared": bool(restored),
             },
         )
-        return (
-            jsonify(
-                {
-                    "success": True,
-                    "queued": True,
-                    "is_cloud": True,
-                    "restored": bool(restored),
-                    "command_id": (queued or {}).get("id"),
-                    "error": None,
-                    "message": "IP privado enfileirado para o AGENTE LOCAL. Com o agente online na mesma LAN, o miner será sondado e registrado automaticamente — o Render nunca conecta em 192.168.x.x.",
-                }
+        response = {
+            "success": bool(queued),
+            "queued": bool(queued),
+            "is_cloud": True,
+            "restored": bool(restored),
+            "command_id": (queued or {}).get("id"),
+            "error": None if queued else "agent command queue unavailable",
+            "message": (
+                "IP privado enfileirado para o AGENTE LOCAL. Com o agente online na mesma LAN, o miner será sondado e registrado automaticamente — o Render nunca conecta em 192.168.x.x."
+                if queued
+                else "Não foi possível enfileirar o probe. O IP foi restaurado; tente novamente quando a fila do agente estiver disponível."
             ),
-            202,
-        )
+        }
+        return jsonify(response), (202 if queued else 503)
 
     # ── Fase 4 · B3: plan enforcement — the FREE tier caps workers per
     #    tenant. Honest rejection: the operator sees the limit and usage
     #    instead of a silent success that exceeds the plan.
     if not _can_add_worker(tenant_id):
+        emit_event("manual_add.failed", tenant_id=tenant_id, reason="plan_limit")
         plan = _get_tenant_plan(tenant_id)
         _log_audit(
             tenant_id,
@@ -485,6 +511,9 @@ def add_device(tenant_id: str = ""):
     try:
         device = _registry.add_device(ip, name or ip, tenant_id=tenant_id)
     except Exception as e:
+        emit_event(
+            "manual_add.failed", tenant_id=tenant_id, reason="registration_error"
+        )
         log.error("[axe] add_device error: %s", e)
         return jsonify({"error": f"failed to add device: {str(e)}"}), 500
 
@@ -492,6 +521,7 @@ def add_device(tenant_id: str = ""):
     model = ""
     version = ""
     status = "OFFLINE"
+    probe_failure_reason = None
     try:
         from concurrent.futures import ThreadPoolExecutor
         from concurrent.futures import TimeoutError as FuturesTimeout
@@ -500,7 +530,10 @@ def add_device(tenant_id: str = ""):
         try:
             probe_ip = resolve_private_target(ip)
         except ValueError as exc:
-            log.info("[axe] add_device skip firmware probe for %s: %s", ip, exc)
+            probe_failure_reason = (
+                "dns" if "could not be resolved" in str(exc).lower() else "unreachable"
+            )
+            log.info("[axe] add_device skip firmware probe for %s", ip)
             probe_ip = None
 
         fw = None
@@ -509,6 +542,7 @@ def add_device(tenant_id: str = ""):
             try:
                 fw = pool.submit(detect_firmware, probe_ip).result(timeout=1.0)
             except FuturesTimeout:
+                probe_failure_reason = "timeout"
                 log.warning(
                     "[axe] add_device firmware probe timed out for %s", probe_ip
                 )
@@ -521,7 +555,17 @@ def add_device(tenant_id: str = ""):
             model = fw.get("model", "")
             version = fw.get("version", "")
             status = "ONLINE" if fw.get("adapter_type") else "OFFLINE"
+        elif fw:
+            reason = fw.get("failure_reason")
+            probe_failure_reason = (
+                reason
+                if reason in {"dns", "timeout", "refused", "auth"}
+                else "unreachable"
+            )
+        else:
+            probe_failure_reason = probe_failure_reason or "unreachable"
     except Exception:
+        probe_failure_reason = probe_failure_reason or "unreachable"
         log.warning("[axe] add_device firmware probe failed for %s", ip, exc_info=True)
 
     try:
@@ -544,6 +588,20 @@ def add_device(tenant_id: str = ""):
             except Exception:
                 pass  # enrichment is best-effort; base device is still valid
 
+        if probe_failure_reason:
+            emit_event(
+                "manual_add.failed",
+                tenant_id=tenant_id,
+                device_id=device.get("id", ""),
+                stage="probe",
+                reason=probe_failure_reason,
+            )
+        emit_event(
+            "manual_add.success",
+            tenant_id=tenant_id,
+            device_id=device.get("id", ""),
+            status=str(device.get("status") or "OFFLINE").upper(),
+        )
         _log_audit(
             tenant_id,
             "fleet.device_added",
@@ -1374,7 +1432,7 @@ def fleet_summary(tenant_id: str = ""):
     # Reconcile the stored status with the newest trusted telemetry. Reading
     # only the device row can leave ONLINE frozen after the agent stops.
     devices = _registry.list_devices(tenant_id=tenant_id, with_telemetry=True)
-    quarantines = _registry.get_telemetry_quarantines(tenant_id=tenant_id)
+    quarantines = _safe_telemetry_quarantines(tenant_id)
     total = len(devices)
     # Reachability via the shared helper (ONLINE/WARNING/HASHING). WARNING is
     # kept in its own bucket (mirrors fleet_health) — a degraded-but-reachable
@@ -1394,8 +1452,11 @@ def fleet_summary(tenant_id: str = ""):
     total_hr = 0
     enriched_devices = []
     for d in devices:
-        tel = _registry.get_recent_telemetry(d["id"], limit=1, tenant_id=tenant_id)
-        p = _latest_telemetry(tel)
+        # list_devices(with_telemetry=True) already selected the latest
+        # trusted sample for this tenant in one batch. Do not issue a second
+        # per-device query (or synthesize data when the batch has no sample).
+        p = d.get("telemetry")
+        p = p if _is_trusted_payload(p) else {}
         measured_hr = p.get("hashrate_hs")
         status = d.get("status", "OFFLINE")
         reported_hr = _nonnegative_finite_int(measured_hr)
@@ -1510,8 +1571,9 @@ def seed_test_devices(tenant_id: str = ""):
     Creates 4 devices with realistic telemetry (hashrate, temp, fan, power,
     uptime, best diff) and capabilities (restart, identify, pause).
 
-    GATED by DEBUG_MOCK (config.py): disabled in production so mock devices
-    are never exposed via the public API. Set DEBUG_MOCK=1 for local dev.
+    GATED by DEBUG_MOCK and cloud detection: cloud deployments always deny
+    synthetic seeding, even with DEBUG_MOCK=1. Local dev additionally needs
+    tenant/member authorization.
 
     Tenant-scoped: seeded devices are persisted under the caller's tenant
     so they never pollute another tenant's fleet.
@@ -1519,9 +1581,13 @@ def seed_test_devices(tenant_id: str = ""):
     Use DELETE /api/axe-fleet/devices/<id> to remove individual devices
     after testing.
     """
-    if os.environ.get("DEBUG_MOCK") != "1":
+    from config import is_cloud_deploy
+
+    if is_cloud_deploy() or os.environ.get("DEBUG_MOCK") != "1":
         return (
-            jsonify({"error": "test-devices endpoint disabled (set DEBUG_MOCK=1)"}),
+            jsonify(
+                {"error": "test-devices endpoint disabled (local DEBUG_MOCK=1 only)"}
+            ),
             403,
         )
     if _registry is None:
@@ -1890,12 +1956,20 @@ def start_scan(tenant_id: str = ""):
     # Local reference for the daemon thread's closures (the store dict itself
     # is the source of truth; mutations below are visible to readers).
     scan = _scans[scan_id]
+    scan_request_id = get_request_id() or new_request_id("scan")
+    emit_event(
+        "fleet.discovery.started",
+        correlation_id=scan_request_id,
+        tenant_id=tenant_id,
+        scan_id=scan_id,
+    )
 
     def _progress(scanned, total):
         scan["scanned"] = scanned
         scan["total"] = total
 
     def _run():
+        set_request_id(scan_request_id)
         try:
             result = scan_subnet(cidr, progress_cb=_progress)
             scan["total"] = result.get("total", scan.get("total", 0))
@@ -1906,6 +1980,50 @@ def start_scan(tenant_id: str = ""):
             scan["hint"] = result.get("hint")
             scan["error"] = result.get("error")
             scan["status"] = "done" if not result.get("error") else "error"
+            for detected in scan["found"]:
+                device_type = str(detected.get("type") or "unknown").lower()
+                if device_type not in {"bitaxe", "braiins", "cgminer"}:
+                    device_type = "unknown"
+                emit_event(
+                    "fleet.discovery.device_found",
+                    correlation_id=scan_request_id,
+                    tenant_id=tenant_id,
+                    scan_id=scan_id,
+                    device_type=device_type,
+                )
+            rejected_reasons = result.get("rejected_reasons") or {}
+            if not rejected_reasons and scan["alive"]:
+                rejected_reasons = {"reachable_but_unidentified": scan["alive"]}
+            for reason, rejected_count in rejected_reasons.items():
+                if reason not in {
+                    "auth",
+                    "timeout",
+                    "refused",
+                    "invalid_response",
+                    "unreachable",
+                    "reachable_but_unidentified",
+                }:
+                    continue
+                emit_event(
+                    "fleet.discovery.device_rejected",
+                    correlation_id=scan_request_id,
+                    tenant_id=tenant_id,
+                    scan_id=scan_id,
+                    reason=reason,
+                    count=max(0, int(rejected_count or 0)),
+                )
+            emit_event(
+                "fleet.discovery.finished",
+                correlation_id=scan_request_id,
+                tenant_id=tenant_id,
+                scan_id=scan_id,
+                outcome=scan["status"],
+                duration_ms=max(0, int((time.time() - now) * 1000)),
+                total=scan["total"],
+                scanned=scan["scanned"],
+                found_count=len(scan["found"]),
+                alive_count=scan["alive"],
+            )
             log.info(
                 "[axe] scan %s (%s) done: %d/%d found",
                 scan_id,
@@ -1916,7 +2034,21 @@ def start_scan(tenant_id: str = ""):
         except Exception as e:  # noqa: BLE001
             scan["error"] = str(e)
             scan["status"] = "error"
+            emit_event(
+                "fleet.discovery.finished",
+                correlation_id=scan_request_id,
+                tenant_id=tenant_id,
+                scan_id=scan_id,
+                outcome="error",
+                duration_ms=max(0, int((time.time() - now) * 1000)),
+                total=scan["total"],
+                scanned=scan["scanned"],
+                found_count=len(scan["found"]),
+                alive_count=scan["alive"],
+            )
             log.error("[axe] scan %s failed: %s", scan_id, e)
+        finally:
+            clear_request_id()
 
     t = threading.Thread(target=_run, daemon=True, name=f"axe-scan-{scan_id}")
     t.start()
@@ -3214,7 +3346,7 @@ def fleet_health(tenant_id: str = ""):
     # The registry's freshness-aware read degrades old ONLINE/HASHING rows to
     # STALE. The bare device row cannot prove current health.
     devices = _registry.list_devices(tenant_id=tenant_id, with_telemetry=True)
-    quarantines = _registry.get_telemetry_quarantines(tenant_id=tenant_id)
+    quarantines = _safe_telemetry_quarantines(tenant_id)
     now = int(time.time())
 
     from .models import infer_health_score
@@ -3239,11 +3371,10 @@ def fleet_health(tenant_id: str = ""):
 
     for d in devices:
         did = d["id"]
-        tel_raw = _registry.get_recent_telemetry(did, limit=50, tenant_id=tenant_id)
-        # Hardening: trust only well-formed telemetry payloads. Legacy rows
-        # written before the poll fix may be a bare {"device_id": ...} stub —
-        # treat those as empty so the UI never shows zeroed fake data.
-        tel = _latest_telemetry(tel_raw)
+        # Reuse the batch-selected trusted sample. In particular, absence of
+        # a measured sample must not trigger a per-device history fallback.
+        tel = d.get("telemetry")
+        tel = tel if _is_trusted_payload(tel) else {}
         status = d.get("status", "OFFLINE")
         from .models import STATUS_STALE, is_telemetry_stale
 
@@ -3777,11 +3908,32 @@ def agent_revoke_tokens(tenant_id: str = ""):
 
 _agent_heartbeats = {}
 _agent_heartbeats_lock = threading.Lock()
+_agent_liveness = {}
 _AGENT_HEARTBEAT_TTL_S = 90
 
 
-def _store_agent_heartbeat(tenant_id: str, payload: dict) -> dict:
-    """Keep the last sanitized scan diagnostic per tenant (Issue #638)."""
+def _store_agent_heartbeat(tenant_id: str, payload: dict, now=None) -> dict:
+    """Refresh presence without replaying a completed scan (Issue #669).
+
+    An empty payload is presence only. Legacy scan payloads remain supported;
+    scan_received_at is server receipt time, not a claimed device observation.
+    """
+    now = int(now or time.time())
+    key = tenant_id or "default"
+    if not payload:
+        with _agent_heartbeats_lock:
+            previous = _agent_heartbeats.get(key) or {}
+            previous_seen = int(previous.get("seen_at") or 0)
+            was_alive = (
+                previous_seen > 0 and now - previous_seen <= _AGENT_HEARTBEAT_TTL_S
+            )
+            clean = dict(previous)
+            clean["seen_at"] = now
+            _agent_heartbeats[key] = clean
+            _agent_liveness[key] = True
+        if not was_alive:
+            emit_event("fleet.agent.connected", tenant_id=key, source="heartbeat")
+        return clean
     allowed = {
         "result",
         "host_count",
@@ -3809,9 +3961,17 @@ def _store_agent_heartbeat(tenant_id: str, payload: dict) -> dict:
     clean["result"] = result
     clean["truncated"] = bool(clean.get("truncated"))
     clean["explicit"] = bool(clean.get("explicit"))
-    clean["seen_at"] = int(time.time())
+    clean["seen_at"] = now
+    clean["scan_received_at"] = now
+    key = tenant_id or "default"
     with _agent_heartbeats_lock:
-        _agent_heartbeats[tenant_id or "default"] = clean
+        previous = _agent_heartbeats.get(key) or {}
+        previous_seen = int(previous.get("seen_at") or 0)
+        was_alive = previous_seen > 0 and now - previous_seen <= _AGENT_HEARTBEAT_TTL_S
+        _agent_heartbeats[key] = clean
+        _agent_liveness[key] = True
+    if not was_alive:
+        emit_event("fleet.agent.connected", tenant_id=key, source="heartbeat")
     return clean
 
 
@@ -3819,12 +3979,24 @@ def agent_presence(tenant_id: str, now=None) -> dict:
     """Alive vs no-telemetry: a heartbeat proves the agent is running even
     when zero miners answered."""
     now = int(now or time.time())
+    key = tenant_id or "default"
+    event_name = None
     with _agent_heartbeats_lock:
-        row = dict(_agent_heartbeats.get(tenant_id or "default") or {})
-    if not row:
-        return {"alive": False, "last_seen": None, "scan": None}
-    last = int(row.get("seen_at") or 0)
-    alive = last > 0 and (now - last) <= _AGENT_HEARTBEAT_TTL_S
+        row = dict(_agent_heartbeats.get(key) or {})
+        if not row:
+            return {"alive": False, "last_seen": None, "scan": None}
+        last = int(row.get("seen_at") or 0)
+        alive = last > 0 and (now - last) <= _AGENT_HEARTBEAT_TTL_S
+        was_alive = _agent_liveness.get(key)
+        if was_alive is None:
+            _agent_liveness[key] = alive
+        elif was_alive != alive:
+            _agent_liveness[key] = alive
+            event_name = (
+                "fleet.agent.connected" if alive else "fleet.agent.disconnected"
+            )
+    if event_name:
+        emit_event(event_name, tenant_id=key, last_seen=last)
     scan = {
         "result": row.get("result"),
         "host_count": row.get("host_count"),
@@ -3833,7 +4005,10 @@ def agent_presence(tenant_id: str, now=None) -> dict:
         "subnet_count": row.get("subnet_count"),
         "prefix_lens": row.get("prefix_lens") or [],
         "explicit": row.get("explicit"),
+        "received_at": row.get("scan_received_at"),
     }
+    if "result" not in row:
+        scan = None
     return {"alive": alive, "last_seen": last or None, "scan": scan}
 
 
@@ -3841,7 +4016,10 @@ def agent_presence(tenant_id: str, now=None) -> dict:
 @_require_agent
 def agent_heartbeat(agent_tenant_id: str = ""):
     """Agent-alive diagnostic with no device IPs (Issue #638)."""
-    data = request.get_json(silent=True) or {}
+    raw_body = request.get_data(cache=True)
+    data = request.get_json(silent=True) if raw_body else {}
+    if not isinstance(data, dict):
+        return jsonify({"error": "invalid_payload"}), 400
     _store_agent_heartbeat(agent_tenant_id, data)
     return jsonify({"success": True, "agent": agent_presence(agent_tenant_id)})
 
@@ -3943,16 +4121,28 @@ def agent_telemetry(agent_tenant_id: str = ""):
     data = request.get_json(silent=True) or {}
     ip = (data.get("ip") or "").strip()
     tel = data.get("telemetry")
+    idempotency_key = data.get("idempotency_key", "")
     # Require the explicit key: `telemetry: {}` (empty) is legal (a device
     # that answered nothing), but a MISSING key is a malformed push.
     if not ip or not isinstance(tel, dict):
         return jsonify({"error": "ip and telemetry object required"}), 400
+    if idempotency_key and (
+        not isinstance(idempotency_key, str)
+        or not re.fullmatch(r"[A-Za-z0-9._:-]{8,128}", idempotency_key)
+        or not isinstance(tel.get("ts"), int)
+        or isinstance(tel.get("ts"), bool)
+        or tel.get("ts", 0) <= 0
+    ):
+        return (
+            jsonify({"error": "invalid idempotency_key or missing sample timestamp"}),
+            400,
+        )
     device = _registry.get_device_by_ip(ip, tenant_id=agent_tenant_id)
     errors = validate_agent_telemetry(tel)
     if errors:
         reasons = sorted({error["reason"] for error in errors})
         fields = sorted({error["field"] for error in errors})
-        is_new_quarantine = True
+        is_new_quarantine = False
         if device:
             is_new_quarantine = _registry.record_telemetry_quarantine(
                 device["id"], fields, reasons, tenant_id=agent_tenant_id
@@ -3979,7 +4169,7 @@ def agent_telemetry(agent_tenant_id: str = ""):
                     "code": "INVALID_TELEMETRY",
                     "reason": ",".join(reasons),
                     "fields": fields,
-                    "quarantined": True,
+                    "quarantined": bool(device),
                 }
             ),
             422,
@@ -4036,15 +4226,45 @@ def agent_telemetry(agent_tenant_id: str = ""):
     # STALE/OFFLINE honestly — an empty heartbeat is presence, not health;
     # re-deriving from the raw payload here would fake an IDLE for a miner
     # that answered nothing). Fleet audit, Issue #627.
-    status = _registry.save_agent_telemetry(
-        device["id"], tel, tenant_id=agent_tenant_id
-    )
+    try:
+        status = _registry.save_agent_telemetry(
+            device["id"],
+            tel,
+            tenant_id=agent_tenant_id,
+            idempotency_key=idempotency_key,
+        )
+    except TelemetryIdempotencyConflict:
+        return (
+            jsonify({"success": False, "error": "idempotency key payload conflict"}),
+            409,
+        )
     return jsonify(
         {
             "success": True,
             "device_id": device["id"],
             "status": status,
         }
+    )
+
+
+def _valid_agent_probe_target(target) -> bool:
+    """Allow one literal RFC1918/CGNAT IPv4 target for read-only probing."""
+    if not isinstance(target, str) or not target or target != target.strip():
+        return False
+    try:
+        address = ipaddress.ip_address(target)
+    except ValueError:
+        return False
+    allowed_networks = (
+        ipaddress.ip_network("10.0.0.0/8"),
+        ipaddress.ip_network("172.16.0.0/12"),
+        ipaddress.ip_network("192.168.0.0/16"),
+        ipaddress.ip_network("100.64.0.0/10"),
+    )
+    return (
+        address.version == 4
+        and any(address in network for network in allowed_networks)
+        and not (address.is_loopback or address.is_link_local)
     )
 
 
@@ -4070,6 +4290,32 @@ def agent_pull_commands(agent_tenant_id: str = ""):
         if age < 0 or age > AGENT_COMMAND_TTL_S:
             reason = "command_expired"
             terminal_status = "expired"
+        elif command == "probe":
+            params = c.get("params")
+            target = params.get("ip") if isinstance(params, dict) else None
+            if not _valid_agent_probe_target(target):
+                reason = "probe_target_invalid"
+            elif _registry.mark_command_pulled(
+                c["id"],
+                tenant_id=agent_tenant_id,
+                max_age=AGENT_COMMAND_TTL_S,
+            ):
+                # Discovery is read-only and explicitly requested by an
+                # authenticated tenant. It does not inherit physical command
+                # gates, but it remains private-address, tenant and TTL scoped.
+                pulled.append(
+                    {
+                        "id": c["id"],
+                        "device_id": "_probe",
+                        "ip_address": target,
+                        "command": "probe",
+                        "params": {"ip": target},
+                    }
+                )
+                continue
+            else:
+                # Another concurrent pull claimed a valid probe first.
+                continue
         elif not can_execute_physical_command():
             reason = "deployment_policy_disabled"
         elif not dev:

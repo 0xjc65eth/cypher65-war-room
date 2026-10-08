@@ -34,8 +34,10 @@ import concurrent.futures
 import services.state as state
 import services.proximity as proximity
 import services.names as names  # name normalization + sanitization
+from services.poll_compute import _effective_btc_per_th_per_day
 
 from helpers import (
+    pool_last_block,
     parse_diff_to_float,
     fmt_diff,
     fmt_hashrate,
@@ -911,8 +913,8 @@ def poll_once():
                 pool.get("workers") if pool else None,
                 pool.get("users") if pool else None,
                 pool.get("highestDifficulty") if pool else None,
-                pool.get("lastBlockHeight") if pool else None,
-                pool.get("lastBlockTime") if pool else None,
+                pool_last_block(pool)[0],
+                pool_last_block(pool)[1],
                 pool.get("workSinceLastBlock") if pool else None,
                 account.get("total_diff") if isinstance(account, dict) else None,
                 meta.get("block_count") if isinstance(meta, dict) else None,
@@ -1410,17 +1412,12 @@ def poll_once():
                     # Legacy only: keep its marginal BTC/TH/s/day field
                     # aligned with compute_profitability; no network rate
                     # means the quantity is unavailable, never a fabricated 0.
-                    "effective_btc_per_th_per_day": (
-                        round(
-                            (1e12 / net_hr)
-                            * blocks_per_day
-                            * total_reward_per_block
-                            * (1 - pool_fee_pct / 100.0)
-                            * (1 - orphan_pct / 100.0),
-                            16,
-                        )
-                        if net_hr > 0
-                        else None
+                    "effective_btc_per_th_per_day": _effective_btc_per_th_per_day(
+                        net_hr,
+                        blocks_per_day,
+                        total_reward_per_block,
+                        pool_fee_pct,
+                        orphan_pct,
                     ),
                     # Pool fee info
                     "pool_fee_info": f"Pool fee: {pool_fee_pct}% · Orphan rate: {orphan_pct}% · Reward: {reward}+{fee} BTC/block",

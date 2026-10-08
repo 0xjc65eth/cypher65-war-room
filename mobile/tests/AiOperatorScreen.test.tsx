@@ -1,5 +1,5 @@
 import React from 'react';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react-native';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-native';
 import { AiOperatorScreen } from '../src/screens/AI/AiOperatorScreen';
 import { queryAiOperator } from '../src/api/client';
 
@@ -20,10 +20,10 @@ describe('AiOperatorScreen', () => {
 
   it('shows only the validated backend answer', async () => {
     mockedQuery.mockResolvedValue('Observed fleet status is healthy.');
-    render(<AiOperatorScreen />);
+    await render(<AiOperatorScreen />);
 
-    fireEvent.changeText(screen.getByLabelText('Question for AI Operator'), 'Fleet status?');
-    fireEvent.press(screen.getByLabelText('Send question'));
+    await fireEvent.changeText(screen.getByLabelText('Question for AI Operator'), 'Fleet status?');
+    await fireEvent.press(screen.getByLabelText('Send question'));
 
     expect(await screen.findByText('Observed fleet status is healthy.')).toBeTruthy();
     expect(mockedQuery).toHaveBeenCalledWith('Fleet status?');
@@ -32,10 +32,10 @@ describe('AiOperatorScreen', () => {
 
   it('shows an explicit unavailable state and no fabricated answer', async () => {
     mockedQuery.mockRejectedValue(new Error('network failed'));
-    render(<AiOperatorScreen />);
+    await render(<AiOperatorScreen />);
 
-    fireEvent.changeText(screen.getByLabelText('Question for AI Operator'), 'Fleet status?');
-    fireEvent.press(screen.getByLabelText('Send question'));
+    await fireEvent.changeText(screen.getByLabelText('Question for AI Operator'), 'Fleet status?');
+    await fireEvent.press(screen.getByLabelText('Send question'));
 
     expect(await screen.findByTestId('ai-operator-error')).toBeTruthy();
     expect(screen.getByText('AI Operator is unavailable. No response was generated.')).toBeTruthy();
@@ -47,10 +47,10 @@ describe('AiOperatorScreen', () => {
     [429, 'AI Operator rate limit reached. Try again later.'],
   ])('explains HTTP %s without converting it into an answer', async (status, message) => {
     mockedQuery.mockRejectedValue({ isAxiosError: true, response: { status } });
-    render(<AiOperatorScreen />);
+    await render(<AiOperatorScreen />);
 
-    fireEvent.changeText(screen.getByLabelText('Question for AI Operator'), 'Fleet status?');
-    fireEvent.press(screen.getByLabelText('Send question'));
+    await fireEvent.changeText(screen.getByLabelText('Question for AI Operator'), 'Fleet status?');
+    await fireEvent.press(screen.getByLabelText('Send question'));
 
     expect(await screen.findByText(message)).toBeTruthy();
     expect(screen.queryByText(/SIMULATED/)).toBeNull();
@@ -61,11 +61,16 @@ describe('AiOperatorScreen', () => {
     mockedQuery.mockImplementation(() => new Promise((resolve) => {
       resolveQuery = resolve;
     }));
-    render(<AiOperatorScreen />);
+    await render(<AiOperatorScreen />);
 
-    fireEvent.changeText(screen.getByLabelText('Question for AI Operator'), 'Fleet status?');
-    fireEvent.press(screen.getByLabelText('Send question'));
-    fireEvent.press(screen.getByLabelText('Send question'));
+    await fireEvent.changeText(screen.getByLabelText('Question for AI Operator'), 'Fleet status?');
+    const questionInput = screen.getByLabelText('Question for AI Operator');
+    await act(async () => {
+      const submit = questionInput.props.onSubmitEditing;
+      if (typeof submit !== 'function') throw new Error('Question input submit handler is missing');
+      void submit();
+      void submit();
+    });
 
     expect(mockedQuery).toHaveBeenCalledTimes(1);
     expect(screen.getByLabelText('Send question').props.accessibilityState).toEqual({

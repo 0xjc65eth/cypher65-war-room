@@ -33,7 +33,7 @@ import sys
 from decimal import Decimal
 
 import pytest
-from hypothesis import Phase, given, settings
+from hypothesis import Phase, example, given, settings
 from hypothesis import strategies as st
 
 from helpers import (
@@ -78,6 +78,18 @@ ieee_edges = st.sampled_from(
     ]
 )
 
+
+def _lender_identity_abs_tolerance(*money_values):
+    """Bound four-place decimal rounding plus binary-float representability.
+
+    At ordinary magnitudes, comparing two independently rounded paths can
+    accumulate at most 0.0002 from four half-quantum rounding steps. When a
+    float's ULP exceeds that decimal quantum, permit at most two ULPs at the
+    largest operand magnitude for the distinct subtraction/rounding paths.
+    """
+    max_magnitude = max(abs(value) for value in money_values)
+    return max(2e-4, 2 * math.ulp(max_magnitude))
+
 any_finite = st.floats(allow_nan=False, allow_infinity=False)
 
 btc_prices = st.fixed_dictionaries(
@@ -113,6 +125,7 @@ def _assert_json_serializable(node):
 # ═══════════════════════════════════════════════════════════════════════════
 
 
+@pytest.mark.covers("NUM-002")
 class TestSoloProbabilitiesProperties:
     @settings(max_examples=300, deadline=None)
     @given(share=operational_share)
@@ -172,6 +185,7 @@ class TestSoloProbabilitiesProperties:
 # ═══════════════════════════════════════════════════════════════════════════
 
 
+@pytest.mark.covers("NUM-002")
 class TestLenderProfitabilityProperties:
     @settings(max_examples=300, deadline=None)
     @given(
@@ -235,6 +249,7 @@ class TestLenderProfitabilityProperties:
             assert out["lender_vs_mining_usd_per_day"] is None
 
     @settings(max_examples=150, deadline=None)
+    @example(ths=75.0, rate=78187493531.0, mining=1.416015625, price=0.375)
     @given(
         ths=positive_finite,
         rate=positive_finite,
@@ -251,14 +266,43 @@ class TestLenderProfitabilityProperties:
         )
         if out["lender_net_usd_per_day"] is None:
             return
-        # vs_mining is computed from the RAW nets then rounded once (helper
-        # contract); comparing against rounded-per-field expectation must
-        # therefore allow the single-ULP rounding drift.
+        # vs_mining is computed from RAW nets and rounded once. The oracle
+        # below derives it from fields rounded independently to four decimals,
+        # so allow their four-place quantization envelope and at most two ULPs
+        # at the operand magnitude (see _lender_identity_abs_tolerance).
         expected_vs = round(
             out["lender_net_usd_per_day"] - out["lender_mine_net_usd_per_day"], 4
         )
-        assert out["lender_vs_mining_usd_per_day"] == pytest.approx(
-            expected_vs, abs=2e-4
+        abs_tolerance = _lender_identity_abs_tolerance(
+            out["lender_net_usd_per_day"],
+            out["lender_mine_net_usd_per_day"],
+            expected_vs,
+            out["lender_vs_mining_usd_per_day"],
+        )
+        assert math.isclose(
+            out["lender_vs_mining_usd_per_day"],
+            expected_vs,
+            rel_tol=0.0,
+            abs_tol=abs_tolerance,
+        )
+
+    @pytest.mark.parametrize(
+        "lease_net,mine_net",
+        [(1234.5678, 45.6789), (2199023255559.375, 0.531)],
+        ids=["ordinary-dollar-scale", "large-but-representable-scale"],
+    )
+    def test_zero_power_identity_tolerance_rejects_material_errors(
+        self, lease_net, mine_net
+    ):
+        expected_vs = round(lease_net - mine_net, 4)
+        tolerance = _lender_identity_abs_tolerance(lease_net, mine_net, expected_vs)
+        one_cent_error = expected_vs + 0.01
+        assert tolerance < 0.01
+        assert not math.isclose(
+            one_cent_error,
+            expected_vs,
+            rel_tol=0.0,
+            abs_tol=tolerance,
         )
 
 
@@ -267,6 +311,7 @@ class TestLenderProfitabilityProperties:
 # ═══════════════════════════════════════════════════════════════════════════
 
 
+@pytest.mark.covers("NUM-002")
 class TestBreakEvenProperties:
     @settings(max_examples=300, deadline=None)
     @given(
@@ -346,6 +391,7 @@ class TestBreakEvenProperties:
 # ═══════════════════════════════════════════════════════════════════════════
 
 
+@pytest.mark.covers("NUM-002")
 class TestFiatConvertProperties:
     @settings(max_examples=200, deadline=None)
     @given(
@@ -380,6 +426,7 @@ class TestFiatConvertProperties:
 # ═══════════════════════════════════════════════════════════════════════════
 
 
+@pytest.mark.covers("NUM-002")
 class TestEffectiveBtcPerThPerDayProperties:
     @settings(max_examples=200, deadline=None)
     @given(
@@ -427,9 +474,24 @@ class TestEffectiveBtcPerThPerDayProperties:
 # ═══════════════════════════════════════════════════════════════════════════
 
 
+@pytest.mark.covers("NUM-002")
 class TestIeeeEdgePins:
     """The four boundary classes the NUM-002 row demands, pinned on the two
     money helpers. Properties sweep broadly; these pin the named corners."""
+
+    def test_lender_overflow_in_comparison_difference_is_unavailable_not_infinite(self):
+        """Finite operands can still overflow when the two USD nets are subtracted."""
+        out = compute_lender_profitability(
+            ths=1e308,
+            market_btc_per_th_day=2.2250738585072014e-308,
+            power_cost_usd_per_day=1e308,
+            pool_net_btc_per_day=5e-324,
+            btc_usd=1e308,
+        )
+
+        _assert_finite_tree(out)
+        assert out["lender_vs_mining_usd_per_day"] is None
+        assert out["lender_recommendation"] == "lease"
 
     def test_lender_1e308_inputs(self):
         out = compute_lender_profitability(

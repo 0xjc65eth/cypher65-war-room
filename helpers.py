@@ -16,6 +16,49 @@ from typing import Any, Optional
 
 log = logging.getLogger("cypher65")
 
+
+def pool_last_block(pool, now=None):
+    """Return (height, Unix seconds); legacy lastBlockTime can be a height.
+
+    Accept only finite Bitcoin-era timestamps, normalizing milliseconds.
+    Missing/invalid values stay None; this does not repair historical rows.
+    """
+    pool = pool or {}
+    now = time.time() if now is None else now
+
+    def number(value):
+        if isinstance(value, bool):
+            return None
+        try:
+            value = float(value)
+            return value if math.isfinite(value) else None
+        except (TypeError, ValueError, OverflowError):
+            return None
+
+    raw_height = pool.get("lastBlockHeight")
+    if raw_height is None:
+        raw_height = pool.get("lastBlock")
+    if raw_height is None:
+        raw_height = pool.get("lastBlockTime")
+    height = number(raw_height)
+    height = (
+        int(height)
+        if height and height.is_integer() and 0 < height < 1231006505
+        else None
+    )
+    legacy = number(pool.get("lastBlockTime"))
+    timestamp = (
+        number(pool.get("lastBlockTimestamp"))
+        if pool.get("lastBlockTimestamp") is not None
+        else legacy
+    )
+    if timestamp is not None and timestamp >= 1e12:
+        timestamp /= 1000
+    if timestamp is None or not 1231006505 <= timestamp <= now:
+        timestamp = None
+    return height, timestamp
+
+
 # ── Braiins Hashpower price unit (audit 17-Aug, Issue #267) ────────────────
 # The official contract (docs/reference/braiins-hashpower-api-openapi.yml)
 # states: "Spot-market price fields use the hashrate unit returned by
@@ -672,8 +715,10 @@ def compute_lender_profitability(
         if net_usd is not None and mine_usd is not None:
             out["lender_net_usd_per_day"] = round(net_usd, 4)
             out["lender_mine_net_usd_per_day"] = round(mine_usd, 4)
-            out["lender_vs_mining_usd_per_day"] = round(net_usd - mine_usd, 4)
-            if abs(net_usd - mine_usd) < 0.005:
+            vs_mining_usd = net_usd - mine_usd
+            if math.isfinite(vs_mining_usd):
+                out["lender_vs_mining_usd_per_day"] = round(vs_mining_usd, 4)
+            if math.isfinite(vs_mining_usd) and abs(vs_mining_usd) < 0.005:
                 out["lender_recommendation"] = "equal"
             elif net_usd > mine_usd:
                 out["lender_recommendation"] = "lease"
@@ -787,16 +832,18 @@ def build_decision_matrix(
 
     Returns:
       - rows: pool / solo / lease dicts with only the fields the panel needs
-      - best_option: 'pool' | 'lease' | 'solo' | 'insufficient'
+      - best_option: 'pool' | 'lease' | 'insufficient'
       - recommendation: human string
       - breakeven_cost_per_th_day (pass-through)
 
-    Deterministic tie-break: pool vs lease are both deterministic USD/day
-    figures, so the higher wins; solo is probabilistic (expected time) and is
-    only crowned when neither pool nor lease has a usable number.
+    Compare pool and lease only when both modeled USD/day figures exist.
+    Solo probability and model mean are informative, not a comparable payout
+    or a deadline. A single available strategy cannot be declared a winner.
     """
 
     def _num(v):
+        if isinstance(v, bool):
+            return None
         try:
             f = float(v)
             return f if (f == f and f != float("inf") and f != float("-inf")) else None
@@ -806,7 +853,11 @@ def build_decision_matrix(
     pool_usd = _num(pool_net_usd_per_day)
     lease_usd = _num(lender_net_usd_per_day)
     exp_days = _num(solo_expected_time_days)
+    if exp_days is not None and exp_days < 0:
+        exp_days = None
     p_year = _num(solo_p_year_pct)
+    if p_year is not None and not 0 <= p_year <= 100:
+        p_year = None
     be = _num(breakeven_cost_per_th_day)
     rec = str(lender_recommendation or "").lower()
 
@@ -816,7 +867,7 @@ def build_decision_matrix(
             "net_btc_per_day": None,  # filled by caller when available
         },
         "solo": {
-            "expected_time_days": round(exp_days, 1) if exp_days else None,
+            "expected_time_days": round(exp_days, 1) if exp_days is not None else None,
             "p_year_pct": round(p_year, 4) if p_year is not None else None,
         },
         "lease": {
@@ -827,26 +878,20 @@ def build_decision_matrix(
 
     if pool_usd is not None and lease_usd is not None:
         best = "pool" if pool_usd >= lease_usd else "lease"
-    elif pool_usd is not None:
-        best = "pool"
-    elif lease_usd is not None:
-        best = "lease"
-    elif exp_days is not None:
-        best = "solo"
     else:
         best = "insufficient"
 
     if best == "pool":
-        recommendation = "Pool mining nets the highest deterministic USD/day."
+        recommendation = "Pool has the higher modeled net USD/day among pool and lease. Actual earnings may vary."
     elif best == "lease":
-        recommendation = "Renting out hashrate (lease) nets more than pool mining."
-    elif best == "solo":
-        recommendation = (
-            "Only probabilistic data available — expected %.0f days to a block."
-            % exp_days
-        )
+        recommendation = "Lease has the higher modeled net USD/day among pool and lease. Actual earnings may vary."
     else:
         recommendation = "Not enough data to compare strategies yet."
+        if exp_days is not None:
+            recommendation += (
+                " Solo model mean: %.1f days; not a deadline or guaranteed payout."
+                % exp_days
+            )
 
     return {
         "rows": rows,

@@ -6,6 +6,8 @@ our source-derived virtual ground truth. It cannot certify physical accuracy.
 
 from __future__ import annotations
 
+import random
+
 
 _FIELDS = (
     "ip_address",
@@ -15,6 +17,16 @@ _FIELDS = (
     "shares_accepted",
     "uptime_seconds",
 )
+
+
+def seeded_profile_uptime(seed: int) -> int:
+    """Return a reproducible synthetic uptime for one E2E profile.
+
+    This is fixture variation only, not an ASIC runtime or physics model.
+    """
+    if isinstance(seed, bool) or not isinstance(seed, int):
+        raise TypeError("seed must be an integer")
+    return 7000 + random.Random(seed).randrange(1000)
 
 
 def assert_fleet_matches_ground_truth(expected: dict, observed: dict) -> None:

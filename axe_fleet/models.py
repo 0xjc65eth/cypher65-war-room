@@ -9,11 +9,11 @@ import math
 
 
 _AGENT_TELEMETRY_NUMERIC_FIELDS = {
-    "hashrate_hs": (0, None, False),
-    "expected_hashrate": (0, None, False),
-    "hashrate_1m": (0, None, False),
-    "hashrate_10m": (0, None, False),
-    "hashrate_1h": (0, None, False),
+    "hashrate_hs": (0, 1e18, False),
+    "expected_hashrate": (0, 1e18, False),
+    "hashrate_1m": (0, 1e18, False),
+    "hashrate_10m": (0, 1e18, False),
+    "hashrate_1h": (0, 1e18, False),
     "temperature": (-40, 150, False),
     "temp_asic": (-40, 150, False),
     "temp_vreg": (-40, 150, False),
@@ -84,8 +84,6 @@ _AGENT_TELEMETRY_BOOLEAN_FIELDS = {"mining_paused"}
 
 
 def _is_finite_number(value):
-    if isinstance(value, int) and not isinstance(value, bool):
-        return True
     try:
         return math.isfinite(value)
     except (TypeError, OverflowError):
@@ -139,8 +137,9 @@ def validate_agent_telemetry(payload: dict) -> list[dict]:
 
     Empty objects are legal liveness heartbeats. A measured sample must carry
     ``hashrate_hs``; optional sensors may be omitted or ``None`` when firmware
-    does not expose them. Hashrate has no global upper bound because valid
-    device and aggregate units vary; finite non-negative values are accepted.
+    does not expose them. Hashrate fields are bounded at 1 EH/s per device: a
+    deliberately generous ceiling that leaves room for future ASICs while
+    rejecting values several orders beyond any single-device reading.
     """
     if not isinstance(payload, dict):
         return [{"field": "telemetry", "reason": "must_be_object"}]
@@ -148,6 +147,26 @@ def validate_agent_telemetry(payload: dict) -> list[dict]:
         return []
 
     errors = []
+    source_invalid_fields = payload.get("_invalid_fields")
+    if source_invalid_fields is not None:
+        if (
+            not isinstance(source_invalid_fields, list)
+            or len(source_invalid_fields) > 32
+        ):
+            errors.append({"field": "telemetry", "reason": "invalid_source_metadata"})
+        else:
+            for field in source_invalid_fields:
+                if not isinstance(field, str) or not field:
+                    errors.append(
+                        {"field": "telemetry", "reason": "invalid_source_metadata"}
+                    )
+                    continue
+                errors.append(
+                    {
+                        "field": _valid_field_name(field),
+                        "reason": "invalid_source_value",
+                    }
+                )
     if "hashrate_hs" not in payload or payload.get("hashrate_hs") is None:
         errors.append({"field": "hashrate_hs", "reason": "required_for_sample"})
 
@@ -215,8 +234,7 @@ def validate_agent_telemetry(payload: dict) -> list[dict]:
     # producing duplicate audit fields/reasons.
     unique_errors = {(error["field"], error["reason"]) for error in errors}
     return [
-        {"field": field, "reason": reason}
-        for field, reason in sorted(unique_errors)
+        {"field": field, "reason": reason} for field, reason in sorted(unique_errors)
     ]
 
 

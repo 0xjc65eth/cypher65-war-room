@@ -542,11 +542,11 @@
 
   // → domínio Automations/Alerts/Auto-Pilot/Decision Matrix extraído para `static/src/41-automations.js` (RFC 478, Issue 540)
 
-  function _initAiChat() {
-    const input = document.getElementById('ai-input');
-    const send = document.getElementById('ai-send');
-    const clear = document.getElementById('ai-clear');
-    const messages = document.getElementById('ai-messages');
+  function _initAiChat(suffix = '') {
+    const input = document.getElementById('ai-input' + suffix);
+    const send = document.getElementById('ai-send' + suffix);
+    const clear = document.getElementById('ai-clear' + suffix);
+    const messages = document.getElementById('ai-messages' + suffix);
     if (!input || !send || !messages) return;
 
     const responses = {
@@ -704,7 +704,8 @@
           typingDiv.remove();
           const response = getResponse(text);
           const formatted = response.replace(/\*\*(.*?)\*\*/g, '<strong style="color:var(--accent-btc)">$1</strong>');
-          addMessage('assistant', formatted);
+          const age = document.getElementById('topbar-freshness')?.textContent || 'age unavailable';
+          addMessage('assistant', '<strong>Local guide · no provider response.</strong> Snapshot context: ' + escapeHtml(age) + '.<br>' + formatted);
         }
       } finally {
         send.disabled = false;
@@ -713,7 +714,7 @@
 
     send.addEventListener('click', handleSend);
     input.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); } });
-    clear.addEventListener('click', () => {
+    clear?.addEventListener('click', () => {
       messages.innerHTML = '';
       addMessage('assistant', 'Chat cleared. Ask me anything about your mining operation.');
     });
@@ -1007,8 +1008,9 @@
   dom.openExports?.addEventListener('click', openExportModal);
 
   // ── Keyboard shortcuts ──
+  dom.refreshNow?.addEventListener('click', fetchSnapshot);
   document.addEventListener('keydown', (e) => {
-    const anyModalOpen = () => !!document.querySelector('.modal-overlay.modal--open');
+    const anyModalOpen = () => !!document.querySelector('.modal-overlay.modal--open, dialog[open]');
     if (e.key.toLowerCase() === 'r' && !anyModalOpen() && document.activeElement.tagName !== 'INPUT' && !e.metaKey && !e.ctrlKey) fetchSnapshot();
     else if (e.key === 'Escape') { closeWalletModal(); closeSettingsModal(); closeExportModal(); }
     else if (e.key.toLowerCase() === 'w' && !anyModalOpen() && document.activeElement.tagName !== 'INPUT' && !e.metaKey && !e.ctrlKey) {
@@ -1155,15 +1157,14 @@
               return;
             }
             if (msg && msg.ts) {
-              _lastSnapshot = msg;
-              render(msg);
+              if (!applyFullSnapshot(msg)) return;
               var now = Date.now();
               if (now - sseLastFleetFetch > 10000) {
                 sseLastFleetFetch = now;
                 fetchAxeFleet();
               }
             }
-          } catch(err) { /* ignore parse errors */ }
+          } catch(err) { logMessage('SSE', 'Invalid snapshot message', 'WARN'); }
         };
         es.onerror = function() {
           var now = Date.now();
@@ -1197,7 +1198,8 @@
 
   // MODULE_MAP — módulo → título/descrição do header
   const MODULE_MAP = {
-    'dashboard':   { title: 'DASHBOARD',     desc: 'Visão geral — pool, worker e rede' },
+    'dashboard':   { title: 'OPERAÇÃO', desc: 'Fontes, equipamentos e workers' },
+    'analysis': { title: 'ANÁLISE', desc: 'Rede Bitcoin, pool e cenários' },
     'wallet':      { title: 'WALLET',        desc: 'Conexão e status da wallet' },
     'fleet':       { title: 'FLEET',         desc: 'Visão dos miners' },
     'live':        { title: 'LIVE MINING',   desc: 'Dados ao vivo' },
@@ -1347,7 +1349,8 @@
   let _moduleNavToken = 0;
   function activateModule(name) {
     document.body.classList.add('module-mode');
-    const reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    // A compact console is used repeatedly: module switches are immediate.
+    const reduceMotion = document.body.classList.contains('terminal-ui') || (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
     const token = ++_moduleNavToken;
     if (!reduceMotion) {
       let leavingCount = 0;
@@ -1370,6 +1373,7 @@
     _doActivateModule(name, reduceMotion);
   }
   function _doActivateModule(name, reduceMotion) {
+    document.body.dataset.activeModule = name;
     // Mostra/esconde cada painel com data-module — MAS nunca os links da
     // sidebar (eles também têm data-module; escondê-los quebraria a navegação)
     document.querySelectorAll('[data-module]').forEach(function(el) {
@@ -1689,13 +1693,6 @@
     }
   };
 
-  // ── Initialize Institutional UI after DOM ready ──
-  if (document.readyState !== 'loading') {
-    InstitutionalUI.init();
-  } else {
-    document.addEventListener('DOMContentLoaded', function() { InstitutionalUI.init(); });
-  }
-
   // ════════════════════════════════════════════════════════════════════════
   // INSTITUTIONAL DASHBOARD · CORE DATA BINDER
   // ════════════════════════════════════════════════════════════════════════
@@ -1726,9 +1723,7 @@
     updateTopbar: function(net, fees, btc, alerts) {
       var btcPrice = btc && btc.usd ? '$' + Number(btc.usd).toLocaleString() : '--';
       this.setText('n-btc-usd', btcPrice);
-      this.setText('n-diff', net ? this.formatHashrate(net.difficulty) : '--');
-      this.setText('n-hashrate', net ? this.formatHashrate(net.hashrate) : '--');
-      this.setText('n-height', net && net.height ? '#' + net.height : '--');
+      // Network metrics belong to renderNetwork(), including stale badges.
       this.setText('fee-fastest', fees && fees.fastestFee != null ? fees.fastestFee + ' sat/vB' : '--');
       var alertBadge = document.getElementById('alerts-count-badge');
       if (alertBadge && alerts) {
@@ -1742,8 +1737,6 @@
       // (m-hashrate, m-state, hc-*, hero grid). The hero values are owned by
       // renderHero()/renderHostCore() (called by the original render).
       // p-hashrate, p-workers handled by renderPool() — do not duplicate
-      this.setText('p-high-diff', pool ? String(pool.highestDifficulty || '--') : '--');
-      this.setText('hc-network', pool ? String(pool.hashrate || '--') : '--');
       if (profit) {
         this.setText('p-btc-day', profit.net_btc_per_day_pool != null ? profit.net_btc_per_day_pool.toFixed(6) + ' BTC' : '--');
         var fiatDay = profit.fiat_per_day_pool ? profit.fiat_per_day_pool.USD : null;
@@ -1780,15 +1773,29 @@
       var panel = document.getElementById('off-canvas-ai');
       var closeBtn = document.getElementById('off-canvas-ai-close');
       if (!toggleBtn || !panel) return;
+      _initAiChat('-offcanvas');
       toggleBtn.addEventListener('click', function(e) {
         e.stopPropagation();
         panel.classList.toggle('active');
+        if (panel.classList.contains('active')) {
+          var input = document.getElementById('ai-input-offcanvas');
+          requestAnimationFrame(function() {
+            if (input && panel.classList.contains('active')) input.focus({preventScroll: true});
+          });
+        } else { toggleBtn.focus(); }
       });
       if (closeBtn) {
         closeBtn.addEventListener('click', function() {
           panel.classList.remove('active');
+          toggleBtn.focus();
         });
       }
+      panel.addEventListener('keydown', function(e) {
+        if (e.key === 'Escape' && panel.classList.contains('active')) {
+          panel.classList.remove('active');
+          toggleBtn.focus();
+        }
+      });
       document.addEventListener('click', function(e) {
         if (panel.classList.contains('active') && !panel.contains(e.target) && !toggleBtn.contains(e.target)) {
           panel.classList.remove('active');
@@ -1796,9 +1803,17 @@
       });
     };
 
-    // Note: init() is called by existing DOMContentLoaded listener
-    // (which fires after this sync extension, so the overridden methods are active)
-  }    // ── Wire DashboardCore into the existing render cycle ──
+  }
+
+  // Bind only after the drawer extension exists. Deferred/cached scripts
+  // can run with an already-ready DOM; initializing above skipped its binding.
+  if (document.readyState !== 'loading') {
+    InstitutionalUI.init();
+  } else {
+    document.addEventListener('DOMContentLoaded', function() { InstitutionalUI.init(); });
+  }
+
+  // ── Wire DashboardCore into the existing render cycle ──
     var _origRender = render;
     render = function(snap) {
       _origRender(snap);

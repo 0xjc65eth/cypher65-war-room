@@ -28,6 +28,7 @@ Run:  python3 agent.py        (stdlib only — no pip install needed)
 """
 
 import json
+import ipaddress
 import logging
 import math
 import os
@@ -35,6 +36,7 @@ import re
 import socket
 import time
 import threading
+import uuid
 import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -61,6 +63,8 @@ TCP_TIMEOUT = 1.0  # per cgminer TCP probe
 SCAN_WORKERS = 64
 MAX_HOSTS = 1024
 RESCAN_EVERY = 10  # full LAN re-scan every N poll cycles (new miners)
+HEARTBEAT_INTERVAL = 30  # independent of polling/scanning; server TTL is 90s
+HEARTBEAT_TIMEOUT = 3.0
 _LAST_SCAN_REPORT = {}
 
 # Protocol ports. Defaults match real hardware (AxeOS HTTP :80, cgminer
@@ -172,6 +176,23 @@ def _post_retry(path, payload, timeout=10.0, attempts=4):
             time.sleep(delay)
             delay = min(delay * 2, 30)
     return last
+
+
+def _build_telemetry_event(ip, telemetry):
+    """Build a timestamped sample with one ID reused by all retry attempts."""
+    sample = dict(telemetry or {})
+    if not sample.get("ts"):
+        sample["ts"] = int(time.time())
+    return {"ip": ip, "telemetry": sample, "idempotency_key": uuid.uuid4().hex}
+
+
+def _push_telemetry_event(event):
+    """Push one sample and retry transient failures using the same event ID."""
+    timeout = 3.0 if not event["telemetry"] else 10.0
+    code, response = _post("/api/agent/telemetry", event, timeout=timeout)
+    if code in (0, 429, 500, 502, 503):
+        return _post_retry("/api/agent/telemetry", event, timeout=timeout, attempts=3)
+    return code, response
 
 
 def _get_json(url, timeout=HTTP_TIMEOUT):
@@ -377,6 +398,34 @@ def _probe_axeos_payload(info):
     return any(key in info for key in _AXEOS_MARKERS)
 
 
+def _axeos_hashrate_hs(info):
+    """Normalize an AxeOS hashrate without turning invalid input into zero.
+
+    The standalone agent mirrors the shared contract because its installer is
+    intentionally stdlib-only. Official camelCase ``hashRate`` values below
+    1e6 are GH/s; legacy lowercase ``hashrate`` values are already H/s.
+    """
+    if not isinstance(info, dict):
+        return None
+    if info.get("hashRate") is not None:
+        raw = info.get("hashRate")
+        camel_hashrate = True
+    elif info.get("hashrate") is not None:
+        raw = info.get("hashrate")
+        camel_hashrate = False
+    else:
+        return None
+
+    number = _finite_number(raw)
+    if number is None or number < 0 or number > 1e18:
+        return None
+    if camel_hashrate and 0 < number < 1e6:
+        number *= 1e9
+        if not math.isfinite(number) or number > 1e18:
+            return None
+    return int(number)
+
+
 def _identity_from_axeos(ip, info):
     """Discovery dict from a validated ESP-Miner info payload."""
     tel = {}
@@ -387,20 +436,10 @@ def _identity_from_axeos(ip, info):
             tel = {}
     hr = tel.get("hashrate_hs")
     if hr is None:
-        raw = info.get("hashRate")
-        camel = raw is not None
-        if raw is None:
-            raw = info.get("hashrate")
-        try:
-            n = float(raw)
-        except (TypeError, ValueError):
-            n = None
-        if n is None:
-            hr = 0
-        elif camel and 0 < abs(n) < 1e6:
-            hr = int(n * 1e9)
-        else:
-            hr = int(n or 0)
+        hr = _axeos_hashrate_hs(info)
+    else:
+        number = _finite_number(hr)
+        hr = int(number) if number is not None and 0 <= number <= 1e18 else None
     return {
         "ip": ip,
         "type": "bitaxe",
@@ -415,7 +454,7 @@ def _identity_from_axeos(ip, info):
         "version": str(tel.get("version") or info.get("version") or ""),
         "hostname": str(tel.get("hostname") or info.get("hostname") or ""),
         "mac": str(tel.get("mac") or info.get("macAddr") or info.get("mac") or ""),
-        "hashrate_hs": int(hr or 0),
+        "hashrate_hs": hr,
     }
 
 
@@ -500,24 +539,29 @@ def _probe_host(ip):
     if isinstance(rest, dict):
         miner = rest.get("miner_stats") or {}
         pool = rest.get("pool_stats") or {}
-        try:
-            ghps = float(miner.get("hashrate_avg") or miner.get("hashrate_ghps") or 0)
-        except (TypeError, ValueError):
-            ghps = 0.0
-        return {
-            "ip": ip,
-            "type": "braiins",
-            "model": str(
-                miner.get("model") or miner.get("miner_type") or "Braiins OS+"
-            ),
-            "firmware": "Braiins OS+",
-            "version": str(miner.get("version") or miner.get("firmware_version") or ""),
-            "hostname": "",
-            "mac": "",
-            "hashrate_hs": int(ghps * 1e9),
-            "pool_url": str(pool.get("url") or ""),
-            "pool_user": str(pool.get("user") or ""),
-        }
+        ghps = _finite_number(miner.get("hashrate_avg"))
+        if ghps is None:
+            ghps = _finite_number(miner.get("hashrate_ghps"))
+        hashrate_hs = ghps * 1e9 if ghps is not None else None
+        if (
+            hashrate_hs is not None
+            and math.isfinite(hashrate_hs)
+            and 0 <= hashrate_hs <= 1e18
+        ):
+            return {
+                "ip": ip,
+                "type": "braiins",
+                "model": str(
+                    miner.get("model") or miner.get("miner_type") or "Braiins OS+"
+                ),
+                "firmware": "Braiins OS+",
+                "version": str(miner.get("version") or miner.get("firmware_version") or ""),
+                "hostname": "",
+                "mac": "",
+                "hashrate_hs": int(hashrate_hs),
+                "pool_url": str(pool.get("url") or ""),
+                "pool_user": str(pool.get("user") or ""),
+            }
     ver = _probe_cgminer(ip)
     if ver and ver.get("STATUS"):
         model = ""
@@ -692,12 +736,25 @@ def _braiins_rest_telemetry(ip):
     if ghps is None:
         ghps = _num(miner.get("hashrate_ghps"))
     if ghps is None:
-        return {}
+        return {"_invalid_fields": ["hashrate_hs"]}
     hashrate_hs = ghps * 1e9
-    if not math.isfinite(hashrate_hs):
-        return {}
+    if not math.isfinite(hashrate_hs) or hashrate_hs > 1e18:
+        return {"_invalid_fields": ["hashrate_hs"]}
     hr = int(hashrate_hs)
     power_w = _num(power.get("power_avg") or power.get("power_w"))
+    invalid_fields = []
+    numeric_sources = {
+        "temperature": (miner, "board_temp_avg"),
+        "temp_asic": (miner, "chip_temp_avg"),
+        "power_watts": (power, "power_avg"),
+        "shares_accepted": (miner, "accepted_shares"),
+        "shares_rejected": (miner, "rejected_shares"),
+        "shares_stale": (miner, "stale_shares"),
+        "uptime_seconds": (miner, "uptime_s"),
+    }
+    for field, (source, key) in numeric_sources.items():
+        if source.get(key) is not None and _num(source.get(key)) is None:
+            invalid_fields.append(field)
     tel = {
         "hashrate_hs": hr,
         "temperature": _num(miner.get("board_temp_avg")),
@@ -705,22 +762,18 @@ def _braiins_rest_telemetry(ip):
         "fan_rpm": None,  # REST exposes fans under /api/v1/cooling/state
         "power_watts": power_w,
         "best_diff": _best_diff(miner.get("best_share")),
-        "shares_accepted": _num(
-            miner.get("accepted_shares") or pool.get("accepted"), int
-        )
-        or 0,
-        "shares_rejected": _num(
-            miner.get("rejected_shares") or pool.get("rejected"), int
-        )
-        or 0,
-        "shares_stale": _num(miner.get("stale_shares") or pool.get("stale"), int) or 0,
-        "uptime_seconds": _num(miner.get("uptime_s") or miner.get("uptime"), int) or 0,
+        "shares_accepted": _num(miner.get("accepted_shares") or pool.get("accepted")),
+        "shares_rejected": _num(miner.get("rejected_shares") or pool.get("rejected")),
+        "shares_stale": _num(miner.get("stale_shares") or pool.get("stale")),
+        "uptime_seconds": _num(miner.get("uptime_s") or miner.get("uptime")),
         "pool_url": str(pool.get("url") or ""),
         "pool_user": str(pool.get("user") or ""),
         "model": str(miner.get("model") or miner.get("miner_type") or "Braiins OS+"),
     }
     if hr and power_w:
         tel["efficiency_jth"] = round(power_w / (hr / 1e12), 2)
+    if invalid_fields:
+        tel["_invalid_fields"] = sorted(set(invalid_fields))
     return tel
 
 
@@ -734,30 +787,25 @@ def _poll_telemetry(dev):
         info = _probe_axeos(ip)
         if not isinstance(info, dict):
             return {}
+        tel = {}
         if _extract_axeos_telemetry is not None:
             try:            tel = _extract_axeos_telemetry(info)
             except Exception:
-                tel = {}        if tel:
-            raw_hashrate = info.get("hashRate", info.get("hashrate"))
-            if raw_hashrate is not None and _finite_number(raw_hashrate) is None:
-                tel["hashrate_hs"] = None
-                tel["_invalid_fields"] = sorted(
-                    set(tel.get("_invalid_fields") or []) | {"hashrate_hs"}
-                )
+                tel = {}
+        if tel:
             log.info(
-
-                    "[FLEET_TELEMETRY] ip=%s hashrate=%s temp=%s accepted=%s "
-                    "rejected=%s best_diff=%s",
-                    ip,
-                    tel.get("hashrate_hs"),
-                    tel.get("temperature"),
-                    tel.get("shares_accepted"),
-                    tel.get("shares_rejected"),
-                    tel.get("best_diff"),
-                )
-                return tel
+                "[FLEET_TELEMETRY] ip=%s hashrate=%s temp=%s accepted=%s "
+                "rejected=%s best_diff=%s",
+                ip,
+                tel.get("hashrate_hs"),
+                tel.get("temperature"),
+                tel.get("shares_accepted"),
+                tel.get("shares_rejected"),
+                tel.get("best_diff"),
+            )
+            return tel
         ident = _identity_from_axeos(ip, info)
-        return {
+        fallback_tel = {
             "hashrate_hs": ident.get("hashrate_hs"),
             "temperature": _finite_number(info.get("temp")),
             "best_diff": _best_diff(info.get("bestDiff")),
@@ -771,6 +819,22 @@ def _poll_telemetry(dev):
             "model": ident.get("model") or "Bitaxe",
             "mining_paused": info.get("miningPaused") is True,
         }
+        invalid_fields = []
+        has_hashrate_field = any(key in info for key in ("hashRate", "hashrate"))
+        if has_hashrate_field and fallback_tel["hashrate_hs"] is None:
+            invalid_fields.append("hashrate_hs")
+        for field, keys in {
+            "temperature": ("temp", "temperature"),
+            "shares_accepted": ("sharesAccepted",),
+            "shares_rejected": ("sharesRejected",),
+            "uptime_seconds": ("uptimeSeconds", "uptime"),
+        }.items():
+            raw = next((info.get(key) for key in keys if info.get(key) is not None), None)
+            if raw is not None and _finite_number(raw) is None:
+                invalid_fields.append(field)
+        if invalid_fields:
+            fallback_tel["_invalid_fields"] = sorted(set(invalid_fields))
+        return fallback_tel
     if dev.get("type") == "braiins":
         # Braiins OS+ REST carries the full telemetry. When the REST API does
         # not answer (older firmware, /api/v1 disabled) fall through to the
@@ -800,17 +864,29 @@ def _poll_telemetry(dev):
         )
         if not isinstance(s, dict):
             s = {}
-        raw_hashrate = s.get("GHS 5s", s.get("GHS av", 0))
-        ghs = float(raw_hashrate or 0)
-        if not math.isfinite(ghs) or ghs < 0:
-            invalid_fields.append("hashrate_hs")
-            ghs = 0
+        raw_ghs = s.get("GHS 5s")
+        if raw_ghs is None:
+            raw_ghs = s.get("GHS av")
+        ghs = _finite_number(raw_ghs)
+        if ghs is None or ghs < 0 or ghs * 1e9 > 1e18:
+            return {"_invalid_fields": ["hashrate_hs"]}
+        hashrate_hs = ghs * 1e9
+        if not math.isfinite(hashrate_hs):
+            return {"_invalid_fields": ["hashrate_hs"]}
 
         temperature = None
         fan_rpm = None
+        invalid_fields = []
         stats = _cgminer_cmd(ip, "stats")
         _st = (stats or {}).get("STATS") or []
         if len(_st) > 1 and isinstance(_st[1], dict):
+            for field, keys in {
+                "temperature": ("temp2_0", "temp"),
+                "fan_rpm": ("fan1", "fan2"),
+            }.items():
+                raw = next((_st[1].get(key) for key in keys if _st[1].get(key) is not None), None)
+                if raw is not None and _finite_number(raw) is None:
+                    invalid_fields.append(field)
             temperature = _finite_number(
                 _st[1].get("temp2_0") or _st[1].get("temp")
             )
@@ -825,20 +901,35 @@ def _poll_telemetry(dev):
                 pool_url = str(_p.get("URL") or "")
                 pool_user = str(_p.get("User") or "")
 
-        return {
-            "hashrate_hs": int(ghs * 1e9),
+        for field, key in {
+            "shares_accepted": "Accepted",
+            "shares_rejected": "Rejected",
+            "uptime_seconds": "Elapsed",
+        }.items():
+            raw = s.get(key)
+            number = _finite_number(raw) if raw is not None else None
+            if raw is not None and (
+                number is None or number < 0 or not number.is_integer()
+            ):
+                invalid_fields.append(field)
+
+        telemetry = {
+            "hashrate_hs": int(hashrate_hs),
             "temperature": temperature,
             "fan_rpm": fan_rpm,
             "power_watts": None,
             "best_diff": _best_diff(s.get("Best Share")),
-            "shares_accepted": int(s.get("Accepted", 0)),
-            "shares_rejected": int(s.get("Rejected", 0)),
-            "uptime_seconds": int(s.get("Elapsed", 0)),
+            "shares_accepted": int(_finite_number(s.get("Accepted"))) if _finite_number(s.get("Accepted")) is not None else None,
+            "shares_rejected": int(_finite_number(s.get("Rejected"))) if _finite_number(s.get("Rejected")) is not None else None,
+            "uptime_seconds": int(_finite_number(s.get("Elapsed"))) if _finite_number(s.get("Elapsed")) is not None else None,
             "pool_url": pool_url,
             "pool_user": pool_user,
             "model": dev.get("model") or "cgminer",
         }
-    except (ValueError, TypeError, AttributeError, IndexError):
+        if invalid_fields:
+            telemetry["_invalid_fields"] = sorted(set(invalid_fields))
+        return telemetry
+    except (ValueError, TypeError, AttributeError, IndexError, OverflowError):
         return {}
 
 
@@ -860,9 +951,24 @@ def _exec_command(cmd, known=None):
     dev_ip = cmd.get("ip_address") or cmd.get("device_ip") or cmd.get("device_id")
     name = cmd.get("command")
     if name == "probe":
-        target = (cmd.get("params") or {}).get("ip") or dev_ip
-        if not target or target == "_probe":
-            return False, "probe ip missing"
+        params = cmd.get("params")
+        target = params.get("ip") if isinstance(params, dict) else dev_ip
+        if not isinstance(target, str) or not target or target != target.strip():
+            return False, "probe target is invalid"
+        try:
+            address = ipaddress.ip_address(target)
+        except (TypeError, ValueError):
+            return False, "probe target is invalid"
+        allowed_networks = (
+            ipaddress.ip_network("10.0.0.0/8"),
+            ipaddress.ip_network("172.16.0.0/12"),
+            ipaddress.ip_network("192.168.0.0/16"),
+            ipaddress.ip_network("100.64.0.0/10"),
+        )
+        if address.version != 4 or not any(
+            address in network for network in allowed_networks
+        ):
+            return False, "probe target is outside private IPv4 scope"
         probed = _probe_host(target)
         if not probed:
             return False, "not a miner"
@@ -919,12 +1025,41 @@ def _exec_command(cmd, known=None):
 # ── Main loop ────────────────────────────────────────────────────────────
 
 
+def _heartbeat_loop(stop):
+    """Send presence only, even while a scan or device poll is slow.
+
+    Failed requests retry on the next bounded interval, without a retry burst.
+    No scan report or telemetry is replayed by this worker.
+    """
+    while not stop.is_set():
+        try:
+            _post("/api/agent/heartbeat", {}, timeout=HEARTBEAT_TIMEOUT)
+        except Exception as exc:
+            log.warning("[FLEET_HEARTBEAT] failed error_type=%s", type(exc).__name__)
+        if stop.wait(HEARTBEAT_INTERVAL):
+            break
+
+
 def main():
     if not AGENT_TOKEN:
         log.error(
             "CYPHER65_AGENT_TOKEN não definido — gere em Painel → Fleet → Connect Agent"
         )
         raise SystemExit(2)
+    stop = threading.Event()
+    heartbeat = threading.Thread(
+        target=_heartbeat_loop, args=(stop,), name="agent-heartbeat", daemon=True
+    )
+    heartbeat.start()
+    try:
+        _run_main()
+    finally:
+        stop.set()
+        heartbeat.join(timeout=HEARTBEAT_TIMEOUT + 1)
+
+
+def _run_main():
+    """Run discovery and telemetry independently from agent presence."""
     log.info("CYPHER65 agent — server=%s poll=%ds", SERVER_URL, POLL_INTERVAL)
 
     # 1 · Register discovered devices with the cloud dashboard.
@@ -995,23 +1130,13 @@ def main():
             if ip in blocked_ips or _identity_unresolved(dev):
                 continue
             tel = _poll_telemetry(dev)
+            telemetry_event = _build_telemetry_event(ip, tel)
             # Push UNCONDITIONALLY: `telemetry: {}` is legal presence evidence,
             # not proof of device health. The server preserves/degrades status
             # according to the last real reading. Empty heartbeats
             # use a shorter timeout so unreachable devices can't stall the
             # poll loop on a cloud hiccup.
-            code, resp = _post(
-                "/api/agent/telemetry",
-                {"ip": ip, "telemetry": tel},
-                timeout=3.0 if not tel else 10.0,
-            )
-            if code in (0, 429, 500, 502, 503):
-                code, resp = _post_retry(
-                    "/api/agent/telemetry",
-                    {"ip": ip, "telemetry": tel},
-                    timeout=3.0 if not tel else 10.0,
-                    attempts=3,
-                )
+            code, resp = _push_telemetry_event(telemetry_event)
             if code == 410 and resp.get("removed"):
                 # Operator removed this device on the dashboard — drop it from
                 # the poll set so we stop pushing a device that can never come

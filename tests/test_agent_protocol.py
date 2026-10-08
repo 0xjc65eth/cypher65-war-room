@@ -272,6 +272,17 @@ class TestDiscovery:
 
 
 class TestTelemetry:
+    def test_cgminer_infinite_hashrate_is_reported_not_raised(self, monkeypatch):
+        monkeypatch.setattr(
+            agent,
+            "_cgminer_cmd",
+            lambda ip, command: {"SUMMARY": [{"GHS av": float("inf")}]},
+        )
+
+        tel = agent._poll_telemetry({"ip": "127.0.0.1", "type": "cgminer"})
+
+        assert tel == {"_invalid_fields": ["hashrate_hs"]}
+
     def test_cgminer_poll_includes_stats_temps_and_pools(
         self, monkeypatch, cgminer_mock
     ):
@@ -337,6 +348,54 @@ class TestTelemetry:
 
 
 class TestExecCommand:
+    @pytest.mark.parametrize(
+        "target",
+        [
+            "127.0.0.1",
+            "169.254.169.254",
+            "8.8.8.8",
+            "::1",
+            "192.168.1.1:80",
+            "0.1.2.3",
+            "192.0.2.1",
+            "198.18.0.1",
+            "203.0.113.1",
+            123,
+        ],
+    )
+    def test_probe_rejects_targets_outside_private_ipv4_scope(
+        self, monkeypatch, target
+    ):
+        from unittest.mock import Mock
+
+        probe = Mock()
+        monkeypatch.setattr(agent, "_probe_host", probe)
+
+        ok, result = agent._exec_command(
+            {"device_id": "_probe", "command": "probe", "params": {"ip": target}},
+            known={},
+        )
+
+        assert ok is False
+        assert "invalid" in result or "scope" in result
+        probe.assert_not_called()
+
+    @pytest.mark.parametrize("params", [None, [], {"ip": 123}, {"ip": " 192.168.1.2"}])
+    def test_probe_rejects_malformed_parameters(self, monkeypatch, params):
+        from unittest.mock import Mock
+
+        probe = Mock()
+        monkeypatch.setattr(agent, "_probe_host", probe)
+
+        ok, result = agent._exec_command(
+            {"device_id": "_probe", "command": "probe", "params": params},
+            known={},
+        )
+
+        assert ok is False
+        assert "invalid" in result
+        probe.assert_not_called()
+
     def test_axeos_restart_http(self, monkeypatch, axeos_mock):
         monkeypatch.setattr(agent, "AXEOS_PORT", axeos_mock)
         ok, result = agent._exec_command(

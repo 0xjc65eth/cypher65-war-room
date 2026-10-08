@@ -129,6 +129,7 @@
       if (!r.ok) throw new Error('fleet health failed (' + r.status + ')');
       const data = await r.json();
       _operationalFleetData = data;
+      _operationalFleetReadAt = Date.now() / 1000;
       _operationalFleetError = false;
       renderAxeFleet(data);
       renderOperationalOverview(_lastSnapshot || {}, data, false);
@@ -511,6 +512,93 @@
     });
   }
 
+  // Native <dialog>.showModal() provides browser-managed focus trapping and
+  // focus restoration that window.confirm() does not expose to DOM-based QA.
+  // Keep this keyboard-first interaction instantaneous; it needs no motion.
+  var _axeCommandConfirmationOpen = false;
+  function confirmAxeCommand(command, returnFocus) {
+    if (_axeCommandConfirmationOpen) return Promise.resolve(false);
+    _axeCommandConfirmationOpen = true;
+    var commandLabels = {
+      restart: 'reinício',
+      pause: 'pausa',
+      resume: 'retomada',
+      identify: 'identificação',
+    };
+    var actionLabel = commandLabels[command] || command;
+
+    var dialog = document.createElement('dialog');
+    dialog.className = 'axe-command-dialog';
+    dialog.setAttribute('aria-labelledby', 'axe-command-dialog-title');
+    dialog.setAttribute('aria-describedby', 'axe-command-dialog-description');
+
+    var title = document.createElement('h2');
+    title.id = 'axe-command-dialog-title';
+    title.textContent = 'Confirmar comando no minerador';
+
+    var description = document.createElement('p');
+    description.id = 'axe-command-dialog-description';
+    description.textContent = command === 'restart'
+      ? 'Reiniciar este minerador? Ele ficará offline por cerca de 30 segundos.'
+      : command === 'pause'
+        ? 'Pausar a mineração neste dispositivo? Use Retomar para reiniciar.'
+        : 'Executar ' + actionLabel + ' neste minerador?';
+
+    var actions = document.createElement('div');
+    actions.className = 'axe-command-dialog__actions';
+    var cancel = document.createElement('button');
+    cancel.type = 'button';
+    cancel.className = 'btn';
+    cancel.textContent = 'Cancelar';
+    cancel.autofocus = true;
+    var confirm = document.createElement('button');
+    confirm.type = 'button';
+    confirm.className = 'btn btn--danger';
+    confirm.textContent = 'Confirmar ' + actionLabel;
+    actions.append(cancel, confirm);
+    dialog.append(title, description, actions);
+
+    return new Promise(function(resolve) {
+      var settled = false;
+      function finish(accepted) {
+        if (settled) return;
+        settled = true;
+        _axeCommandConfirmationOpen = false;
+        if (dialog.open) dialog.close();
+        dialog.remove();
+        if (returnFocus && returnFocus.isConnected) returnFocus.focus();
+        resolve(accepted);
+      }
+      cancel.addEventListener('click', function() { finish(false); });
+      confirm.addEventListener('click', function() { finish(true); });
+      dialog.addEventListener('cancel', function(event) {
+        event.preventDefault();
+        finish(false);
+      });
+      dialog.addEventListener('keydown', function(event) {
+        if (event.key !== 'Tab') return;
+        var stops = Array.from(dialog.querySelectorAll(
+          'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+        )).filter(function(element) {
+          return element.getClientRects().length > 0;
+        });
+        if (!stops.length) return;
+        var first = stops[0];
+        var last = stops[stops.length - 1];
+        if (event.shiftKey && document.activeElement === first) {
+          event.preventDefault();
+          last.focus();
+        } else if (!event.shiftKey && document.activeElement === last) {
+          event.preventDefault();
+          first.focus();
+        }
+      });
+      document.body.appendChild(dialog);
+      dialog.showModal();
+      cancel.focus();
+    });
+  }
+
   // ── Shared axe-fleet command router ──────────────────────────────────
   // restart/identify → agent queue via authFetch (Bearer); pause/resume →
   // core route. Used by both the AXE FLEET grid and the FLEET COMMAND
@@ -521,13 +609,7 @@
     if (!deviceId || !command) return;
 
     // Explicit human confirmation for every physical state change.
-    if (command === 'restart') {
-      if (!confirm('Restart this miner? It will go offline for ~30 seconds.')) return;
-    } else if (command === 'pause') {
-      if (!confirm('Pause mining on this device? Use Resume to restart.')) return;
-    } else if (!confirm('Execute ' + command + ' on this miner?')) {
-      return;
-    }
+    if (!(await confirmAxeCommand(command, btn))) return;
 
     // Captura o label original (ex.: '↻' no botão mini da tabela) para
     // restaurar exatamente o que havia — sem hardcodar o texto do botão.
@@ -579,6 +661,7 @@
     } finally {
       btn.disabled = false;
       btn.textContent = originalLabel;
+      if (btn.isConnected) btn.focus();
     }
   }
   function _renderAxeCard(d, maxHr) {

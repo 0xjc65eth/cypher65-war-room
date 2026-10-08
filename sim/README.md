@@ -5,10 +5,10 @@ that virtual miners equal real hardware. It reuses repository-owned NerdQaxe/
 AxeOS and cgminer API loopback servers, and validates the production agent
 probe + Fleet registration/telemetry routes with scratch SQLite storage.
 
-The three integration case labels (`7`, `19`, `43`) are fixed profile variants
-for repeatability, **not** a seeded random physics model. `CYPHER65_SIM_SEED`
-used in the shell runner is an execution label only and does not affect the
-production agent. No fake clock or RNG is needed by this protocol-only slice.
+The integration cases use seeds `7`, `19`, and `43` to generate reproducible
+synthetic uptime values. The seed affects one fixture field only; it is **not**
+a seeded random physics model. There is no fake clock or physical model in this
+protocol-only slice.
 
 ## What this lab proves
 
@@ -20,8 +20,12 @@ production agent. No fake clock or RNG is needed by this protocol-only slice.
 - The existing cgminer mock accepts TCP JSON requests and tests the agent's
   `version`, `summary`, `stats`, `pools`, and parsing behavior against its
   authored response fixture.
-- Tests can repeat deterministically at the contract level. This first slice
-  does not yet provide a physical ASIC model or seeded stochastic simulation.
+- The seeded fixture value replays for the same integer seed and varies across
+  the three tested seeds. This does not model ASIC physics or runtime.
+- The E2E harness drives one virtual-only restart, a one-response 503 reboot
+  window, and recovery through the Fleet API. It verifies the last-good sample
+  survives the outage and the recovered sample is persisted; no real hardware
+  command is sent.
 
 ## What is deliberately not implemented / not proved
 
@@ -42,10 +46,9 @@ production agent. No fake clock or RNG is needed by this protocol-only slice.
 
 ## Reproduction
 
-From the repository root. The three parameterized E2E cases use fixed profile
-values keyed by seed; they are seed variants for repeatability, **not** a
-randomized ASIC model. The `CYPHER65_SIM_SEED` value itself does not control
-production code or external traffic.
+From the repository root. The three parameterized E2E cases use seeds `7`,
+`19`, and `43`; the seed deterministically varies a synthetic uptime fixture
+only, not a randomized ASIC model.
 
 
 ```bash
@@ -75,7 +78,7 @@ SECRET_KEY=test-secret-0123456789 python -m pytest \
 - `docs/contact-surface.md` — external/network/storage boundary map.
 - `catalog/*.yaml` — source/assumed item-level fidelity, gaps, and family notes.
 - `catalog/COVERAGE.md` — summarized evidence matrix and promotion gate.
-- `reports/fidelity-2026-09-29.md` — current proof, counterevidence and limits.
+- `reports/fidelity-2026-10-01.md` — current proof, counterevidence and limits.
 
 ## Fidelity policy
 

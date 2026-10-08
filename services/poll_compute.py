@@ -73,6 +73,29 @@ def derive_network_values(bc_diff_val, bc_hashrate_val):
     return current_difficulty, net_hashrate
 
 
+def _effective_btc_per_th_per_day(
+    net_hr, blocks_per_day, reward_per_block, pool_fee_pct, orphan_pct
+):
+    """Return a finite marginal BTC yield for one TH/s, or ``None``.
+
+    The value is an estimate from constant network/reward/fee inputs, not
+    observed miner revenue. Fixed decimal rounding is retained for API
+    compatibility, but non-finite inputs or arithmetic never become a zero.
+    """
+    if not math.isfinite(net_hr) or net_hr <= 0:
+        return None
+    value = (
+        (1e12 / net_hr)
+        * blocks_per_day
+        * reward_per_block
+        * (1 - pool_fee_pct / 100.0)
+        * (1 - orphan_pct / 100.0)
+    )
+    if not math.isfinite(value):
+        return None
+    return round(value, 16)
+
+
 def parse_mempool_fees(mf_raw):
     """Parse mempool.space /v1/fees/recommended into a sat/vB dict.
 
@@ -482,6 +505,10 @@ def compute_profitability(
     # profitability compute itself fails.
     cur_hr = float(worker.get("hashrate")) if worker and worker.get("hashrate") else 0.0
     net_hr = float(net_hashrate) if net_hashrate else 0.0
+    # A non-finite network rate is unavailable data, not an effectively
+    # infinite network that produces a valid-looking zero yield.
+    if not math.isfinite(net_hr) or net_hr <= 0:
+        net_hr = 0.0
     btc_usd = btc_prices.get("USD")
     btc_brl = btc_prices.get("BRL")
     btc_eur = btc_prices.get("EUR")
@@ -784,18 +811,15 @@ def compute_profitability(
                     ],
                     # General break-even cost per TH/day (always computed)
                     "breakeven_cost_per_th_day": _be["breakeven_cost_per_th_day"],
-                    # Marginal BTC earned per TH/s per day. Keep sufficient
-                    # precision: real-network values are far below 1e-10 BTC.
-                    "effective_btc_per_th_per_day": round(
-                        (1e12 / net_hr)
-                        * blocks_per_day
-                        * total_reward_per_block
-                        * (1 - pool_fee_pct / 100.0)
-                        * (1 - orphan_pct / 100.0),
-                        16,
-                    )
-                    if net_hr > 0
-                    else None,
+                    # Marginal estimated BTC yield for one TH/s over a day.
+                    # This compatibility field is not observed revenue.
+                    "effective_btc_per_th_per_day": _effective_btc_per_th_per_day(
+                        net_hr,
+                        blocks_per_day,
+                        total_reward_per_block,
+                        pool_fee_pct,
+                        orphan_pct,
+                    ),
                     # Pool fee info
                     "pool_fee_info": f"Pool fee: {pool_fee_pct}% · Orphan rate: {orphan_pct}% · Reward: {reward}+{fee} BTC/block",
                     # Disclaimer

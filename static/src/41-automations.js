@@ -291,11 +291,13 @@ function renderAccount(acct) {
     const soloSub = el('dm-solo-sub');
     if (soloSub) {
       const py = rows.solo && rows.solo.p_year_pct;
-      soloSub.textContent = (py != null && isFinite(py)) ? 'P(bloco no ano) ' + pct(py) : 'tempo esperado até bloco';
+      soloSub.textContent = (py != null && isFinite(py)) ? 'P(bloco no ano) ' + pct(py) : 'média do modelo; não é prazo';
     }
     const leaseEl = el('dm-lease-usd'); if (leaseEl) leaseEl.textContent = usd(rows.lease && rows.lease.net_usd_per_day);
-    const bestEl = el('dm-best-badge'); if (bestEl) bestEl.textContent = dm ? 'BEST: ' + String(dm.best_option || '—').toUpperCase() : '—';
-    const recoEl = el('dm-reco'); if (recoEl && dm && dm.recommendation) recoEl.textContent = dm.recommendation;
+    const comparable = Number.isFinite(rows.pool && rows.pool.net_usd_per_day) && Number.isFinite(rows.lease && rows.lease.net_usd_per_day);
+    const best = comparable && dm && ['pool', 'lease'].includes(dm.best_option) ? dm.best_option : null;
+    const bestEl = el('dm-best-badge'); if (bestEl) bestEl.textContent = best ? 'BEST: ' + best.toUpperCase() : 'INSUFFICIENT DATA';
+    const recoEl = el('dm-reco'); if (recoEl) recoEl.textContent = best ? dm.recommendation : 'Comparable pool and lease estimates are required. Solo shows a model mean, not a deadline or guaranteed payout.';
     const beEl = el('dm-breakeven');
     if (beEl) {
       const be = dm && dm.breakeven_cost_per_th_day;
@@ -379,8 +381,8 @@ function renderAccount(acct) {
         grid.innerHTML = (
           '<div class="empty-state" style="grid-column:1/-1;border:none;padding:10px">' +
           '<div class="empty-state__icon">⌘</div>' +
-          '<div class="empty-state__title">All systems nominal</div>' +
-          '<div class="empty-state__desc">No action needed right now — the dashboard is monitoring your operation.</div>' +
+          '<div class="empty-state__title">Sem diagnósticos</div>' +
+          '<div class="empty-state__desc">Nenhum diagnóstico foi gerado para a telemetria disponível.</div>' +
           '</div>'
         );
       } else {

@@ -23,6 +23,7 @@ from services.auth import create_token, verify_token
 from services.tenant import get_current_role
 from axe_fleet.registry import DeviceRegistry
 from axe_fleet.models import validate_agent_telemetry
+import agent.agent as agent_mod
 
 
 @pytest.fixture
@@ -751,13 +752,98 @@ def test_agent_telemetry_validator_rejects_invalid_values(payload, field, reason
     assert {"field": field, "reason": reason} in errors
 
 
-def test_agent_telemetry_validator_accepts_empty_heartbeat_and_large_finite_hashrate():
+def test_agent_telemetry_validator_accepts_empty_heartbeat_and_extreme_finite_hashrate():
     assert validate_agent_telemetry({}) == []
     assert validate_agent_telemetry({"hashrate_hs": 1e18, "temperature": 72.5}) == []
-    assert validate_agent_telemetry({"hashrate_hs": 1e30}) == []
+    assert {
+        (error["field"], error["reason"])
+        for error in validate_agent_telemetry({"hashrate_hs": 1e30})
+    } == {("hashrate_hs", "out_of_range")}
 
 
 class TestTelemetryQuarantine:
+    def test_registry_refuses_invalid_telemetry_before_persisting(self, registry):
+        with pytest.raises(ValueError, match="invalid agent telemetry"):
+            registry.save_agent_telemetry(
+                "invalid-sample", {"temperature": 151}, tenant_id="acme"
+            )
+
+    def test_quarantine_helpers_require_an_explicit_tenant(self, registry):
+        registry.record_telemetry_quarantine(
+            "tenant-bound", ["temperature"], ["not_finite"], tenant_id="acme"
+        )
+
+        assert registry.get_telemetry_quarantines() == {}
+        registry.clear_telemetry_quarantine("tenant-bound")
+        quarantine = registry.get_telemetry_quarantines(tenant_id="acme")[
+            "tenant-bound"
+        ]
+        assert quarantine["fields"] == ["temperature"]
+        assert quarantine["reasons"] == ["not_finite"]
+
+    def test_unchanged_quarantine_is_not_reported_as_new(self, registry):
+        args = ("stable-quarantine", ["temperature"], ["not_finite"])
+
+        assert registry.record_telemetry_quarantine(
+            *args, tenant_id="acme"
+        ) is True
+        assert registry.record_telemetry_quarantine(
+            *args, tenant_id="acme"
+        ) is False
+
+    def test_device_removal_clears_quarantine_metadata(self, registry):
+        device = registry.upsert_agent_device("192.168.1.97", tenant_id="acme")
+        registry.record_telemetry_quarantine(
+            device["id"], ["temperature"], ["not_finite"], tenant_id="acme"
+        )
+
+        assert registry.remove_device(device["id"], tenant_id="acme") is True
+        assert registry.get_telemetry_quarantines(tenant_id="acme") == {}
+
+    def test_record_recovers_when_previous_quarantine_json_is_corrupt(self, registry):
+        device_id = "quarantine-json-recovery"
+        registry.record_telemetry_quarantine(
+            device_id, ["temperature"], ["not_finite"], tenant_id="acme"
+        )
+        conn = registry._get_db()
+        try:
+            conn.execute(
+                "UPDATE axe_telemetry_quarantine SET fields=?, reasons=? "
+                "WHERE tenant_id=? AND device_id=?",
+                ("{invalid", "{invalid", "acme", device_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        changed = registry.record_telemetry_quarantine(
+            device_id, ["fan_speed"], ["out_of_range"], tenant_id="acme"
+        )
+
+        assert changed is True
+        assert registry.get_telemetry_quarantines(tenant_id="acme")[device_id][
+            "fields"
+        ] == ["fan_speed"]
+
+    def test_list_ignores_corrupt_quarantine_json(self, registry):
+        device_id = "quarantine-json-read"
+        registry.record_telemetry_quarantine(
+            device_id, ["temperature"], ["not_finite"], tenant_id="acme"
+        )
+        conn = registry._get_db()
+        try:
+            conn.execute(
+                "UPDATE axe_telemetry_quarantine SET fields=? "
+                "WHERE tenant_id=? AND device_id=?",
+                ("{invalid", "acme", device_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        assert registry.get_telemetry_quarantines(tenant_id="acme") == {}
+
+    @pytest.mark.covers("TEL-002")
     def test_invalid_agent_sample_is_audited_and_preserves_last_good(
         self, client, agent_token, registry
     ):
@@ -816,6 +902,7 @@ class TestTelemetryQuarantine:
             row
             for row in recent_audit_logs("acme")
             if row["action"] == "agent.telemetry_quarantined"
+            and row["target"] == "192.168.1.93"
         ]
         assert audit
         assert audit[-1]["details"] == {
@@ -824,6 +911,64 @@ class TestTelemetryQuarantine:
         }
         assert "must-not-be-logged" not in str(audit[-1])
 
+    @pytest.mark.covers("TEL-002")
+    def test_invalid_standalone_axeos_hashrate_is_quarantined_without_overwrite(
+        self, client, agent_token, registry
+    ):
+        from axe_fleet.axeos_contract import official_esp_miner_info
+
+        ip = "192.168.1.95"
+        with patch("axe_fleet.routes._registry", registry):
+            client.post(
+                "/api/agent/register",
+                headers=_headers(agent_token),
+                json={"devices": [{"ip": ip}]},
+            )
+            accepted = client.post(
+                "/api/agent/telemetry",
+                headers=_headers(agent_token),
+                json={
+                    "ip": ip,
+                    "telemetry": {"hashrate_hs": 5e12, "temperature": 62},
+                },
+            )
+            assert accepted.status_code == 200
+            device = registry.get_device_by_ip(ip, tenant_id="acme")
+            before = registry.get_recent_telemetry(
+                device["id"], limit=10, tenant_id="acme"
+            )
+            last_seen_before = device["last_seen"]
+
+            info = official_esp_miner_info(hashRate="N/A")
+            with patch.object(
+                agent_mod, "_probe_axeos", return_value=info
+            ), patch.object(agent_mod, "_extract_axeos_telemetry", None):
+                telemetry = agent_mod._poll_telemetry(
+                    {"ip": ip, "type": "bitaxe"}
+                )
+            assert telemetry["hashrate_hs"] is None
+            assert telemetry["_invalid_fields"] == ["hashrate_hs"]
+
+            rejected = client.post(
+                "/api/agent/telemetry",
+                headers=_headers(agent_token),
+                json={"ip": ip, "telemetry": telemetry},
+            )
+
+        assert rejected.status_code == 422
+        assert rejected.get_json()["fields"] == ["hashrate_hs"]
+        assert registry.get_recent_telemetry(
+            device["id"], limit=10, tenant_id="acme"
+        ) == before
+        unchanged = registry.get_device(device["id"], tenant_id="acme")
+        assert unchanged["status"] == "ONLINE"
+        assert unchanged["last_seen"] == last_seen_before
+        quarantine = registry.get_telemetry_quarantines(tenant_id="acme")[
+            device["id"]
+        ]
+        assert quarantine["fields"] == ["hashrate_hs"]
+
+    @pytest.mark.covers("TEL-002")
     def test_health_reports_quarantine_without_overwriting_last_good_status(
         self, client, agent_token, user_token, registry
     ):
@@ -873,35 +1018,6 @@ class TestTelemetryQuarantine:
                 json={"ip": "192.168.1.94", "telemetry": {"hashrate_hs": 4e12}},
             )
         assert registry.get_telemetry_quarantines(tenant_id="acme") == {}
-
-    def test_empty_heartbeat_does_not_clear_quarantine(self, client, agent_token, registry):
-        with patch("axe_fleet.routes._registry", registry):
-            client.post(
-                "/api/agent/register",
-                headers=_headers(agent_token),
-                json={"devices": [{"ip": "192.168.1.95"}]},
-            )
-            invalid = client.post(
-                "/api/agent/telemetry",
-                headers=_headers(agent_token),
-                json={"ip": "192.168.1.95", "telemetry": {"hashrate_hs": "bad"}},
-            )
-            assert invalid.status_code == 422
-            device = registry.get_device_by_ip("192.168.1.95", tenant_id="acme")
-            quarantine_before = registry.get_telemetry_quarantines(tenant_id="acme")
-
-            heartbeat = client.post(
-                "/api/agent/telemetry",
-                headers=_headers(agent_token),
-                json={"ip": "192.168.1.95", "telemetry": {}},
-            )
-
-        assert heartbeat.status_code == 200
-        assert registry.get_telemetry_quarantines(tenant_id="acme") == quarantine_before
-        assert registry.get_recent_telemetry(device["id"], tenant_id="acme")[0]["payload"] == {
-            "device_id": device["id"],
-            "ts": registry.get_recent_telemetry(device["id"], tenant_id="acme")[0]["payload"]["ts"],
-        }
 
 
 class TestEmptyHeartbeatAccepted:
@@ -1234,7 +1350,7 @@ class TestTombstoneNoZombies:
                 registry.get_device_by_ip(ip, tenant_id="brave")["id"]
 
     def test_cloud_private_add_queues_without_ssrf_and_clears_tombstone(
-        self, client, agent_token, registry
+        self, client, agent_token, registry, monkeypatch
     ):
         """Cloud POST of a private IP never probes the LAN; restore intent
         still unblocks the agent."""
@@ -1265,6 +1381,47 @@ class TestTombstoneNoZombies:
         assert "AGENTE LOCAL" in data["message"]
         mock_conn.assert_not_called()
         assert registry.get_device_by_ip(ip, tenant_id="acme") == {}
+        # Reproduce the user-facing dead end: the queued command currently
+        # collides with the physical-command gate and is never delivered.
+        with patch("axe_fleet.routes._registry", registry):
+            pull = client.post(
+                "/api/agent/commands/pull", headers=_headers(agent_token), json={}
+            )
+        assert pull.status_code == 200
+        commands = pull.get_json()["commands"]
+        assert len(commands) == 1
+        assert commands[0]["command"] == "probe"
+        assert commands[0]["params"]["ip"] == ip
+        assert commands[0]["device_id"] == "_probe"
+
+        # Exercise the real agent command consumer without opening a socket;
+        # the recognized device is registered back through the authenticated API.
+        import agent.agent as local_agent
+
+        monkeypatch.setattr(
+            local_agent,
+            "_probe_host",
+            lambda target: {"ip": target, "type": "bitaxe", "model": "Fixture"},
+        )
+
+        def post_retry(path, payload):
+            response = client.post(
+                path, headers=_headers(agent_token), json=payload
+            )
+            return response.status_code, response.get_json()
+
+        monkeypatch.setattr(local_agent, "_post_retry", post_retry)
+        with patch("axe_fleet.routes._registry", registry), \
+                patch("axe_fleet.routes._can_add_worker", return_value=True):
+            ok, message = local_agent._exec_command(commands[0], known={})
+            ack = client.post(
+                f"/api/agent/commands/{commands[0]['id']}/ack",
+                headers=_headers(agent_token),
+                json={"success": ok, "result": message},
+            )
+        assert ok is True
+        assert registry.get_device_by_ip(ip, tenant_id="acme")
+        assert ack.status_code == 200 and ack.get_json()["success"] is True
         with patch("axe_fleet.routes._registry", registry), \
                 patch("axe_fleet.routes._can_add_worker", return_value=True):
             again = client.post(
@@ -1303,6 +1460,9 @@ class TestTombstoneNoZombies:
         (row + telemetry) so the tombstone guard never grows the DB forever."""
         dev = registry.upsert_agent_device("192.168.1.75", tenant_id="acme")
         registry.save_telemetry(dev["id"], {"hashrate_hs": 1e9}, tenant_id="acme")
+        registry.record_telemetry_quarantine(
+            dev["id"], ["temperature"], ["not_finite"], tenant_id="acme"
+        )
         assert registry.remove_device(dev["id"], tenant_id="acme") is True
         # Fresh tombstone survives the GC.
         assert registry.gc_tombstones(max_age_days=30) == 0
@@ -1317,9 +1477,32 @@ class TestTombstoneNoZombies:
         assert registry.gc_tombstones(max_age_days=30) == 1
         assert registry.get_removed_by_ip("192.168.1.75", tenant_id="acme") == {}
         assert registry.get_recent_telemetry(dev["id"], tenant_id="acme") == []
+        assert registry.get_telemetry_quarantines(tenant_id="acme") == {}
 
 
 class TestAgentHeartbeat:
+    @pytest.mark.parametrize("payload", [[], False, 0, ""])
+    def test_non_object_json_does_not_refresh_presence(
+        self, client, agent_token, payload
+    ):
+        resp = client.post(
+            "/api/agent/heartbeat",
+            headers=_headers(agent_token),
+            json=payload,
+        )
+        assert resp.status_code == 400
+        assert resp.get_json() == {"error": "invalid_payload"}
+
+    def test_json_null_does_not_refresh_presence(self, client, agent_token):
+        resp = client.post(
+            "/api/agent/heartbeat",
+            headers=_headers(agent_token),
+            data="null",
+            content_type="application/json",
+        )
+        assert resp.status_code == 400
+        assert resp.get_json() == {"error": "invalid_payload"}
+
     def test_heartbeat_marks_agent_alive_without_miners(self, client, agent_token):
         resp = client.post(
             "/api/agent/heartbeat",

@@ -28,31 +28,13 @@ from .models import (
     validate_agent_telemetry,
 )
 from .connector import AxeOSConnector, AxeOSConnectorError
+from services.observability import emit_event
 
 log = logging.getLogger("cypher65.axe.registry")
 
 
-class DeviceIdentityConflict(ValueError):
-    """Registration evidence conflicts with an existing canonical device."""
-
-
-def normalize_device_mac(value):
-    """Normalize a valid six-octet unicast MAC; absent/unsafe values are unknown."""
-    raw = str(value or "").strip()
-    if re.fullmatch(r"[0-9A-Fa-f]{12}", raw):
-        compact = raw
-    elif re.fullmatch(r"[0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5}", raw):
-        compact = raw.replace(":", "")
-    elif re.fullmatch(r"[0-9A-Fa-f]{2}(?:-[0-9A-Fa-f]{2}){5}", raw):
-        compact = raw.replace("-", "")
-    else:
-        return None
-    octets = [int(compact[i : i + 2], 16) for i in range(0, 12, 2)]
-    if all(octet == 0 for octet in octets) or all(octet == 255 for octet in octets):
-        return None
-    if octets[0] & 1:
-        return None
-    return ":".join(f"{octet:02X}" for octet in octets)
+class TelemetryIdempotencyConflict(ValueError):
+    """Raised when a telemetry event key is reused for another payload."""
 
 
 def _caps_for_type(info: dict) -> dict:
@@ -127,11 +109,13 @@ class DeviceRegistry:
                 ts INTEGER NOT NULL,
                 device_id TEXT NOT NULL,
                 payload TEXT NOT NULL,
+                idempotency_key TEXT,
                 FOREIGN KEY (device_id) REFERENCES axe_devices(id)
             )"""
         )
         # ── Multi-tenant migration: add tenant_id columns ──
         self._migrate_add_tenant_id(c)
+        self._migrate_telemetry_idempotency(c)
         # ── Agent-managed migration: devices polled by the user's LOCAL
         #    agent (SaaS: cloud dashboard can't reach the home LAN) must be
         #    marked so the server-side poll never touches them. ──
@@ -207,6 +191,19 @@ class DeviceRegistry:
             )
         except Exception:
             pass
+
+    @staticmethod
+    def _migrate_telemetry_idempotency(c):
+        """Add the optional sample key and enforce tenant/device uniqueness."""
+        c.execute("PRAGMA table_info(axe_telemetry)")
+        columns = {row[1] for row in c.fetchall()}
+        if "idempotency_key" not in columns:
+            c.execute("ALTER TABLE axe_telemetry ADD COLUMN idempotency_key TEXT")
+        c.execute(
+            """CREATE UNIQUE INDEX IF NOT EXISTS uq_axe_telemetry_idempotency
+            ON axe_telemetry(tenant_id, device_id, idempotency_key)
+            WHERE idempotency_key IS NOT NULL"""
+        )
 
     def _migrate_add_agent_managed(self, c):
         """Add agent_managed column to axe_devices if missing (SaaS agent
@@ -882,7 +879,11 @@ class DeviceRegistry:
         return None
 
     def save_agent_telemetry(
-        self, device_id: str, telemetry: dict, tenant_id: str = "default"
+        self,
+        device_id: str,
+        telemetry: dict,
+        tenant_id: str = "default",
+        idempotency_key: str = "",
     ) -> str:
         """Persist telemetry pushed by the user's local agent and update the
         device status. Returns the persisted status so callers (routes) can
@@ -903,8 +904,12 @@ class DeviceRegistry:
         payload = dict(telemetry or {})
         payload["ts"] = payload.get("ts") or now
         payload["device_id"] = device_id
-        self.save_telemetry(device_id, payload, tenant_id=tenant_id)
-
+        share_fields = (
+            "best_diff",
+            "shares_accepted",
+            "shares_rejected",
+            "shares_stale",
+        )
         has_measurements = any(
             payload.get(k) not in (None, "")
             for k in (
@@ -932,7 +937,50 @@ class DeviceRegistry:
                 # Fresh-enough measured reading exists: keep its live status
                 # (PAUSED survives a heartbeat; IDLE stays IDLE).
                 status = derive_device_status(latest)
-        self.update_device(
+        # Compute status before inserting so concurrent replays can repair
+        # denormalized device state even if a writer stopped after the event
+        # row committed but before update_device completed.
+        if idempotency_key:
+            inserted = self.save_telemetry(
+                device_id,
+                payload,
+                tenant_id=tenant_id,
+                idempotency_key=idempotency_key,
+            )
+            if not inserted:
+                latest = self._latest_measured_telemetry(device_id, tenant_id=tenant_id)
+                if latest and latest.get("ts", 0) > payload.get("ts", 0):
+                    status = derive_device_status(latest)
+                    if status != "PAUSED" and is_telemetry_stale(
+                        latest.get("ts"), now=now
+                    ):
+                        status = STATUS_STALE
+        else:
+            # Preserve the established call shape for legacy instrumentation
+            # wrappers around save_telemetry.
+            self.save_telemetry(device_id, payload, tenant_id=tenant_id)
+        transition_events = []
+        if status == STATUS_STALE and any(
+            payload.get(key) not in (None, "") for key in share_fields
+        ):
+            transition_events.append(
+                (
+                    "share.stale",
+                    {
+                        "sample_ts": (
+                            payload.get("ts")
+                            if isinstance(payload.get("ts"), int)
+                            else None
+                        ),
+                        "changed_fields": ",".join(
+                            key
+                            for key in share_fields
+                            if payload.get(key) not in (None, "")
+                        ),
+                    },
+                )
+            )
+        updated = self.update_device(
             device_id,
             {
                 "last_seen": now,
@@ -940,9 +988,19 @@ class DeviceRegistry:
                 "agent_managed": 1,
             },
             tenant_id=tenant_id,
+            transition_events=transition_events,
         )
         if telemetry:
             self.clear_telemetry_quarantine(device_id, tenant_id=tenant_id)
+        sample_ts = payload.get("ts")
+        if updated and has_measurements and status != STATUS_STALE:
+            emit_event(
+                "miner.telemetry.received",
+                tenant_id=tenant_id,
+                device_id=device_id,
+                sample_ts=sample_ts if isinstance(sample_ts, int) else None,
+                status=status,
+            )
         return status
 
     def record_telemetry_quarantine(
@@ -1030,8 +1088,7 @@ class DeviceRegistry:
         device_id: str,
         updates: dict,
         tenant_id: str = "",
-        transition_events: list | None = None,
-        active_only: bool = False,
+        transition_events=None,
     ) -> bool:
         """Update device fields. Keys in 'updates' overwrite stored values.
         Returns True if device exists and was updated.
@@ -1076,31 +1133,179 @@ class DeviceRegistry:
 
         conn = self._get_db()
         c = conn.cursor()
-        c.execute(sql, tuple(vals))
-        updated = c.rowcount > 0
-        conn.commit()
-        conn.close()
+        previous_status = None
+        event_tenant_id = tenant_id
+        try:
+            if "status" in updates:
+                # Serialize status transitions so concurrent pollers cannot
+                # both observe the same previous value and emit duplicate edges.
+                is_sqlite = type(conn).__module__.startswith("sqlite3")
+                c.execute("BEGIN IMMEDIATE" if is_sqlite else "BEGIN")
+                lookup = "SELECT status, tenant_id FROM axe_devices WHERE id=?"
+                if not is_sqlite:
+                    lookup += " FOR UPDATE"
+                lookup_values = [device_id]
+                if tenant_id:
+                    lookup += " AND tenant_id=?"
+                    lookup_values.append(tenant_id)
+                c.execute(lookup, tuple(lookup_values))
+                previous = c.fetchone()
+                if previous is not None:
+                    previous_status = str(previous["status"] or "").upper()
+                    event_tenant_id = str(previous["tenant_id"] or tenant_id or "")
+            c.execute(sql, tuple(vals))
+            updated = c.rowcount > 0
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+        current_status = str(updates.get("status") or "").upper()
+        if updated and previous_status and previous_status != current_status:
+            event_name = None
+            if current_status == STATUS_OFFLINE:
+                event_name = "miner.offline"
+            elif current_status == STATUS_STALE:
+                event_name = "miner.telemetry.stale"
+            elif previous_status in {STATUS_OFFLINE, STATUS_STALE} and current_status:
+                event_name = "miner.online"
+            if event_name:
+                emit_event(
+                    event_name,
+                    tenant_id=event_tenant_id,
+                    device_id=device_id,
+                    previous_status=previous_status,
+                    status=current_status,
+                )
+            for extra_name, extra_fields in transition_events or ():
+                emit_event(
+                    extra_name,
+                    tenant_id=event_tenant_id,
+                    device_id=device_id,
+                    status=current_status,
+                    **extra_fields,
+                )
         return updated
 
     # ── Telemetry persistence (tenant-aware) ──────────────────────────
 
     def save_telemetry(
-        self, device_id: str, telemetry: dict, tenant_id: str = "default"
-    ):
-        """Persist a telemetry snapshot for a device owned by the given tenant."""
+        self,
+        device_id: str,
+        telemetry: dict,
+        tenant_id: str = "default",
+        idempotency_key: str = "",
+    ) -> bool:
+        """Persist one sample, ignoring identical keyed replays.
+
+        Returns ``False`` when the event was already stored with an identical
+        canonical payload. Reusing a key for another payload raises
+        :class:`TelemetryIdempotencyConflict`. Legacy calls may omit the key.
+        """
+        serialized = json.dumps(telemetry, sort_keys=True, separators=(",", ":"))
         conn = self._get_db()
         c = conn.cursor()
-        c.execute(
-            "INSERT INTO axe_telemetry (ts, device_id, payload, tenant_id) VALUES (?, ?, ?, ?)",
-            (
-                telemetry.get("ts", int(time.time())),
-                device_id,
-                json.dumps(telemetry),
-                tenant_id,
-            ),
+        changed_share_fields = []
+        share_fields = (
+            "best_diff",
+            "shares_accepted",
+            "shares_rejected",
+            "shares_stale",
         )
-        conn.commit()
-        conn.close()
+        try:
+            c.execute("BEGIN IMMEDIATE")
+            c.execute(
+                "SELECT payload FROM axe_telemetry WHERE device_id=? AND tenant_id=? "
+                "ORDER BY rowid DESC LIMIT 50",
+                (device_id, tenant_id),
+            )
+            previous_sample = None
+            for row in c.fetchall():
+                try:
+                    candidate = json.loads(row["payload"])
+                except (TypeError, ValueError):
+                    continue
+                if (
+                    isinstance(candidate, dict)
+                    and any(
+                        candidate.get(key) not in (None, "") for key in share_fields
+                    )
+                    and not is_telemetry_stale(candidate.get("ts"))
+                ):
+                    previous_sample = candidate
+                    break
+            changed_share_fields = [
+                key
+                for key in share_fields
+                if telemetry.get(key) not in (None, "")
+                and (previous_sample or {}).get(key) != telemetry.get(key)
+            ]
+            if idempotency_key:
+                c.execute(
+                    """INSERT OR IGNORE INTO axe_telemetry
+                    (ts, device_id, payload, tenant_id, idempotency_key)
+                    VALUES (?, ?, ?, ?, ?)""",
+                    (
+                        telemetry.get("ts", int(time.time())),
+                        device_id,
+                        serialized,
+                        tenant_id,
+                        idempotency_key,
+                    ),
+                )
+                if c.rowcount == 0:
+                    c.execute(
+                        """SELECT payload FROM axe_telemetry
+                        WHERE tenant_id=? AND device_id=? AND idempotency_key=?""",
+                        (tenant_id, device_id, idempotency_key),
+                    )
+                    existing = c.fetchone()
+                    if existing is None:
+                        raise RuntimeError("telemetry insert was ignored unexpectedly")
+                    if existing["payload"] != serialized:
+                        raise TelemetryIdempotencyConflict(
+                            "idempotency key already belongs to a different telemetry sample"
+                        )
+                    conn.commit()
+                    return False
+            else:
+                c.execute(
+                    """INSERT INTO axe_telemetry
+                    (ts, device_id, payload, tenant_id, idempotency_key)
+                    VALUES (?, ?, ?, ?, NULL)""",
+                    (
+                        telemetry.get("ts", int(time.time())),
+                        device_id,
+                        serialized,
+                        tenant_id,
+                    ),
+                )
+            conn.commit()
+            inserted = True
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+        if (
+            inserted
+            and changed_share_fields
+            and not is_telemetry_stale(telemetry.get("ts"))
+        ):
+            emit_event(
+                "share.updated",
+                tenant_id=tenant_id,
+                device_id=device_id,
+                sample_ts=(
+                    telemetry.get("ts")
+                    if isinstance(telemetry.get("ts"), int)
+                    else None
+                ),
+                changed_fields=",".join(changed_share_fields),
+            )
+        return inserted
 
     def get_recent_telemetry(
         self, device_id: str, limit: int = 120, tenant_id: str = ""

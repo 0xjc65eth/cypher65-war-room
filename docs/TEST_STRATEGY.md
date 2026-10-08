@@ -7,10 +7,10 @@ Integrações usam adaptadores locais e fakes de protocolo,
 nunca ASICs, pools ou credenciais reais.
 E2E roda contra a aplicação local com dados explícitos.
 
-Os IDs `MF`, `API`, `OPS`, `TEL`, `SEC`, `CMD`, `AUD`, `PER`,
-`UI` e `LOAD` permitem rastrear a exigência no CI e em incidentes.
-Os arquivos sugeridos são o destino inicial; quando já houver
-cobertura equivalente, o teste deve ser reforçado ali em vez de duplicado.
+Os IDs `MF`, `API`, `OPS`, `TEL`, `SEC`, `CMD`, `AUD`, `PER`, `UI`, `LOAD` e `OBS`
+permitem rastrear a exigência no CI e em incidentes. Os arquivos sugeridos são
+o destino inicial; quando já houver cobertura equivalente, o teste deve ser
+reforçado ali em vez de duplicado.
 
 | ID | Tipo | Cenário | Entrada | Resultado esperado | Arquivo sugerido |
 | --- | --- | --- | --- | --- | --- |
@@ -25,21 +25,8 @@ cobertura equivalente, o teste deve ser reforçado ali em vez de duplicado.
 | OPS-002 | Integração de poll | Pool/API de rede indisponível | timeout, 5xx ou payload sem hashrate/preço | snapshot degradado, dados anteriores marcados stale; nenhum lucro inventado | `tests/test_polling_integration.py` |
 | OPS-003 | Integração | Reconexão após queda do ASIC/pool | falha transitória seguida de payload válido | estado `offline` → `online`, backoff respeitado e uma única transição auditada | `tests/test_polling_reconnection.py` |
 | TEL-001 | Integração de armazenamento | Telemetria repetida/replay | mesmo `device_id`, timestamp e idempotency key | apenas um ponto/histórico; agregados não duplicam | `tests/test_telemetry_idempotency.py` |
-| TEL-002 | Unitário + integração | Telemetria inválida ou fora de faixa | chaves ausentes, tipos errados, temperatura/hashrate não finitos | rejeição/quarentena com motivo, sem alterar último dado bom | `tests/test_telemetry_validation.py`, `tests/test_agent_api.py` |
-
-**Política TEL-002 (#609):** `telemetry: {}` continua sendo heartbeat válido.
-Uma amostra não vazia exige `hashrate_hs`; campos numéricos conhecidos devem
-ser numéricos, finitos e não negativos, exceto RSSI (-150..0 dBm) e temperaturas
-(-40..150 °C); `fan_speed` é 0..100%, `fan_rpm` até 100.000 e percentuais 0..100.
-Não há teto universal de hashrate/potência/frequência: rejeitar capacidade de ASIC
-válida por um teto global seria especulativo. Campo desconhecido segue ignorado;
-valor inválido rejeita o payload inteiro com HTTP 422, motivo/campos e audit sem
-valores da amostra. Rejeição não grava telemetria nem atualiza status/last_seen.
-Para device já cadastrado, fica persistido somente o último instante, nomes dos
-campos e motivos rejeitados (sem payload), visível como alerta na resposta Fleet;
-um heartbeat vazio não limpa o alerta e uma amostra válida não vazia limpa.
-
-| TIME-001 | Unitário | Conversão de timestamp e DST | UTC antes/depois de mudança de horário em `America/Sao_Paulo` e `Europe/Brussels` | persistência em UTC; ordenação e duração idênticas na UI | `tests/test_timezones.py` |
+| TEL-002 | Unitário + integração | Telemetria inválida ou fora de faixa | chaves ausentes, tipos errados, temperatura/hashrate não finitos | rejeição/quarentena com motivo, sem alterar último dado bom | `tests/test_telemetry_validation.py` |
+| TIME-001 | Unitário | Conversão de timestamp e DST | UTC antes/depois de mudança de horário em `America/Sao_Paulo` e `Europe/Brussels` | persistência de epoch e duração relativa da UI independentes do fuso; ordenação visual de listas permanece por cobrir | `tests/test_timezones.py` |
 | NUM-001 | Unitário | Divisão por zero de shares/custos | total shares, TH/s, preço e rede iguais a 0 | campos contratuais `0`/`None`, nunca exceção ou infinito | `tests/test_mining_formula_contracts.py`, `tests/core/test_safety.py` |
 | NUM-002 | Property-based | Valores extremos mas finitos | floats entre limites operacionais e bordas IEEE-754 | invariantes: probabilidades em [0,1], saída serializável e sem `NaN` | `tests/test_numeric_properties.py` |
 | SEC-001 | Integração | Isolamento por tenant | token do tenant A tentando ler device/log do B | HTTP 404/403 sem metadados do tenant B | `tests/test_tenant_b2_isolation.py` |
@@ -49,9 +36,23 @@ um heartbeat vazio não limpa o alerta e uma amostra válida não vazia limpa.
 | AUD-001 | Integração | Audit log de sucesso, bloqueio e erro | comandos permitidos/bloqueados e falha de adaptador | actor, tenant, device, comando, resultado e UTC persistidos; append-only | `tests/core/test_app_device_routes.py`, `tests/test_audit_log.py` |
 | PER-001 | Integração SQLite | Reinício da aplicação | device, telemetria, configuração e audit gravados; reabrir registry | estado e tenant sobrevivem sem duplicar pontos ou segredos | `tests/core/test_registry.py`, `tests/test_persistence_restart.py` |
 | UI-001 | E2E visual | Responsividade das telas críticas | viewports 320, 375, 768, 1024 e 1440 px | sem overflow horizontal, controles alcançáveis e dados essenciais visíveis | `tests/e2e/responsive.spec.js` |
-| UI-002 | E2E acessibilidade | Dashboard e fluxo de comando | teclado, focus trap, labels, contraste e `prefers-reduced-motion` | Axe sem violações críticas; foco e anúncio de estado corretos | `tests/e2e/accessibility.spec.js` |
+| UI-002 | E2E acessibilidade | Dashboard e fluxo de comando | teclado, foco contido em diálogo modal, labels e `prefers-reduced-motion` emulado | Axe sem violações críticas; foco retorna ao acionador e live region anuncia o resultado | `tests/e2e/accessibility.spec.js` |
 | LOAD-001 | Performance | Resumo com muitos ASICs | 100 e 500 devices; telemetria atual e stale | p95 do resumo abaixo do SLO acordado, memória limitada, contagens corretas | `tests/performance/test_fleet_scale.py` |
 | LOAD-002 | Performance + integração | Ingestão concorrente de telemetria | 10k eventos, duplicatas e 50 devices concorrentes | sem perda/duplicação fora da política; latência e backlog dentro do SLO | `tests/performance/test_telemetry_ingest.py` |
+| OBS-001 | Observabilidade + integração | Transições Fleet estruturadas | status ONLINE → OFFLINE/STALE → ONLINE, request context ativo/ausente, logger com falha | evento JSON com tenant/device/request_id, sem segredo/payload bruto; uma emissão por transição; logging não afeta ingestão | `tests/test_fleet_observability_events.py` |
+
+**Política TEL-002 (#609):** `telemetry: {}` continua sendo heartbeat válido.
+Uma amostra não vazia exige `hashrate_hs`; campos numéricos conhecidos devem
+ser numéricos, finitos e não negativos, exceto RSSI (-150..0 dBm) e temperaturas
+(-40..150 °C). Hashrate (medido ou esperado) é limitado a 1 EH/s por dispositivo;
+`fan_speed` é 0..100%, `fan_rpm` até 100.000 e percentuais 0..100. Campos
+opcionais não expostos pelo firmware podem ser omitidos ou `null`. Campo
+desconhecido segue ignorado; amostra inválida é rejeitada por inteiro com HTTP
+422, motivo/campos e audit sem valores da amostra. A rejeição não grava
+telemetria nem atualiza status/last_seen. Para device cadastrado, persiste-se
+somente instante, nomes de campos e motivos (sem payload), expostos como alerta
+na resposta Fleet; heartbeat vazio não limpa o alerta e amostra válida não vazia
+limpa.
 
 ## Gate de execução
 
@@ -67,14 +68,16 @@ um heartbeat vazio não limpa o alerta e uma amostra válida não vazia limpa.
 
 ## Implementado neste lote
 
-`MF-001`, `MF-002`, `MF-003`, `MF-004`, parte de `NUM-001`, `API-001`,
-`API-002`, `OPS-001`, `SEC-002`, `CMD-001` e a verificação de histórico para
-`AUD-001` foram adicionados ou reforçados no lote de fórmulas (MF-003/MF-004
-completos em 2026-09-17, vetor de fórmula completa + indisponível ≠ 0). A
-Issue #368 implementa `CMD-002` e reforça `AUD-001`: as tentativas sem
-confirmação, os reusos, as falhas do adaptador e as execuções aprovadas passam
-pelo audit persistente. Os demais IDs definem a sequência de implementação e
-devem ganhar uma Issue própria antes de alteração de código.
+`MF-001`, `MF-002`, `MF-003`, `MF-004`, parte de `NUM-001`, `API-001`, `API-002`,
+`OPS-001`, `SEC-002`, `CMD-001` e `AUD-001` foram
+adicionados ou reforçados no lote de fórmulas (MF-003/MF-004 completos em 2026-09-17,
+vetor de fórmula completa + indisponível ≠ 0). A Issue #368 implementa
+`CMD-002` e reforça `AUD-001`: as tentativas sem confirmação, os reusos, as
+falhas do adaptador e as execuções aprovadas passam pelo audit persistente; a
+Issue #611 adiciona cobertura de actor/tenant/device, resultado e UTC, redação
+de credenciais, ordenação estável e triggers SQLite que rejeitam UPDATE/DELETE.
+Os demais IDs definem a sequência de implementação e devem ganhar uma Issue
+própria antes de alteração de código.
 
 ## Contrato de confirmação server-side (CMD-002)
 
@@ -103,20 +106,15 @@ Os endpoints de confirmação e execução exigem papel RBAC `member` (ou
 
 ---
 
-## Mapa de cobertura — auditoria de 2026-09-16 (wave W3)
+## Mapa de cobertura — auditoria de 2026-10-01 (Issue #614)
 
-A tabela do início deste documento é o **plano**. Esta seção registra o
-**estado real** de cada ID depois da wave W3
-(`docs/MULTI_AGENT_TEAM.md` §8). A distinção existe porque as duas divergiam em
-silêncio: o plano lista 24 IDs e o §"Implementado neste lote" declara apenas
-onze deles.
+A tabela do início deste documento é o **plano**. Esta seção registra o **estado real** de cada ID
+depois da wave W3 (`docs/MULTI_AGENT_TEAM.md` §8). A distinção existe porque as duas divergiam em
+silêncio: o plano lista 25 IDs e o §"Implementado neste lote" declara apenas onze deles.
 
-**Como a auditoria foi feita — e o que ela não fez.** A varredura foi por
-**arquivo sugerido** e depois por **comportamento**, não por ID, porque nenhum
-teste do repositório cita um ID da matriz (achado transversal abaixo). Para
-cada ID: (1) o arquivo sugerido existe? (2) se não, a exigência está coberta
-sob outro nome — o que a própria matriz autoriza (*"quando já houver cobertura
-equivalente, o teste deve ser reforçado ali em vez de duplicado"*).
+**Snapshot histórico de 2026-09-16 (wave W3).** A auditoria então foi por **arquivo sugerido** e
+depois por **comportamento**, não por ID. O contrato automatizado e os markers desta revisão são
+posteriores e registram o estado atual; não reinterpretam as conclusões históricas abaixo.
 
 | ID | Estado | Evidência / Issue |
 | --- | --- | --- |
@@ -124,54 +122,65 @@ equivalente, o teste deve ser reforçado ali em vez de duplicado"*).
 | MF-002 | implementado | idem |
 | MF-003 | **implementado** | vetores de fórmula completa + arredondamento contratado em `tests/test_pool_rental_break_even.py` (2026-09-17, wave W3) → #613 |
 | MF-004 | **implementado** | indisponível ≠ 0: cotação ausente/rede 0/worker 0/custo 0 nunca produzem fiat estimado nem divisão por zero (idem) → #613 |
-| API-001 | implementado | `tests/core/test_app_device_routes.py` |
-| API-002 | implementado | idem |
-| OPS-001 | implementado | idem |
-| OPS-002 | não auditado | `tests/test_polling_integration.py` existe; comportamento não verificado nesta rodada |
-| OPS-003 | **lacuna** | `tests/test_polling_reconnection.py` não existe → #610 |
-| TEL-001 | **lacuna** | nenhum teste de idempotência de telemetria de **device** → #608 |
-| TEL-002 | implementado | `tests/test_telemetry_validation.py`, `tests/test_agent_api.py`: rejeição/quarentena, reason, preservação do último bom e visibilidade na resposta Fleet → #609 |
-| TIME-001 | **lacuna** | `tests/test_timezones.py` não existe; **0** usos de fuso nomeado no repo → #604 |
+| API-001 | parcial | testa JSON semanticamente inválido (lista/esquema), ainda não cobre sintaxe malformada |
+| API-002 | parcial | erros de schema estão cobertos; ainda falta afirmar explicitamente que nenhum adaptador é chamado |
+| OPS-001 | parcial | resposta offline negada está coberta; falta verificar audit persistido e ausência de I/O do adaptador |
+| OPS-002 | parcial | `tests/test_polling_integration.py` cobre fallback stale para falha de pool, não todos os timeouts/5xx/campos |
+| OPS-003 | implementado | `tests/test_polling_reconnection.py` cobre backoff, recuperação e transições auditadas → #610 |
+| TEL-001 | implementado | `tests/test_telemetry_idempotency.py`: replay idempotente, conflito para payload alterado, isolamento por tenant e duplicata concorrente (PR #692 no master atual) |
+| OBS-001 | implementado | `tests/test_fleet_observability_events.py`: envelope seguro/correlacionado, scan, inclusão manual, transições online/offline/stale, provider pool e shares concorrentes; caminho externo de provider não é exercitado |
+| TEL-002 | implementado | `tests/test_telemetry_validation.py` e `tests/test_agent_api.py`: rejeição/quarentena com motivo, preservação do último dado bom e fallback standalone inválido (#609 / PR #704) |
+| TIME-001 | parcial | `tests/test_timezones.py` cobre conversão ISO, bucket UTC, persistência e idade relativa na UI nos dois fusos; ordenação visual de listas ainda precisa de cobertura → #604 |
 | NUM-001 | parcial | o plano declara *"parte de `NUM-001`"* |
 | NUM-002 | implementado (PR #605 wave W3) | `tests/test_numeric_properties.py`: hypothesis sobre o núcleo numérico puro — solo prob, lender, break-even, `fiat_convert`; invariantes [0,1]/serializável/sem NaN + bordas IEEE-754 e Decimal |
-| SEC-001 | não auditado | `tests/test_tenant_b2_isolation.py` existe; comportamento não verificado |
+| SEC-001 | parcial | `tests/test_tenant_b2_isolation.py`: isolamento em rotas/registry coberto; não demonstra todo acesso a device/log descrito |
 | SEC-002 | implementado | `tests/core/test_app_device_routes.py` |
 | CMD-001 | implementado | idem |
-| CMD-002 | implementado | Issue #368 |
-| AUD-001 | **parcial** | o plano declara só *"verificação de histórico"*; `tests/test_audit_log.py` não existe → #611 |
-| PER-001 | reconciliar | cobertura equivalente em `tests/test_persistence.py` (nome difere do sugerido) |
-| UI-001 | reconciliar | cobertura equivalente parcial em `tests/e2e/topbar-responsive.spec.js` |
-| UI-002 | **lacuna** | guardas de axe existem em outra camada; o spec e2e nomeado não → #612 |
-| LOAD-001 | **lacuna** | `tests/performance/` **não existe** no repositório → #606 |
-| LOAD-002 | **lacuna** | idem → #607 |
+| CMD-002 | parcial | integração cobre token de uso único; fluxo E2E/UX de confirmação segue sem spec dedicado |
+| AUD-001 | parcial | audit log, redação, append-only e ordenação cobertos pelo recorder; falta validar os outcomes blocked/success/error integralmente pela rota HTTP |
+| PER-001 | parcial | `tests/test_persistence.py` cobre endereço persistido, não reinício completo de device/telemetria/config/audit |
+| UI-001 | parcial | `tests/e2e/topbar-responsive.spec.js` cobre topbar em viewports, não todas as telas/medidas da matriz |
+| UI-002 | lacuna | axe gate não substitui E2E de teclado/foco/labels; spec ausente → #612 |
+| LOAD-001 | bloqueado | Falta SLO aprovado; diagnóstico local autorizado em `scripts/measure_fleet_scale.py` + `docs/FLEET_SCALE_BASELINE.md` não implementa o gate → #606 |
+| LOAD-002 | bloqueado | `scripts/measure_telemetry_ingest.py` e testes focados cobrem diagnóstico local; falta SLO aprovado para aceitação → #607 |
 
-**Estados:** `implementado` (teste existe e corresponde ao critério) · `parcial`
-(cobre parte do critério) · `lacuna` (Issue própria aberta) · `reconciliar`
-(cobertura existe sob outro nome — reforçar ali, não duplicar) · `não auditado`.
+**Estados:** `implementado` (teste ligado ao ID existe e corresponde ao critério declarado) ·
+`parcial` (cobre apenas parte do critério) · `lacuna` (Issue de cobertura permanece aberta) ·
+`bloqueado` (dependência externa; veja exceção explícita abaixo). Os links são pytest markers
+`@pytest.mark.covers(ID)` ou comentário `test-requirement` em spec Playwright coletável. O teste
+`test_traceability_contract.py` compara o plano, o mapa, os itens pytest realmente coletados e as
+exceções; IDs desconhecidos, duplicados, sem vínculo ou com classificação divergente falham no CI.
 
-### O que esta auditoria não conclui
+### Exceções explícitas de rastreabilidade
 
-- **Não** afirma que os testes marcados `implementado` estão corretos ou
-  passando — só que existem e correspondem ao critério declarado. Nenhum teste
-  foi executado para inferir os estados acima.
-- **Não** cobre os IDs marcados `não auditado`. Eles **não** devem ser tratados
-  como cobertos.
-- **Não** mede cobertura de linha: a matriz é sobre exigências, e o gate de
-  linha é outro (`--cov-fail-under=80`).
+| ID | Categoria | Justificativa | Acompanhamento |
+| --- | --- | --- | --- |
+| UI-002 | lacuna | Falta spec E2E de acessibilidade de dashboard e comando | Issue #612 |
+| LOAD-001 | bloqueado | SLO de latência/memória não aprovado; baseline diagnóstico e propostas não aprovadas documentados em `docs/FLEET_SCALE_BASELINE.md`, sem gate | Issue #606 |
+| LOAD-002 | bloqueado | SLO de ingestão/backlog não foi aprovado; diagnóstico autorizado não equivale à aceitação de desempenho | Issue #607 |
+
+### Limites da auditoria histórica de 2026-09-16
+
+- Na auditoria original, os estados foram inferidos por arquivo/comportamento e nenhum teste foi
+  executado. Os markers e o contrato atuais corrigem a rastreabilidade; não tornam cobertura
+  parcial em completa.
+- **Não** cobre IDs sem vínculo ou marcados `lacuna`/`bloqueado`; eles **não** devem ser tratados como cobertos.
+- **Não** mede cobertura de linha: a matriz é sobre exigências, e o gate de linha é outro
+  (`--cov-fail-under=80`).
 
 ### Achado transversal
 
-Com TEL-002, um ID da matriz agora é citado diretamente em testes. Os demais
-IDs ainda precisam ser referenciados para que a matriz inteira possa ser
-rastreada automaticamente no CI e em incidentes; essa lacuna transversal
-permanece na Issue #614.
+O contrato automatizado evita regressão silenciosa: todo ID do plano tem vínculo com teste coletado
+ou exceção explícita e revisável. A presença do vínculo, por si só, não prova suficiência semântica;
+estados `parcial` e `bloqueado` permanecem visíveis e não são promovidos automaticamente.
 
 ### Bloqueio declarado em `LOAD-001`/`LOAD-002`
 
-Os dois critérios citam um **SLO acordado** (p95 do resumo; latência e backlog
-de ingestão). Esse SLO **não existe** em nenhum documento do projeto. Sem o
-número, um teste de performance não consegue falhar por mérito — e um gate que
-só registra medição é o tipo que se aprende a ignorar, que é exatamente o
-problema que a Issue #588 descreveu para o caso do `mobile:`. Isso é um
-**bloqueio**, não uma suposição: #606 e #607 só têm escopo executável depois
-do SLO declarado.
+Os dois critérios citam um **SLO acordado** (p95 do resumo; latência e backlog de ingestão).
+Esse SLO **não existe** em nenhum documento do projeto. Sem o número, um teste de performance não
+consegue falhar por mérito — e um gate que só registra medição é o tipo que se aprende a ignorar,
+que é exatamente o problema que a Issue #588 descreveu para o caso do `mobile:`. Isso é um
+**bloqueio da aceitação**, não uma suposição; não impede a preparação diagnóstica
+local expressamente autorizada.
+
+Approved latency/memory/backlog SLOs remain absent; performance acceptance for #606/#607 remains blocked. Explicitly authorized local-only diagnostic measurement and unapproved SLO proposals may proceed outside the default performance gate, but neither a successful measurement nor helper tests implement LOAD-001/LOAD-002 acceptance.

@@ -304,7 +304,7 @@ class TestScanSubnet:
     def test_found_devices_aggregated(self):
         with patch("axe_fleet.scanner.probe_host") as mock_probe:
 
-            def fake_probe(ip, timeout=None):
+            def fake_probe(ip, timeout=None, failure_reason_out=None):
                 if ip.endswith(".2") or ip.endswith(".5"):
                     return {
                         "ip": ip,

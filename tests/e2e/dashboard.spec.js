@@ -9,6 +9,7 @@
  */
 
 import { test, expect } from '@playwright/test';
+import { revealToolbar } from './support/toolbar.js';
 
 // ══════════════════════════════════════════════════════════════════════
 //  Helpers
@@ -22,7 +23,7 @@ async function waitForDashboard(page) {
       const el = document.getElementById('m-hashrate');
       return el && el.textContent && !el.textContent.includes('—');
     }, { timeout: 20000 }),
-    page.waitForSelector('#status-bar', { timeout: 10000 }),
+    page.waitForSelector('#operation-console', { timeout: 10000 }),
     page.waitForTimeout(8000),
   ]);
   await page.waitForTimeout(1000);
@@ -192,19 +193,22 @@ test.describe('CYPHER65 War Room — Dashboard E2E', () => {
       await gotoDashboard(page);
     });
 
-    test('sidebar is visible with system status', async ({ page }) => {
+    test('sidebar and operational source coverage are visible', async ({ page }) => {
       await expect(page.locator('#sidebar')).toBeVisible();
-      await expect(page.locator('#status-bar')).toBeVisible();
-      // Should show either ONLINE or OFFLINE
-      const statusEl = page.locator('#status-bar, #sb-status');
-      await expect(statusEl.first()).toBeVisible();
+      await expect(page.locator('#operation-console')).toBeVisible();
+      await expect(page.locator('#console-fleet-source')).toBeVisible();
+      await expect(page.locator('#console-pool-source')).toBeVisible();
     });
 
-    test('KPI cards show hashrate / best diff / shares / pool HR', async ({ page }) => {
+    test('operational KPIs show worker metrics and separate global pool context', async ({ page }) => {
       await expect(page.locator('#kpi-hashrate')).toBeVisible();
       await expect(page.locator('#kpi-bestdiff')).toBeVisible();
-      await expect(page.locator('#kpi-shares')).toBeVisible();
-      await expect(page.locator('#kpi-poolhr')).toBeVisible();
+      await expect(page.locator('#console-worker-count')).toBeVisible();
+      await expect(page.locator('#console-last-share')).toBeVisible();
+      await expect(page.locator('#kpi-row button')).toHaveCount(4);
+      const context = page.locator('#console-observation-disclosure');
+      if ((await context.getAttribute('open')) === null) await context.locator('summary').click();
+      await expect(page.locator('#console-pool-context #kpi-poolhr')).toBeVisible();
     });
 
     test('worker hashrate displays a value', async ({ page }) => {
@@ -221,6 +225,8 @@ test.describe('CYPHER65 War Room — Dashboard E2E', () => {
     });
 
     test('BTC price visible in network block', async ({ page }) => {
+      await ensureSidebarOpen(page);
+      await page.locator('.sidebar__link[data-module="analysis"]').click();
       // BTC price can be — if cache is cold; but the element should exist
       await expect(page.locator('#n-btc-usd')).toBeVisible();
     });
@@ -551,6 +557,8 @@ test.describe('CYPHER65 War Room — Dashboard E2E', () => {
         });
       }
       await gotoDashboard(page);
+      await ensureSidebarOpen(page);
+      await page.locator('.sidebar__link[data-module="analysis"]').click();
     });
 
     test('profit mode buttons switch POOL/SOLO/RENTAL and reveal solo stats', async ({ page }) => {
@@ -757,6 +765,7 @@ test.describe('CYPHER65 War Room — Dashboard E2E', () => {
     test('Export modal opens', async ({ page }) => {
       // button#open-exports: a stray <span id="open-exports"> exists later in
       // the DOM, so the bare #open-exports selector is ambiguous in strict mode.
+      await revealToolbar(page);
       const exportBtn = page.locator('button#open-exports');
       await expect(exportBtn).toBeVisible();
       await exportBtn.click();

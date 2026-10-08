@@ -516,7 +516,24 @@ class TestAgentProtocolEvidence:
         }
         monkeypatch.setattr(agent, "_probe_braiins_rest", lambda ip: payload)
 
-        assert agent._braiins_rest_telemetry("10.0.0.5") == {}
+        assert agent._braiins_rest_telemetry("10.0.0.5") == {
+            "_invalid_fields": ["hashrate_hs"]
+        }
+
+    def test_agent_braiins_non_finite_sensor_survives_normalization(self, monkeypatch):
+        import agent.agent as agent
+
+        payload = {
+            "miner_stats": {"hashrate_avg": 110000, "board_temp_avg": float("nan")},
+            "pool_stats": {},
+            "power_stats": {},
+        }
+        monkeypatch.setattr(agent, "_probe_braiins_rest", lambda ip: payload)
+
+        tel = agent._braiins_rest_telemetry("10.0.0.5")
+
+        assert tel["temperature"] is None
+        assert tel["_invalid_fields"] == ["temperature"]
 
     def test_agent_braiins_preserves_a_measured_zero_hashrate(self, monkeypatch):
         import agent.agent as agent
@@ -539,6 +556,37 @@ class TestAgentProtocolEvidence:
 
         monkeypatch.setattr(agent, "_probe_braiins_rest", lambda ip: None)
         assert agent._braiins_rest_telemetry("10.0.0.5") == {}
+
+    @pytest.mark.parametrize(
+        "hashrate", [None, "N/A", float("nan"), float("inf"), 1e308]
+    )
+    def test_agent_does_not_discover_braiins_with_invalid_hashrate(
+        self, monkeypatch, hashrate
+    ):
+        import agent.agent as agent
+
+        miner = {} if hashrate is None else {"hashrate_avg": hashrate}
+        monkeypatch.setattr(agent, "_probe_axeos", lambda ip: None)
+        monkeypatch.setattr(
+            agent,
+            "_probe_braiins_rest",
+            lambda ip: {"miner_stats": miner, "pool_stats": {}},
+        )
+        monkeypatch.setattr(agent, "_probe_cgminer", lambda ip: None)
+
+        assert agent._probe_host("10.0.0.5") is None
+
+    def test_agent_braiins_discovery_preserves_measured_zero(self, monkeypatch):
+        import agent.agent as agent
+
+        monkeypatch.setattr(agent, "_probe_axeos", lambda ip: None)
+        monkeypatch.setattr(
+            agent,
+            "_probe_braiins_rest",
+            lambda ip: {"miner_stats": {"hashrate_avg": 0}, "pool_stats": {}},
+        )
+
+        assert agent._probe_host("10.0.0.5")["hashrate_hs"] == 0
 
     def test_agent_braiins_commands_use_the_cgminer_api(self, monkeypatch):
         import agent.agent as agent

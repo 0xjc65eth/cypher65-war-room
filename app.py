@@ -28,6 +28,7 @@ from markupsafe import Markup
 import solo_mining
 
 from helpers import (
+    pool_last_block,
     parse_diff_to_float,
     fmt_diff,
     fmt_hashrate,
@@ -716,7 +717,6 @@ def add_cache_headers(response):
 
 from services.db import get_db  # noqa: F401 — re-export (era uma duplicata)
 
-
 # Inject the real get_db factory into the alerts blueprint so it doesn't need
 # to import the app module at runtime (avoids circular dependency).
 _alerts_set_get_db(get_db)
@@ -734,7 +734,6 @@ from services.bootstrap import (  # noqa: F401 — re-export
     init_db,
     purge_old,
 )
-
 
 init_db()
 
@@ -1832,7 +1831,6 @@ from core.alerts.alert_engine import AlertEngine
 from core.alerts.automation_engine import AutomationEngine
 from services.push_notifier import notify_alert, send_webhook_for_alert
 
-
 _alert_engine = None
 _automation_engine = None
 
@@ -2044,12 +2042,19 @@ def _record_command(
     """
     safe_parameters = redact_command_data(parameters or {})
     safe_result = redact_command_data(result)
+    command_succeeded = bool(safe_result.get("success"))
+    # Adapter/provider error text is not a safe audit field: it can embed
+    # credentials even when the surrounding object has been key-redacted.
+    # Keep a stable outcome code in both history and persistent audit instead.
+    for field in ("error", "reason"):
+        if safe_result.get(field):
+            safe_result[field] = "" if command_succeeded else "command_failed"
     entry = {
         "device_id": device_id,
         "command": command,
         "parameters": safe_parameters,
         "timestamp": int(time.time()),
-        "success": bool(safe_result.get("success")),
+        "success": command_succeeded,
         "result": safe_result,
     }
     from services.tenant import get_tenant_id
@@ -2073,7 +2078,8 @@ def _record_command(
             details={
                 "command": command,
                 "parameters": safe_parameters,
-                "success": bool(safe_result.get("success")),
+                "success": command_succeeded,
+                "outcome": "success" if command_succeeded else "failure",
                 "error": safe_result.get("error", ""),
                 "operation_id": safe_result.get("operation_id"),
                 "ack_state": safe_result.get("ack_state"),
@@ -3295,13 +3301,37 @@ def _poll_axe_fleet(ts: int) -> None:
                     continue
                 did = device["id"]
                 last = _shared_state.axe_last_poll_ts.get(did, 0)
-                if ts - last >= _shared_state.AXE_POLL_INTERVAL:
+                errors = _shared_state.axe_poll_error_counts.get(did, 0)
+                if ts - last >= _axe_poll_interval(errors):
                     _shared_state.axe_last_poll_ts[did] = ts
-                    tel = _axe_registry.poll_device(did)
+                    try:
+                        tel = _axe_registry.poll_device(did)
+                    except Exception as e:
+                        _shared_state.axe_poll_error_counts[did] = errors + 1
+                        log.warning("[axe poll] error for device %s: %s", did, e)
+                        continue
                     if tel:
+                        _shared_state.axe_poll_error_counts.pop(did, None)
                         _cache_axe_telemetry(did, tel)
+                    else:
+                        _shared_state.axe_poll_error_counts[did] = errors + 1
     except Exception as e:
         log.warning("[axe poll] error: %s", e)
+
+
+def _axe_poll_interval(consecutive_errors: int) -> int:
+    """Return the bounded exponential retry interval for a device poll.
+
+    Healthy devices retain ``AXE_POLL_INTERVAL`` cadence. After each failed
+    attempt the next interval doubles, capped at ``AXE_POLL_MAX_BACKOFF``.
+    """
+    interval = max(1, int(_shared_state.AXE_POLL_INTERVAL))
+    maximum = max(interval, int(_shared_state.AXE_POLL_MAX_BACKOFF))
+    for _ in range(max(0, int(consecutive_errors))):
+        interval = min(interval * 2, maximum)
+        if interval == maximum:
+            break
+    return interval
 
 
 def _do_poll():
@@ -3814,16 +3844,8 @@ def _do_poll():
                 pool.get("workers") if pool else None,
                 pool.get("users") if pool else None,
                 pool.get("highestDifficulty") if pool else None,
-                # The pool API exposes the last block HEIGHT under the
-                # lastBlockTime field (the old lastBlockHeight key no longer
-                # exists — it was 100% NULL). Fall back to lastBlockTime so
-                # pool_last_block_height finally gets real data.
-                (
-                    (pool.get("lastBlockHeight") or pool.get("lastBlockTime"))
-                    if pool
-                    else None
-                ),
-                pool.get("lastBlockTime") if pool else None,
+                pool_last_block(pool)[0],
+                pool_last_block(pool)[1],
                 pool.get("workSinceLastBlock") if pool else None,
                 account.get("total_diff") if isinstance(account, dict) else None,
                 meta.get("block_count") if isinstance(meta, dict) else None,
@@ -6940,6 +6962,80 @@ def api_rentals(tenant_id: str = ""):
     except Exception as e:
         log.warning("[rentals] list error: %s", e)
         return jsonify({"success": False, "error": "failed to fetch rentals"}), 500
+
+
+@app.route("/api/rentals/<rental_id>/evidence", methods=["GET"])
+@require_tenant
+@role_required("viewer")
+def api_rental_evidence(rental_id: str, tenant_id: str = ""):
+    """Read tenant-scoped pool observations. Example: GET .../123/evidence."""
+    from services import rental_evidence
+
+    try:
+        payload = rental_evidence.read(
+            tenant_id or "default", request.args.get("provider", "mrr"), rental_id
+        )
+        response = jsonify(payload)
+        response.headers["Cache-Control"] = "no-store"
+        return response
+    except ValueError as error:
+        return jsonify(success=False, error=str(error)), 400
+
+
+@app.route("/api/rentals/<rental_id>/evidence", methods=["POST", "DELETE"])
+@require_tenant
+@role_required("member")
+def api_rental_evidence_config(rental_id: str, tenant_id: str = ""):
+    """Configure or disable an explicit rule. Example: POST .../123/evidence."""
+    from services import rental_evidence
+    from services.tenant import log_audit
+
+    provider = request.args.get("provider", "mrr")
+    tid = tenant_id or "default"
+    try:
+        if request.method == "DELETE":
+            rental_evidence.disable(tid, provider, rental_id)
+        else:
+            rental_evidence.configure(
+                tid, provider, rental_id, request.get_json(silent=True)
+            )
+        log_audit(
+            tid,
+            "rental_evidence_rule",
+            f"{provider}:{rental_id}",
+            {"method": request.method},
+        )
+        response = jsonify(rental_evidence.read(tid, provider, rental_id))
+        response.headers["Cache-Control"] = "no-store"
+        return response
+    except ValueError as error:
+        return jsonify(success=False, error=str(error)), 400
+
+
+@app.route("/api/rentals/<rental_id>/evidence/export", methods=["GET"])
+@require_tenant
+@role_required("viewer")
+def api_rental_evidence_export(rental_id: str, tenant_id: str = ""):
+    """Download retained evidence including rule revisions. Example: GET .../123/evidence/export."""
+    from services import rental_evidence
+
+    provider = request.args.get("provider", "mrr")
+    try:
+        content = rental_evidence.export_csv(
+            tenant_id or "default", provider, rental_id
+        )
+    except ValueError as error:
+        return jsonify(success=False, error=str(error)), 400
+    response = Response("\ufeff" + content, mimetype="text/csv")
+    response.headers["Content-Disposition"] = (
+        f'attachment; filename="rental-evidence-{provider}-{rental_id}.csv"'
+    )
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Evidence-Retention"] = (
+        "30 days; max 10000 points across revisions"
+    )
+    return response
 
 
 @app.route("/api/rentals/rig/blacklist", methods=["POST", "DELETE"])

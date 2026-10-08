@@ -338,7 +338,8 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             ts INTEGER NOT NULL,
             device_id TEXT NOT NULL,
-            payload TEXT NOT NULL
+            payload TEXT NOT NULL,
+            idempotency_key TEXT
         )"""
     )
     # ── Maintenance history table (Milestone 5) ──
@@ -631,6 +632,31 @@ def init_db():
     c.execute(
         "CREATE INDEX IF NOT EXISTS idx_audit_logs_tenant_ts ON audit_logs(tenant_id, ts)"
     )
+    # AUD-001: audit records are evidence, not mutable application state.
+    # Enforce append-only semantics in SQLite so accidental UPDATE/DELETE paths
+    # fail closed instead of relying only on service-layer convention.
+    c.execute(
+        """CREATE TRIGGER IF NOT EXISTS audit_logs_reject_update
+        BEFORE UPDATE ON audit_logs
+        BEGIN
+            SELECT RAISE(ABORT, 'audit_logs is append-only');
+        END"""
+    )
+    c.execute(
+        """CREATE TRIGGER IF NOT EXISTS audit_logs_reject_delete
+        BEFORE DELETE ON audit_logs
+        BEGIN
+            SELECT RAISE(ABORT, 'audit_logs is append-only');
+        END"""
+    )
+    c.execute(
+        """CREATE TRIGGER IF NOT EXISTS audit_logs_reject_replacement
+        BEFORE INSERT ON audit_logs
+        WHEN EXISTS (SELECT 1 FROM audit_logs WHERE id=NEW.id)
+        BEGIN
+            SELECT RAISE(ABORT, 'audit_logs is append-only');
+        END"""
+    )
     c.execute(
         """CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -710,6 +736,9 @@ def init_db():
     c.execute("PRAGMA synchronous=NORMAL")
     c.execute("PRAGMA cache_size=-8000")  # 8MB cache
     c.execute("PRAGMA busy_timeout=3000")
+    from services.rental_evidence import ensure_schema as ensure_rental_evidence_schema
+
+    ensure_rental_evidence_schema(conn)
     # Stamp the schema revision so the DB layout is verifiable (audit #5).
     _record_schema_version(conn)
     conn.commit()

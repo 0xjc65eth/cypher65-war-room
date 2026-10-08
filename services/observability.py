@@ -45,6 +45,83 @@ _EXTRA = {
 # noise. Default is "" so background/boot logs simply omit the field.
 request_id_var = contextvars.ContextVar("request_id", default="")
 
+_SAFE_EVENT_FIELDS = frozenset(
+    {
+        "tenant_id",
+        "device_id",
+        "agent_id",
+        "previous_status",
+        "status",
+        "sample_ts",
+        "scan_id",
+        "outcome",
+        "duration_ms",
+        "total",
+        "scanned",
+        "found_count",
+        "alive_count",
+        "count",
+        "reason",
+        "device_type",
+        "provider_id",
+        "pool_type",
+        "source",
+        "last_seen",
+        "has_measurements",
+        "changed_fields",
+        "share_count",
+        "accepted",
+        "rejected",
+        "stale",
+        "queued",
+        "stage",
+    }
+)
+
+
+def _safe_event_fields(fields):
+    """Keep only allowlisted scalar dimensions; never stringify raw objects."""
+    safe = {}
+    for key, value in fields.items():
+        if key not in _SAFE_EVENT_FIELDS:
+            continue
+        if value is None or isinstance(value, (bool, int, float)):
+            safe[key] = value
+        elif isinstance(value, str):
+            safe[key] = value[:256]
+    return safe
+
+
+def emit_event(name: str, *, correlation_id: str = "", **fields) -> None:
+    """Emit a correlated, structured domain event without affecting business flow.
+
+    Only allowlisted scalar dimensions enter the event envelope. This rejects
+    arbitrary payloads, camelCase credential fields, and objects whose string
+    representation might disclose secrets. The event is attached to the
+    existing JSON formatter's ``ctx`` object and is safe to call even when a
+    custom logging handler fails.
+
+    Example::
+
+        emit_event("miner.offline", tenant_id="tenant-1", device_id="asic-7")
+    """
+    try:
+        safe_fields = _safe_event_fields(fields)
+        # The canonical envelope cannot be overridden by caller fields.
+        safe_fields.pop("event", None)
+        safe_fields.pop("ts", None)
+        safe_fields.pop("request_id", None)
+        payload = {
+            **safe_fields,
+            "event": str(name or "unknown")[:100],
+            "ts": int(time.time()),
+            "request_id": correlation_id or get_request_id() or new_request_id("evt"),
+        }
+        log.info("fleet event", extra={"ctx": payload})
+    except Exception:
+        # Observability must never break a business path.
+        pass
+
 
 def new_request_id(prefix: str = "req") -> str:
     """Mint a short, collision-resistant correlation id: ``<prefix>-<12 hex>``.

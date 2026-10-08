@@ -6,11 +6,52 @@ e versionamento semântico ([SemVer](https://semver.org/lang/pt-BR/)).
 
 ## [Unreleased]
 
+- **UI boot (#756):** remove malformed merge residues that stopped all dashboard initialization, preserving signed Celsius bounds and dialog focus restoration.
+
+- Rebuild Operation as a richer premium dashboard: observed-worker comparison, authenticated per-device hashrate/temperature/power history, explicit gaps and last-valid measurement age, current power coverage, activity and Bitcoin context. Preserve entity investigation, source failures, session isolation and all modules; add native keyboard metric navigation and a complete text alternative for charts (#746).
+- Rebuild Operation as a richer premium dashboard: observed-worker comparison, authenticated per-device hashrate/temperature/power history, explicit gaps and last-valid measurement age, current power coverage, activity and Bitcoin context. Preserve entity investigation, source failures, session isolation and all modules; add native keyboard metric navigation and a complete text alternative for charts (#752).
+
+- Reject older full snapshots across poll/SSE, keep freshness aging during offline failures, and wire the Refresh button to the existing fetch path (#742).
+
+- Fix dashboard difficulty/height overwrite, pool block height versus timestamp, stale-aware topbar metrics and fixed pool subtitle (#732). Future stored block timestamps are normalized; historical rows are unchanged.
+- Mark hashrate comparisons unavailable without a matching worker/window estimate; require both pool and lease estimates before ranking strategies (#733).
+- Replace decorative worker/market labels with operational names, align market footer units with BTC/TH/day, and contain Fleet controls and the closed AI drawer on narrow screens (#738).
+- Remove public Fleet seed control and deny synthetic seed on cloud deployments even when DEBUG_MOCK=1 (#734).
+
+### Corrigido — acessibilidade no fluxo de comando Fleet (#612, UI-002)
+- Confirmação de pausa/reinício/identificação usa diálogo modal nativo com
+  foco contido, cancelamento por Escape e retorno do foco ao acionador.
+- E2E exercita Tab/Shift+Tab/Enter, anúncio no live region, Axe sem violações
+  críticas e movimento reduzido no browser; o spec roda no gate E2E do CI.
+
+### Adicionado — eventos estruturados de transição Fleet (#629)
+- `services.observability.emit_event()` publica eventos no contexto JSON existente
+  com timestamp e correlação; campos com nomes de credenciais são redigidos e
+  falhas do logger não interrompem o caminho de negócio.
+- Transições persistidas para `miner.offline`, `miner.telemetry.stale` e
+  `miner.online` são emitidas apenas quando o status muda. Leituras medidas
+  frescas geram `miner.telemetry.received`; nenhum payload bruto, IP, pool URL,
+  usuário ou credencial é incluído.
+- Discovery registra início, conclusão, devices encontrados e hosts alcançáveis
+  não identificados; inclusão manual registra início/falha/sucesso. Presença do
+  agente e detecção de provider são edge-triggered. Mudanças de shares são
+  serializadas junto à gravação para evitar duplicatas concorrentes.
+- Cobertura caplog verifica correlação, redaction, tolerância a falha de logging,
+  scan, inclusão manual, transições stale/online, shares concorrentes e ausência
+  de spam em heartbeats offline repetidos. Discovery propaga somente contagens
+  por motivo seguro (auth/timeout/refused/invalid response/reachable-unidentified),
+  sem endereços dos hosts rejeitados. A chamada externa real do provider pool
+  continua fora do teste hermético.
+
 ### Corrigido — yield marginal BTC/TH/s/dia (#622, MF-003)
 - Corrige a normalização H/s → TH/s na fórmula de `effective_btc_per_th_per_day`
   e preserva 16 casas decimais para não arredondar a zero valores de rede real.
 - Sem hashrate de rede, o payload continua omitindo o campo; a cópia histórica
   de polling acompanha a fórmula corrigida. O campo segue sem consumidor na UI.
+- Decisão de compatibilidade: manter a chave no payload para consumidores API
+  existentes; não expor na UI sem um desenho de produto que apresente unidade,
+  timestamp, janela e premissas. Hashrate de rede ou resultado não finito vira
+  indisponível, nunca um yield zero com aparência de válido.
 
 ### Corrigido — instalação e coleta do agente Fleet (Issue #636)
 - Comandos copiados usam continuações shell válidas e argumentos protegidos.
