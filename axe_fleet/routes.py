@@ -51,7 +51,12 @@ from core.models.device import Device, DeviceStatus, device_status_is_online
 from core.safety.safety_engine import SafetyEngine
 
 from .connector import AxeOSConnector, AxeOSConnectorError
-from .models import infer_capabilities, STATUS_PAUSED, derive_device_status
+from .models import (
+    infer_capabilities,
+    STATUS_PAUSED,
+    derive_device_status,
+    validate_agent_telemetry,
+)
 from .registry import DeviceRegistry
 
 log = logging.getLogger("cypher65.axe.routes")
@@ -576,21 +581,27 @@ def list_removed_devices(tenant_id: str = ""):
 @require_tenant
 @_role_required("member")
 def restore_removed_device(tenant_id: str = ""):
-    """Clear a tombstone so the local agent may register the miner again.
+    """Restore one tombstoned row with an explicit, matching MAC identity.
 
-    Body: { "ip_address": "192.168.1.10" }
-
-    This is operator intent. It never probes the IP and never inserts an
-    active device, so a cloud deploy cannot use restore as an SSRF path
-    to private addresses. Auto-resurrection without this call stays blocked.
+    Body: {"ip_address": "192.168.1.10", "mac": "02:00:00:00:00:01"}
+    Restoration never probes the address and retains the original row/history.
     """
     if _registry is None:
         return jsonify({"error": "registry not initialized"}), 500
     data = request.get_json(silent=True) or {}
     ip = (data.get("ip_address") or "").strip()
-    if not ip:
-        return jsonify({"success": False, "error": "ip_address is required"}), 400
-    cleared = _registry.clear_tombstone(ip, tenant_id=tenant_id)
+    mac = data.get("mac")
+    if not ip or not mac:
+        return jsonify({"success": False, "error": "ip_address and verified mac are required"}), 400
+    try:
+        tombstone = _registry.get_removed_by_ip(ip, tenant_id=tenant_id)
+        if not tombstone:
+            return jsonify({"success": False, "error": "no removed device for this IP", "ip_address": ip}), 404
+        if normalize_device_mac(tombstone.get("mac_address")) != normalize_device_mac(mac):
+            return jsonify({"success": False, "error": "MAC does not match tombstoned device", "code": "DEVICE_IDENTITY_CONFLICT"}), 409
+        cleared = _registry.clear_tombstone(ip, tenant_id=tenant_id)
+    except DeviceIdentityConflict as exc:
+        return jsonify({"success": False, "error": "device identity conflict", "code": "DEVICE_IDENTITY_CONFLICT", "detail": str(exc)}), 409
     if not cleared:
         return (
             jsonify(
@@ -1363,6 +1374,7 @@ def fleet_summary(tenant_id: str = ""):
     # Reconcile the stored status with the newest trusted telemetry. Reading
     # only the device row can leave ONLINE frozen after the agent stops.
     devices = _registry.list_devices(tenant_id=tenant_id, with_telemetry=True)
+    quarantines = _registry.get_telemetry_quarantines(tenant_id=tenant_id)
     total = len(devices)
     # Reachability via the shared helper (ONLINE/WARNING/HASHING). WARNING is
     # kept in its own bucket (mirrors fleet_health) — a degraded-but-reachable
@@ -1399,6 +1411,12 @@ def fleet_summary(tenant_id: str = ""):
         if device_status_is_online(status) and not int(d.get("agent_managed", 0) or 0):
             latency_ms = _probe_miner_latency_ms(d.get("ip_address", ""))
         advice = _device_advice(status, p, latency_ms)
+        telemetry_quarantine = quarantines.get(d["id"], {})
+        if telemetry_quarantine:
+            advice.append(
+                "telemetry quarantined: "
+                + ", ".join(telemetry_quarantine.get("fields") or [])
+            )
         # Enrich device with latest telemetry metrics
         enriched = dict(d)
         # Capabilities as a supported-command ARRAY (shared helper with
@@ -1409,6 +1427,7 @@ def fleet_summary(tenant_id: str = ""):
         enriched["capabilities"] = _caps_supported_commands(d.get("capabilities"))
         enriched["latency_ms"] = latency_ms
         enriched["advice"] = advice
+        enriched["telemetry_quarantine"] = telemetry_quarantine or None
         telemetry_ts = _valid_telemetry_ts(p.get("ts"))
         uptime_seconds = p.get("uptime_seconds")
         enriched["_telemetry"] = {
@@ -3195,6 +3214,7 @@ def fleet_health(tenant_id: str = ""):
     # The registry's freshness-aware read degrades old ONLINE/HASHING rows to
     # STALE. The bare device row cannot prove current health.
     devices = _registry.list_devices(tenant_id=tenant_id, with_telemetry=True)
+    quarantines = _registry.get_telemetry_quarantines(tenant_id=tenant_id)
     now = int(time.time())
 
     from .models import infer_health_score
@@ -3265,6 +3285,12 @@ def fleet_health(tenant_id: str = ""):
         if device_status_is_online(status) and not int(d.get("agent_managed", 0) or 0):
             latency_ms = _probe_miner_latency_ms(d.get("ip_address", ""))
         advice = _device_advice(status, tel, latency_ms)
+        telemetry_quarantine = quarantines.get(did, {})
+        if telemetry_quarantine:
+            advice.append(
+                "telemetry quarantined: "
+                + ", ".join(telemetry_quarantine.get("fields") or [])
+            )
 
         measured_hr = tel.get("hashrate_hs")
         reported_hr = _nonnegative_finite_int(measured_hr)
@@ -3362,6 +3388,7 @@ def fleet_health(tenant_id: str = ""):
                 },
                 "latency_ms": latency_ms,
                 "advice": advice,
+                "telemetry_quarantine": telemetry_quarantine or None,
                 "last_seen": d.get("last_seen", 0),
             }
         )
@@ -3921,6 +3948,42 @@ def agent_telemetry(agent_tenant_id: str = ""):
     if not ip or not isinstance(tel, dict):
         return jsonify({"error": "ip and telemetry object required"}), 400
     device = _registry.get_device_by_ip(ip, tenant_id=agent_tenant_id)
+    errors = validate_agent_telemetry(tel)
+    if errors:
+        reasons = sorted({error["reason"] for error in errors})
+        fields = sorted({error["field"] for error in errors})
+        is_new_quarantine = True
+        if device:
+            is_new_quarantine = _registry.record_telemetry_quarantine(
+                device["id"], fields, reasons, tenant_id=agent_tenant_id
+            )
+        if is_new_quarantine:
+            log.warning(
+                "[agent.telemetry_quarantined] tenant=%s ip=%s fields=%s reasons=%s",
+                agent_tenant_id,
+                ip,
+                fields,
+                reasons,
+            )
+            _log_audit(
+                agent_tenant_id,
+                "agent.telemetry_quarantined",
+                target=ip,
+                details={"fields": fields, "reasons": reasons},
+            )
+        return (
+            jsonify(
+                {
+                    "success": False,
+                    "error": "telemetry rejected",
+                    "code": "INVALID_TELEMETRY",
+                    "reason": ",".join(reasons),
+                    "fields": fields,
+                    "quarantined": True,
+                }
+            ),
+            422,
+        )
     if not device:
         # Agent reported a device it registered earlier but the row is gone
         # (e.g. server DB reset). Re-upsert with the telemetry as identity —

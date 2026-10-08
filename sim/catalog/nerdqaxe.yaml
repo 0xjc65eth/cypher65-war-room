@@ -1,0 +1,69 @@
+family: nerdqaxe
+scope: NerdQAxe+ / NerdQAxe++ device identity and AxeOS-compatible management API
+sources:
+  - fidelity: source
+    project: BitMaker-hub/NerdQaxe
+    url: https://github.com/BitMaker-hub/NerdQaxe
+    accessed: 2026-09-29
+    revision: not_resolved (repository README accessed 2026-09-29; GitHub API commit lookup returned 422)
+    revision_url: https://github.com/BitMaker-hub/NerdQaxe
+    notes: mutable README reference; not a schema source
+    evidence: README states NerdQAxe+ runs a variant of AxeOS firmware and uses four BM1368 ASICs; this is design/build documentation, not API evidence.
+  - fidelity: source
+    project: shufps/ESP-Miner-NerdQAxePlus
+    url: https://github.com/shufps/ESP-Miner-NerdQAxePlus
+    accessed: 2026-09-29
+    revision: c18abafebde66c39f4bd8ae6d839088b84b4e79c (default branch as observed 2026-09-29)
+    revision_url: https://github.com/shufps/ESP-Miner-NerdQAxePlus/commit/c18abafebde66c39f4bd8ae6d839088b84b4e79c
+    evidence: repository describes itself as a forked ESP-Miner variant modified for NerdQAxe+ and supports ESP32-S3.
+api_contract:
+  inherited_subset:
+    catalog: axeos.yaml
+    fidelity: source
+    qualification: Shared endpoint schema is sourced from ESP-Miner OpenAPI. NerdQaxe firmware is a fork; same behavior for each fork release is not established without pinned source revision or captured response.
+  device_specific_fields:
+    - name: ASICModel
+      type: string
+      unit: null
+      value_examples: [BM1368, BM1370]
+      fidelity: assumed
+      why_assumed: Values reflect repo code/tests and published hardware descriptions; no pinned build/API schema for each NerdQaxe model/revision.
+    - name: model
+      type: string
+      unit: null
+      value_examples: [NerdQAxe+, NerdQaxe++]
+      fidelity: assumed
+      why_assumed: Model string may vary with board revision, fork, or user config; no capture matrix.
+    - name: smallCoreCount
+      type: number
+      unit: cores
+      value_examples: []
+      fidelity: source
+      source_ref: inherited ESP-Miner current OpenAPI, but whether a given NerdQaxe version emits a value is not captured
+      optional: true_at_runtime_assumed
+    - name: frequency
+      type: number
+      unit: MHz
+      value_examples: []
+      fidelity: source
+      source_ref: inherited AxeOS OpenAPI
+    - name: power
+      type: number
+      unit: watts
+      value_examples: []
+      fidelity: source
+      source_ref: inherited AxeOS OpenAPI
+network:
+  endpoint: GET /api/system/info
+  port: 80
+  fidelity: source_for_inherited_API_assumed_for_each_fork_release
+fixtures:
+  physical_captures: []
+  simulator:
+    source: axe_fleet.axeos_contract.official_esp_miner_info
+    status: generated fixture; not physical capture
+    catalog_fidelity: source-derived shared fields; model-specific values assumed
+limits:
+  - no claim that NerdQAxe+ and NerdQAxe++ hardware or firmware versions have identical keys or telemetry ranges
+  - no physical rate/power/temperature calibration, ASIC operation, thermal response, or real pool share flow is proven
+  - production virtual device remains loopback-only and implements only selected endpoints

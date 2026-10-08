@@ -1,0 +1,254 @@
+family: axeos
+scope: ESP-Miner / AxeOS system info subset consumed by CYPHER65 agent and telemetry contract
+source:
+  fidelity: source
+  project: bitaxeorg/ESP-Miner
+  document: main/http_server/openapi.yaml (SystemInfo and /api/system/info)
+  url: https://github.com/bitaxeorg/ESP-Miner/blob/c75aa99dc867db6ed1f38c7add113c452f263633/main/http_server/openapi.yaml
+  accessed: 2026-09-29
+  revision: c75aa99dc867db6ed1f38c7add113c452f263633 (master as observed 2026-09-29)
+  revision_url: https://github.com/bitaxeorg/ESP-Miner/commit/c75aa99dc867db6ed1f38c7add113c452f263633
+  notes: OpenAPI documents keys/types/units. SystemInfo declares stratumPort as number (Settings/Pool schemas constrain configured ports to integers 1..65535). The schema does not prove every released firmware actually emits all required keys.
+
+fixtures:
+  captured: []
+  source_derived:
+    - path: axe_fleet/axeos_contract.py::official_esp_miner_info
+      status: generated representative payload; not a physical capture
+      version_label: AxeOS 2.4.0 (fixture metadata, not pinned upstream binary)
+endpoints:
+  - name: system_info
+    path: /api/system/info
+    method: GET
+    port: 80
+    fidelity: source
+    source_ref: SystemInfo schema; path in ESP-Miner openapi.yaml
+    side_effects: none
+fields:
+  - name: ASICModel
+    type: string
+    unit: null
+    observed_range: BM1366..BM1397 enumerated by current OpenAPI
+    optional: false_in_openapi
+    fidelity: source
+  - name: boardVersion
+    type: string
+    unit: null
+    observed_range: not stated
+    optional: false_in_openapi
+    fidelity: source
+  - name: hashRate
+    type: number
+    unit: GH/s
+    observed_range: not stated
+    optional: false_in_openapi
+    normalization: GH/s * 1e9 => H/s (CYPHER65 canonical field hashrate_hs)
+    fidelity: source
+  - name: hashRate_1m
+    type: number
+    unit: GH/s
+    observed_range: average window 1 minute
+    optional: false_in_openapi
+    normalization: GH/s * 1e9 => H/s
+    fidelity: source
+  - name: hashRate_10m
+    type: number
+    unit: GH/s
+    observed_range: average window 10 minutes
+    optional: false_in_openapi
+    normalization: GH/s * 1e9 => H/s
+    fidelity: source
+  - name: hashRate_1h
+    type: number
+    unit: GH/s
+    observed_range: average window 1 hour
+    optional: false_in_openapi
+    normalization: GH/s * 1e9 => H/s
+    fidelity: source
+  - name: expectedHashrate
+    type: number
+    unit: GH/s
+    observed_range: not stated
+    optional: false_in_openapi
+    normalization: GH/s * 1e9 => H/s
+    fidelity: source
+  - name: coreVoltage
+    type: number
+    unit: mV
+    observed_range: not stated
+    optional: false_in_openapi
+    fidelity: source
+  - name: frequency
+    type: number
+    unit: MHz
+    observed_range: not stated
+    optional: false_in_openapi
+    fidelity: source
+  - name: uptimeSeconds
+    type: number
+    unit: seconds
+    observed_range: nonnegative by meaning; schema has no minimum
+    optional: false_in_openapi
+    changes: increases while process/device remains running; reboot resets uptime (reboot semantics assumed, not schema-defined)
+    fidelity: source
+  - name: macAddr
+    type: string
+    unit: null
+    observed_range: MAC syntax not declared in schema
+    optional: false_in_openapi
+    fidelity: source
+  - name: hostname
+    type: string
+    unit: null
+    observed_range: schema defines configured hostname; exact runtime formatting may vary
+    optional: false_in_openapi
+    fidelity: source
+  - name: version
+    type: string
+    unit: null
+    observed_range: firmware-specific
+    optional: false_in_openapi
+    fidelity: source
+  - name: axeOSVersion
+    type: string
+    unit: null
+    observed_range: firmware-specific
+    optional: false_in_openapi
+    fidelity: source
+  - name: stratumURL
+    type: string
+    unit: null
+    observed_range: arbitrary configured pool address; do not use real endpoint in simulator
+    optional: false_in_openapi
+    fidelity: source
+  - name: stratumPort
+    type: number
+    unit: TCP port
+    observed_range: not stated by SystemInfo (Settings/Pool constrain configured port to integer 1..65535)
+    optional: false_in_openapi
+    fidelity: source
+  - name: stratumUser
+    type: string
+    unit: null
+    observed_range: arbitrary worker name; test-only identity only
+    optional: false_in_openapi
+    fidelity: source
+  - name: temp
+    type: number
+    unit: Celsius (description says average chip temperature)
+    observed_range: not stated
+    optional: false_in_openapi
+    fidelity: source
+  - name: temp2
+    type: number
+    unit: Celsius (description says average chip temperature from second sensor)
+    observed_range: not stated
+    optional: false_in_openapi
+    fidelity: source
+  - name: vrTemp
+    type: number
+    unit: Celsius
+    observed_range: not stated
+    optional: false_in_openapi
+    fidelity: source
+  - name: fanspeed
+    type: number
+    unit: percent (implied by current firmware field description)
+    observed_range: not explicitly constrained
+    optional: false_in_openapi
+    fidelity: source
+  - name: fanrpm
+    type: number
+    unit: RPM
+    observed_range: not explicitly constrained
+    optional: false_in_openapi
+    fidelity: source
+  - name: power
+    type: number
+    unit: watts (firmware API description)
+    observed_range: not explicitly constrained
+    optional: false_in_openapi
+    fidelity: source
+  - name: sharesAccepted
+    type: number
+    unit: shares
+    observed_range: nonnegative by meaning; schema has no minimum
+    optional: false_in_openapi
+    changes: monotonically increases until reset/reboot (counter behavior is assumed; API schema gives no reset contract)
+    fidelity: source
+  - name: sharesRejected
+    type: number
+    unit: shares
+    observed_range: nonnegative by meaning; schema has no minimum
+    optional: false_in_openapi
+    changes: monotonically increases until reset/reboot (counter behavior is assumed; API schema gives no reset contract)
+    fidelity: source
+  - name: bestDiff
+    type: number
+    unit: share difficulty
+    observed_range: ">= 0 by meaning"
+    optional: false_in_openapi
+    fidelity: source
+  - name: bestSessionDiff
+    type: number
+    unit: share difficulty
+    observed_range: ">= 0 by meaning"
+    optional: false_in_openapi
+    fidelity: source
+  - name: model
+    type: string
+    unit: null
+    observed_range: firmware/device dependent
+    optional: true
+    fidelity: assumed
+    notes: Extra fixture convenience field; exact `model` key is not in the pinned SystemInfo required list.
+  - name: firmware
+    type: string
+    unit: null
+    observed_range: firmware-specific
+    optional: true
+    fidelity: assumed
+    notes: Extra fixture alias; source schema uses version/axeOSVersion.
+  - name: miningPaused
+    type: boolean
+    unit: null
+    observed_range: true/false
+    optional: false_in_openapi
+    fidelity: source
+operations:
+  - name: restart
+    method: POST
+    path: /api/system/restart
+    fidelity: source
+    source_ref: ESP-Miner OpenAPI paths./api/system/restart
+    response: GenericResponse object with required string message
+    simulator_policy: disabled in default E2E; optional state transition may return local synthetic ACK only
+  - name: pause
+    method: POST
+    path: /api/system/pause
+    fidelity: source
+    source_ref: ESP-Miner OpenAPI paths./api/system/pause
+    response: GenericResponse object with required string message
+  - name: resume
+    method: POST
+    path: /api/system/resume
+    fidelity: source
+    source_ref: ESP-Miner OpenAPI paths./api/system/resume
+    response: GenericResponse object with required string message
+  - name: configure
+    method: PATCH
+    path: /api/system
+    fidelity: source
+    source_ref: ESP-Miner OpenAPI paths./api/system
+    response: UpdateSettingsResponse schema
+    evidence: Settings request schema has additionalProperties true; exact field effect and behavior remain firmware-dependent
+versions:
+  - version: ESP-Miner current upstream OpenAPI at access time
+    source_ref: above
+    fixtures: none captured
+  - version: older / forked AxeOS variants
+    fidelity: assumed
+    notes: key presence, types, and extensions can vary; no cross-version contract is claimed
+limits:
+  - schema source confirms declared contract, not actual emitted payload for each device/firmware combination
+  - no chip-count-specific physical rates, power/thermal calibration, pool connectivity, DHCP or LAN behavior is certified
