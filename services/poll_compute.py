@@ -355,7 +355,8 @@ def dedup_workers(entries):
 
 
 def compute_share_calc(
-    ts, gap, share_diff_raw, current_difficulty, best_diff_str, session_share_count
+    ts, gap, share_diff_raw, current_difficulty, best_diff_str, session_share_count,
+    estimated=False,
 ):
     """Build the per-share LIVE HASH CALCULATOR payload (pure math).
 
@@ -389,6 +390,7 @@ def compute_share_calc(
         "network_diff_at_time": current_difficulty,
         "network_diff_at_time_str": fmt_diff(current_difficulty),
         "session_share_count_at_time": session_share_count,
+        "estimated": bool(estimated),
     }
 
 
