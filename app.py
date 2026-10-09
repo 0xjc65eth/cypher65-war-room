@@ -89,6 +89,7 @@ from agents import (
 from routes.solo_mining_routes import solo_mining_bp
 from routes.device_control import device_control_bp
 from services.probability_engine import register_probability_routes
+from routes.block_probability_lab_routes import dashboard_bp as block_probability_lab_bp
 from services.hashrate_market import (
     PH_TO_TH,
     MIN_PLAUSIBLE_PRICE_BTC_TH_DAY as _MIN_PLAUSIBLE_PRICE,
@@ -273,6 +274,10 @@ if _w:
 # ── Register blueprints ─────────────────────────────────────────────────────
 app.register_blueprint(solo_mining_bp, url_prefix="/api/solo-mining")
 register_probability_routes(app)
+
+# ── Register Block Probability Lab blueprint ────────────────────────────────
+from routes.block_probability_lab_routes import dashboard_bp as block_probability_lab_blueprint
+app.register_blueprint(block_probability_lab_blueprint, url_prefix="/api/block-probability-lab")
 
 # ── Register Axe Fleet blueprint ────────────────────────────────────────────
 app.register_blueprint(axe_fleet_bp, url_prefix="/api/axe-fleet")
@@ -3702,6 +3707,7 @@ def _do_poll():
                 # target). When that's missing, fall back to best_diff / 2
                 # (vardiff typically doubles after every accepted share).
                 share_diff_raw = 0.0
+                estimated = False
                 try:
                     d = worker.get("difficulty")
                     if isinstance(d, (int, float)) and d > 0:
@@ -3712,6 +3718,7 @@ def _do_poll():
                         share_diff_raw = (
                             parse_diff_to_float(worker.get("bestDifficulty")) / 2.0
                         )
+                        estimated = True
                 except Exception:
                     share_diff_raw = 0.0
                 if share_diff_raw and current_difficulty and gap and gap > 0:
@@ -3723,6 +3730,7 @@ def _do_poll():
                         current_difficulty,
                         worker.get("bestDifficulty"),
                         timeline_state["session_share_count"],
+                        estimated=estimated,
                     )
                     timeline_state["share_calc_history"].append(share_calc)
 

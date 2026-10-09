@@ -217,6 +217,9 @@
     if (dom.lcAvgShareDiff) dom.lcAvgShareDiff.textContent = totals.avg_share_diff_str || dash;
     if (dom.lcCumP) dom.lcCumP.textContent = totals.cum_p_block_pct_str || dash;
     if (dom.lcExpectedBlocks) dom.lcExpectedBlocks.textContent = totals.expected_blocks_str || dash;
+    if (dom.lcEstimatedBadge) {
+      dom.lcEstimatedBadge.style.display = latest.estimated ? '' : 'none';
+    }
 
     // Ticker — newest first
     if (dom.lcTickerList) {
