@@ -1149,14 +1149,27 @@ function renderPool(pool, luck) {
     }
     return hm;
   }
-  // The Share-Distribution panel badge was hardcoded to "0 shares" in the HTML
-  // and never updated. Reflect the real histogram count from the API.
+  // The Share-Distribution panel badge reflects the real histogram count.
   function _updateShareDistBadge(cfg, data, values) {
     if (!cfg || cfg.chart !== 'share_dist') return;
     const badge = document.getElementById('share-dist-count-badge');
     if (!badge) return;
     const n = (data && data.count != null) ? data.count : values.reduce((a, b) => a + (Number(b) || 0), 0);
     badge.textContent = `${n} shares`;
+  }
+
+
+  function _updateShareDistSummary(data) {
+    const summary = document.getElementById('share-dist-summary');
+    if (!summary) return;
+    const stats = data && data.share_statistics;
+    if (!stats || stats.status === 'NO_DATA') {
+      summary.textContent = 'P50 — · P75 — · P90 — · P95 — · P99 — · MAX — · SAMPLE — · WINDOW —';
+      return;
+    }
+    const value = (number) => number == null ? '—' : fmt.diff(number);
+    const window = stats.observed_window || (stats.window_seconds != null ? `${stats.window_seconds}s` : '—');
+    summary.textContent = `P50 ${value(stats.p50)} · P75 ${value(stats.p75)} · P90 ${value(stats.p90)} · P95 ${value(stats.p95)} · P99 ${value(stats.p99)} · MAX ${value(stats.max)} · SAMPLE ${stats.sample_count == null ? '—' : stats.sample_count} · WINDOW ${window}`;
   }
   // P0-1: overlay the network target difficulty on the share histogram — a
   // solid purple reference line + readable badge so the operator sees how far
@@ -1188,6 +1201,7 @@ function renderPool(pool, luck) {
       chart.data.labels = rawLabels.map(t => _fmtChartLabel(t, cfg, id));
       chart.data.datasets[0].data = values;
       _updateShareDistBadge(cfg, data, values);
+      _updateShareDistSummary(data);
       // Fase 2.1: SMA overlay + shares bar + event annotations
       if (chart.data.datasets[1] && cfg.chart !== 'share_dist') {
         chart.data.datasets[1].data = computeSMA(values, Math.max(3, Math.round(values.length / 10)));
@@ -1265,7 +1279,7 @@ function renderPool(pool, luck) {
     renderComparison(snap);
     renderSoloStats(snap.proximity);
     renderProximity(snap.proximity);
-    renderQuantumLock(snap.proximity);
+    renderSessionEvidence(snap.proximity);
     renderLiveCalc(snap.proximity);
     renderNetworkGauge(snap);
     renderMilestones(snap.milestones);
@@ -1528,6 +1542,7 @@ function renderPool(pool, luck) {
       chart.data.labels = rawLabels.map(t => _fmtChartLabel(t, cfg, id));
       chart.data.datasets[0].data = values;
       _updateShareDistBadge(cfg, data, values);
+      _updateShareDistSummary(data);
       // Fase 2.1: SMA overlay + shares bar + event annotations
       if (chart.data.datasets[1] && cfg.chart !== 'share_dist') {
         chart.data.datasets[1].data = computeSMA(values, Math.max(3, Math.round(values.length / 10)));

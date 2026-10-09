@@ -1,7 +1,6 @@
 """
 CYPHER65 // Block Probability Lab
-=================================
-
+==========================
 The consolidated Block Probability Lab. It exposes the model inputs, the
 probability solver, the target-probability solver, the hashpower/network
 what-if, historical best share, the solo model summary and share statistics
@@ -312,62 +311,121 @@ def share_statistics(
     session_share_count: Optional[int],
     share_calc_history: Optional[Iterable[Dict[str, Any]]],
     window_seconds: float = 3600.0,
+    user_hashrate: Optional[float] = None,
+    network_hashrate: Optional[float] = None,
+    age_seconds: Optional[float] = None,
+    observed_now: Optional[float] = None,
 ) -> Dict[str, Any]:
-    """Share statistics for the SESSION EVIDENCE panel.
+    """Summarize valid share difficulties and evidence actually present.
 
-    Provides P50/P75/P90/P95/P99/MAX of share difficulty, plus sample count
-    and window, when the history supports it. Descriptive of the session;
-    it does not change the next-hash probability."""
+    Percentiles sort valid difficulty values; trend preserves their original
+    chronological order. Missing timestamps, gap counts, and observation
+    windows remain unknown when the retained history cannot prove them.
+    """
     history = list(share_calc_history or [])
-    n = len(history)
+    valid_entries = []
+    for entry in history:
+        if not isinstance(entry, dict):
+            continue
+        try:
+            diff = float(entry.get("share_diff_raw"))
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(diff) and diff > 0:
+            valid_entries.append((entry, diff))
+
+    chronological_diffs = [diff for _, diff in valid_entries]
+    diffs = sorted(chronological_diffs)
+    count = len(diffs)
     out = {
-        "session_share_count": session_share_count or 0,
-        "sample_count": n,
+        "session_share_count": session_share_count,
+        "sample_count": count,
         "window_seconds": window_seconds,
         "window": f"{window_seconds} s ({window_seconds/60:.0f} min)",
-        "status": "NO_DATA" if n < 2 else "SOLVED",
+        "status": "NO_DATA" if count < 2 else "SOLVED",
         "p50": None,
         "p75": None,
         "p90": None,
         "p95": None,
         "p99": None,
-        "max": None,
+        "max": diffs[-1] if diffs else None,
         "share_diff_summary": None,
     }
-    if n == 0:
-        return out
-    diffs = sorted(
-        float(e.get("share_diff_raw") or 0) for e in history if e.get("share_diff_raw")
-    )
-    if not diffs:
-        return out
-    out["sample_count"] = n
-    out["max"] = diffs[-1]
-    # Percentiles by linear interpolation (nearest-rank style for small n)
-    def _pct(p: float) -> Optional[float]:
-        if n == 1:
+
+    def _pct(percentile: float) -> Optional[float]:
+        if not count:
+            return None
+        if count == 1:
             return diffs[0]
-        idx = (n - 1) * p
+        idx = (count - 1) * percentile
         lo = int(math.floor(idx))
         hi = int(math.ceil(idx))
         if lo == hi:
             return diffs[lo]
         return diffs[lo] + (diffs[hi] - diffs[lo]) * (idx - lo)
-    out["p50"] = _pct(0.50)
-    out["p75"] = _pct(0.75)
-    out["p90"] = _pct(0.90)
-    out["p95"] = _pct(0.95)
-    out["p99"] = _pct(0.99)
+
+    for percentile in (50, 75, 90, 95, 99):
+        out[f"p{percentile}"] = _pct(percentile / 100)
+
+    trend = "INSUFFICIENT"
+    if count >= 20:
+        chunk = max(1, count // 5)
+        earlier = chronological_diffs[:chunk]
+        recent = chronological_diffs[-chunk:]
+        avg_earlier = sum(earlier) / len(earlier)
+        avg_recent = sum(recent) / len(recent)
+        if avg_recent > avg_earlier * 1.05:
+            trend = "INCREASING"
+        elif avg_recent < avg_earlier * 0.95:
+            trend = "DECREASING"
+        else:
+            trend = "STABLE"
+    elif count >= 5:
+        trend = "STABLE"
+    out["share_diff_trend"] = trend
     out["share_diff_summary"] = {
-        "p50": out["p50"],
-        "p75": out["p75"],
-        "p90": out["p90"],
-        "p95": out["p95"],
-        "p99": out["p99"],
-        "max": out["max"],
-        "sample_count": out["sample_count"],
-        "window_seconds": window_seconds,
+        "p50": out["p50"], "p75": out["p75"], "p90": out["p90"],
+        "p95": out["p95"], "p99": out["p99"], "max": out["max"],
+        "sample_count": count, "window_seconds": window_seconds,
+        "trend": trend,
     }
+
+    ts_values = []
+    for entry, _ in valid_entries:
+        for key in ("ts", "timestamp", "time"):
+            try:
+                value = float(entry.get(key))
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(value) and value > 0:
+                ts_values.append(value)
+                break
+    last_age = None
+    if observed_now is not None and ts_values:
+        last_age = max(0, int(float(observed_now) - ts_values[-1]))
+    elif age_seconds is not None:
+        last_age = max(0, int(float(age_seconds)))
+    observed_window = (
+        max(0, int(ts_values[-1] - ts_values[0])) if len(ts_values) >= 2 else None
+    )
+    out.update({
+        "valid_modeled_shares": count,
+        "avg_share_difficulty": sum(chronological_diffs) / count if count else None,
+        "data_gaps": None,
+        "last_share_age_seconds": last_age,
+        "last_share_age": (
+            f"{last_age}s" if last_age < 3600 else f"{last_age // 60}m"
+        ) if last_age is not None else None,
+        "observed_window_seconds": observed_window,
+        "observed_window": (
+            f"{observed_window}s" if observed_window < 3600 else f"{observed_window // 60}m"
+        ) if observed_window is not None else None,
+        "evidence_state": evidence_state_from_inputs(
+            user_hashrate, network_hashrate, session_share_count,
+            age_seconds if age_seconds is not None else last_age,
+        ),
+    })
+    out["evidence_state_label"] = out["evidence_state"]
     return out
 
 
@@ -380,19 +438,19 @@ def evidence_state_from_inputs(
     """Map the live inputs to one of: GOOD COVERAGE | PARTIAL | STALE |
     INSUFFICIENT | NO DATA. Does not create a score; it only reports the
     state of the evidence."""
-    age = max(0, int(age_seconds or 0))
+    age = max(0, int(age_seconds)) if age_seconds is not None else None
     user_hr = _finite_or_default(user_hashrate)
     net_hr = _finite_or_default(network_hashrate)
     shares = session_share_count or 0
 
     if user_hr <= 0 or net_hr <= 0:
-        # no network/user signal at all
+        # Without measured hashrate the evidence cannot be interpreted.
         if shares <= 0:
             return "NO DATA"
         return "INSUFFICIENT"
     if shares < 1:
         return "INSUFFICIENT"
-    if age > 3600:
+    if age is not None and age > 3600:
         return "STALE"
     if shares < 10:
         return "PARTIAL"

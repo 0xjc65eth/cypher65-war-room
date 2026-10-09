@@ -143,6 +143,7 @@ class TestShareStatistics:
         assert r["sample_count"] == 3
         assert r["p50"] == 50e12
         assert r["max"] == 60e12
+        assert r["share_diff_trend"] == "INSUFFICIENT"
 
     def test_no_data(self):
         r = share_statistics(session_share_count=0, share_calc_history=[])
