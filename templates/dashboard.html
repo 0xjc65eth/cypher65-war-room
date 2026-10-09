@@ -2181,8 +2181,12 @@
     </div>
   </div>
   <div class="chart-wrap"><canvas id="chart-share-dist"></canvas></div>
-</section>  <!-- ─── SESSION EVIDENCE ─── -->
-  <section class="panel panel--large" id="session-evidence-panel" data-module="probability">
+  <div class="prox-footnote" id="share-dist-summary">P50 — · P75 — · P90 — · P95 — · P99 — · MAX — · SAMPLE — · WINDOW —</div>
+</section>
+
+<!-- ─── SESSION EVIDENCE ─── -->
+<section class="panel panel--large" id="session-evidence-panel" data-module="probability">
+
     <div class="panel__header">
       <div class="panel__eyebrow">◈ SESSION EVIDENCE</div>
       <div class="panel__tools">
@@ -2191,14 +2195,14 @@
     </div>
     <div class="ql-grid">
       <div class="ql-components" id="ql-components" style="grid-template-columns: repeat(auto-fill, minmax(220px, 1fr))">
-        <div class="ql-comp"><span class="ql-comp__label">SESSION SHARES</span><div class="lc-v" id="se-session-shares">0</div></div>
+        <div class="ql-comp"><span class="ql-comp__label">SESSION SHARES</span><div class="lc-v" id="se-session-shares">—</div></div>
         <div class="ql-comp"><span class="ql-comp__label">VALID MODELED SHARES</span><div class="lc-v" id="se-valid-modeled">0</div></div>
         <div class="ql-comp"><span class="ql-comp__label">OBSERVED WINDOW</span><div class="lc-v" id="se-observed-window">—</div></div>
         <div class="ql-comp"><span class="ql-comp__label">LAST SHARE AGE</span><div class="lc-v" id="se-last-share-age">—</div></div>
-        <div class="ql-comp"><span class="ql-comp__label">DATA GAPS</span><div class="lc-v" id="se-data-gaps">0</div></div>
+        <div class="ql-comp"><span class="ql-comp__label">DATA GAPS</span><div class="lc-v" id="se-data-gaps">—</div></div>
         <div class="ql-comp"><span class="ql-comp__label">AVG SHARE DIFF</span><div class="lc-v" id="se-avg-share-diff">—</div></div>
         <div class="ql-comp"><span class="ql-comp__label">SHARE DIFF TREND</span><div class="lc-v" id="se-share-trend">—</div></div>
-        <div class="ql-comp"><span class="ql-comp__label">SAMPLE COUNT</span><div class="lc-v" id="se-sample-count">0</div></div>
+        <div class="ql-comp"><span class="ql-comp__label">SAMPLE COUNT</span><div class="lc-v" id="se-sample-count">—</div></div>
         <div class="ql-comp"><span class="ql-comp__label">EVIDENCE STATE</span><div class="lc-v" id="se-evidence-state2">NO DATA</div></div>
       </div>
       <div class="prox-footnote">Source: retained session shares. Descriptive evidence, not a prediction or a guarantee.</div>

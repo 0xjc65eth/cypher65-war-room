@@ -13,6 +13,7 @@ import sqlite3
 import threading
 import collections
 import logging
+import math
 import hmac
 import re
 import secrets
@@ -69,7 +70,8 @@ from services.poll_compute import (
 )
 from services.proximity import (
     _compute_quantum_lock,
-)  # FENIX: composite confidence score for the Quantum-Lock panel
+)
+from services.block_probability_lab import share_statistics
 from services.session_manager import SessionManager
 from services.user_polling import (
     UserPollingWorker,
@@ -8238,12 +8240,22 @@ def api_chart_data():
                 labels.append(int(e.get("ts") or 0) * 1000)
                 values.append(round(cum * 100, 6))
         else:
-            # Histogram of share difficulty across the session
-            diffs = [
-                float(e.get("share_diff_raw") or 0)
-                for e in sch
-                if e.get("share_diff_raw")
-            ]
+            # Histogram and percentiles use only valid, finite share observations.
+            diffs = []
+            for entry in sch:
+                try:
+                    value = float(entry.get("share_diff_raw"))
+                except (AttributeError, TypeError, ValueError):
+                    continue
+                if math.isfinite(value) and value > 0:
+                    diffs.append(value)
+            share_stats = share_statistics(
+                timeline_state.get("session_share_count"), sch,
+                window_seconds=3600.0,
+                user_hashrate=(latest_snapshot.get("worker") or {}).get("hashrate"),
+                network_hashrate=(latest_snapshot.get("network") or {}).get("hashrate"),
+                observed_now=time.time(),
+            )
             target_diff = None
             target_bucket = None
             if diffs:
@@ -8288,6 +8300,7 @@ def api_chart_data():
                 # purple reference line overlay). Null when unavailable.
                 "target_diff": target_diff if chart == "share_dist" else None,
                 "target_bucket": target_bucket if chart == "share_dist" else None,
+                "share_statistics": share_stats if chart == "share_dist" else None,
                 "datasets": [
                     {
                         "label": (

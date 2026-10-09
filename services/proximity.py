@@ -27,6 +27,7 @@ from helpers import (
     human_secs_long,
     isfinite_v,
 )
+from services.block_probability_lab import share_statistics
 
 log = logging.getLogger("cypher65")
 
@@ -405,6 +406,18 @@ def compute_proximity(worker, current_difficulty, net_hashrate, ts):
     included in /api/snapshot. Pure compute: never raises (returns {} on
     insufficient data)."""
     out = {"ts": ts}
+    session_shares = state.timeline_state.get("session_share_count", 0) or 0
+    share_history = list(state.timeline_state.get("share_calc_history") or [])
+    last_submit_ts = state.timeline_state.get("last_submit_ts")
+    out["session_evidence"] = share_statistics(
+        session_share_count=session_shares,
+        share_calc_history=share_history,
+        user_hashrate=(worker or {}).get("hashrate"),
+        network_hashrate=net_hashrate,
+        age_seconds=(max(0, ts - last_submit_ts) if last_submit_ts is not None else None),
+        observed_now=ts,
+    )
+    out["session_evidence"]["session_shares"] = session_shares
     # Collect missing inputs for validation
     missing_inputs = []
 
@@ -758,6 +771,7 @@ def compute_proximity(worker, current_difficulty, net_hashrate, ts):
                 "ticker": ticker,
                 "session_totals": totals,
                 "charts_data": charts_data,
+                "session_evidence": out["session_evidence"],
             }
         except Exception as e:
             log.warning("[compute_proximity live_calc] error: %s", e)
