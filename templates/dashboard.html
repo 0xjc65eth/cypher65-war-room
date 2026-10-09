@@ -946,21 +946,28 @@
       <span class="badge badge--mute" id="dm-breakeven">break-even —</span>
     </div>
   </div>
+  <div class="dm-scenario-meta" id="dm-horizon">SCENARIO DATA UNKNOWN</div>
   <div class="dm-grid">
     <div class="dm-card dm-card--pool">
       <div class="dm-card__title">POOL</div>
       <div class="dm-card__value" id="dm-pool-usd">—</div>
-      <div class="dm-card__sub">net USD/dia (pool mining)</div>
+      <div class="dm-card__sub">modeled net USD/day · cost <span id="dm-pool-cost">UNKNOWN</span></div>
     </div>
     <div class="dm-card dm-card--solo">
       <div class="dm-card__title">SOLO</div>
       <div class="dm-card__value" id="dm-solo-time">—</div>
-      <div class="dm-card__sub" id="dm-solo-sub">tempo esperado até bloco</div>
+      <div class="dm-card__sub" id="dm-solo-sub">model mean · not a deadline</div>
+      <div class="dm-card__sub">cost <span id="dm-solo-cost">UNKNOWN</span></div>
     </div>
     <div class="dm-card dm-card--lease">
       <div class="dm-card__title">LEASE</div>
       <div class="dm-card__value" id="dm-lease-usd">—</div>
-      <div class="dm-card__sub">net USD/dia (alugar hashrate)</div>
+      <div class="dm-card__sub">modeled net USD/day · cost <span id="dm-lease-cost">UNKNOWN</span></div>
+    </div>
+    <div class="dm-card dm-card--rental">
+      <div class="dm-card__title">RENTAL</div>
+      <div class="dm-card__value" id="dm-rental-usd">UNKNOWN</div>
+      <div class="dm-card__sub">modeled net USD/day · cost <span id="dm-rental-cost">UNKNOWN</span></div>
     </div>
   </div>
   <div class="dm-reco" id="dm-reco">Conecte a wallet para comparar estratégias.</div>
