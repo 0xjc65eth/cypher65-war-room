@@ -1,7 +1,6 @@
 """
 CYPHER65 // Block Probability Lab routes
-=========================================
-
+==================================
 A dashboard blueprint exposing the consolidated Block Probability Lab:
 
   MODEL INPUTS      - what the operator sees, with Metric Provenance
@@ -25,6 +24,8 @@ purchases hashpower and never claims a block deadline.
 """
 
 import logging
+import math
+import time
 from flask import Blueprint, jsonify, request
 
 from services.block_probability_lab import (
@@ -310,21 +311,77 @@ def api_share_statistics():
 
 
 @dashboard_bp.route("/evidence-state", methods=["GET"])
+@dashboard_bp.route("/session-evidence", methods=["GET", "POST"])
 def api_evidence_state():
-    """Map live inputs to one of GOOD COVERAGE | PARTIAL | STALE |
-    INSUFFICIENT | NO DATA. Pure derivation; no scoring."""
+    """Return evidence from supplied fields, or the current in-memory session."""
+    body = request.get_json(silent=True) or {}
+    if not isinstance(body, dict):
+        return jsonify({"error": "request body must be a JSON object"}), 400
+    import services.state as state
+
+    snapshot = getattr(state, "latest_snapshot", {}) or {}
+    worker = snapshot.get("worker") or {}
+    network = snapshot.get("network") or {}
+    timeline = getattr(state, "timeline_state", {}) or {}
+    history = body.get("share_calc_history", body.get("history"))
+    if history is None:
+        history = list(timeline.get("share_calc_history") or [])
+    if isinstance(history, str):
+        try:
+            history = [{"share_diff_raw": float(value.strip())} for value in history.split(",") if value.strip()]
+        except ValueError:
+            return jsonify({"error": "share history values must be numbers"}), 400
+    if not isinstance(history, list) or any(not isinstance(item, dict) for item in history):
+        return jsonify({"error": "share_calc_history must be a list of objects or comma-separated numbers"}), 400
+
+    def _value(name, fallback):
+        raw = body.get(name, request.args.get(name, fallback))
+        return None if raw in (None, "") else raw
+
     try:
-        user_hr = float(request.args.get("user_hashrate", 0))
-        net_hr = float(request.args.get("network_hashrate", 0))
-        shares = int(request.args.get("session_share_count", 0))
-        age = float(request.args.get("age_seconds", 0))
+        user_raw = _value("user_hashrate", worker.get("hashrate"))
+        net_raw = _value("network_hashrate", network.get("hashrate"))
+        user_hr = float(user_raw) if user_raw is not None else None
+        net_hr = float(net_raw) if net_raw is not None else None
+        shares_raw = _value("session_share_count", timeline.get("session_share_count"))
+        shares = int(shares_raw) if shares_raw is not None else None
+        age_raw = _value("age_seconds", None)
+        age = float(age_raw) if age_raw is not None else None
+        last_submit = timeline.get("last_submit_ts")
+        if age is None and last_submit is not None:
+            age = max(0.0, time.time() - float(last_submit))
+        window = float(_value("window_seconds", 3600.0))
     except (TypeError, ValueError):
-        return jsonify({
-            "error": "user_hashrate, network_hashrate, session_share_count and age_seconds must be numbers"
-        }), 400
-    return jsonify({
-        "evidence_state": evidence_state_from_inputs(user_hr, net_hr, shares, age)
-    })
+        return jsonify({"error": "hashrates, session_share_count, age_seconds and window_seconds must be numbers"}), 400
+    numeric_values = (user_hr, net_hr, age, window)
+    if any(value is not None and not math.isfinite(value) for value in numeric_values):
+        return jsonify({"error": "numeric inputs must be finite"}), 400
+    if shares is not None and shares < 0:
+        return jsonify({"error": "session_share_count must be non-negative"}), 400
+    if window <= 0:
+        return jsonify({"error": "window_seconds must be positive"}), 400
+
+    now = time.time()
+    stats = share_statistics(
+        shares, history, window, user_hashrate=user_hr,
+        network_hashrate=net_hr, age_seconds=age, observed_now=now,
+    )
+    evidence = stats.get("evidence_state", "NO DATA")
+    stats["evidence_state"] = evidence
+    stats["session_evidence"] = {
+        "session_shares": shares,
+        "valid_modeled_shares": stats["valid_modeled_shares"],
+        "observed_window": stats["observed_window"],
+        "observed_window_seconds": stats["observed_window_seconds"],
+        "last_share_age": stats["last_share_age"],
+        "last_share_age_seconds": stats["last_share_age_seconds"],
+        "data_gaps": stats["data_gaps"],
+        "avg_share_difficulty": stats["avg_share_difficulty"],
+        "share_difficulty_trend": stats.get("share_diff_trend", stats.get("share_difficulty_trend")),
+        "sample_count": stats["sample_count"],
+        "evidence_state": evidence,
+    }
+    return jsonify(stats)
 
 
 def _state_source_label(user_hr, net_hr, network_source):

@@ -169,7 +169,7 @@ const authSessionValid = _auth.authSessionValid;
 // topo — é o único domínio extraído sem nenhum (ver o cabeçalho dele) —, então
 // roda num contexto vazio; as outras funções só tocam `dom`/`document` quando
 // CHAMADAS, e `poolDetectionView` não toca nenhum dos dois.
-const _dashboard = loadFragment('39b-dashboard.js', '{ poolDetectionView }');
+const _dashboard = loadFragment('39b-dashboard.js', '{ poolDetectionView, _updateShareDistSummary }');
 
 // ── FONTE REAL do domínio Fleet/AXE (RFC 478 · PR 4b · Issue #523) ──────────
 // `agentRevokeView` (Issue #582) é a view-model pura da revogação de tokens de
@@ -238,6 +238,39 @@ function assertFalsy(label, actual) {
     failures.push(`  ❌ ${label}: expected falsy, got ${JSON.stringify(actual)}`);
   }
 }
+
+(function testRenderSessionEvidence() {
+  const rendered = {};
+  const renderSessionEvidence = loadFragment(
+    '42-probability.js',
+    'renderSessionEvidence',
+    {
+      window: {},
+      document: { getElementById: (id) => (rendered[id] = { textContent: '' }) },
+      fmt: { diff: (value) => value == null ? '—' : 'diff:' + value },
+    }
+  );
+  renderSessionEvidence({ session_evidence: {
+    session_shares: 22, valid_modeled_shares: 2, observed_window: '120s',
+    last_share_age: '60s', data_gaps: null, avg_share_difficulty: 4,
+    share_difficulty_trend: 'INCREASING', sample_count: 2, evidence_state: 'PARTIAL',
+  } });
+  assertEqual('[session evidence] session shares rendered', rendered['se-session-shares'].textContent, '22');
+  assertEqual('[session evidence] unknown gaps stay unknown', rendered['se-data-gaps'].textContent, '—');
+  assertEqual('[session evidence] distribution formatted', rendered['se-avg-share-diff'].textContent, 'diff:4');
+  const summary = { textContent: '' };
+  const dashboard = loadFragment(
+    '39b-dashboard.js',
+    '_updateShareDistSummary',
+    {
+      document: { getElementById: (id) => id === 'share-dist-summary' ? summary : null },
+      fmt: { diff: (value) => value == null ? '—' : 'd' + value },
+    }
+  );
+  dashboard({ share_statistics: { status: 'SOLVED', p50: 1, p75: 2, p90: 3, p95: 4, p99: 5, max: 5, sample_count: 9, observed_window: '120s' } });
+  assertTruthy('[share distribution] percentiles appear in panel', summary.textContent.includes('P99 d5'));
+  assertTruthy('[share distribution] sample count and observed window appear', summary.textContent.includes('SAMPLE 9') && summary.textContent.includes('WINDOW 120s'));
+})();
 
 
 
