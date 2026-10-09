@@ -7606,8 +7606,8 @@ function renderAccount(acct) {
   // ↳ R13 — Decision Matrix + Command Center (cards contextuais do snapshot)
 
   // ── P0-2: Decision Matrix — solo vs pool vs lease (capital allocation) ──
-  // Pure render of the backend-aggregated decision_matrix block; every field
-  // is read defensively and shows '—' when the strategy has no data yet.
+  // Render the normalized economic scenario matrix, preserving UNKNOWN,
+  // NOT CONFIGURED, and N/A instead of translating unavailable values to zero.
   function renderDecisionMatrix(p) {
     const dm = (p && p.decision_matrix) || null;
     const rows = (dm && dm.rows) || {};
@@ -7616,18 +7616,45 @@ function renderAccount(acct) {
     const days = (v) => (v != null && isFinite(v)) ? (v >= 365 ? (v/365).toFixed(1) + 'y' : Math.round(v) + 'd') : '—';
     const pct = (v) => (v != null && isFinite(v)) ? (v < 1 ? v.toFixed(4) : v.toFixed(1)) + '%' : '—';
 
-    const poolEl = el('dm-pool-usd'); if (poolEl) poolEl.textContent = usd(rows.pool && rows.pool.net_usd_per_day);
-    const soloTime = el('dm-solo-time'); if (soloTime) soloTime.textContent = days(rows.solo && rows.solo.expected_time_days);
-    const soloSub = el('dm-solo-sub');
-    if (soloSub) {
-      const py = rows.solo && rows.solo.p_year_pct;
-      soloSub.textContent = (py != null && isFinite(py)) ? 'P(bloco no ano) ' + pct(py) : 'média do modelo; não é prazo';
+    const matrix = (p && p.economic_scenarios) || null;
+    const scenarios = (matrix && matrix.scenarios) || {};
+    const statusText = (cell, formatter) => {
+      if (!cell || cell.value == null) return (cell && cell.status) || 'UNKNOWN';
+      return formatter(cell.value);
+    };
+    const scenarioValue = (name, metric, formatter) => statusText(
+      scenarios[name] && scenarios[name][metric], formatter
+    );
+    if (matrix) {
+      const poolEl = el('dm-pool-usd'); if (poolEl) poolEl.textContent = scenarioValue('POOL', 'modeled_net_usd_per_day', usd);
+      const soloEl = el('dm-solo-time'); if (soloEl) soloEl.textContent = scenarioValue('SOLO', 'modeled_ev_btc_per_day', (v) => Number(v).toFixed(8) + ' BTC/d');
+      const soloSub = el('dm-solo-sub');
+      if (soloSub) {
+        const probability = scenarios.SOLO && scenarios.SOLO.p_block_selected_window_pct;
+        const net = scenarios.SOLO && scenarios.SOLO.modeled_net_usd_per_day;
+        const pText = statusText(probability, (v) => 'P(block/24h) ' + pct(v));
+        const netText = statusText(net, usd);
+        soloSub.textContent = 'modeled EV · ' + netText + ' · ' + pText;
+      }
+      const leaseEl = el('dm-lease-usd'); if (leaseEl) leaseEl.textContent = scenarioValue('LEASE', 'modeled_net_usd_per_day', usd);
+      const rentalEl = el('dm-rental-usd'); if (rentalEl) rentalEl.textContent = scenarioValue('RENTAL', 'modeled_net_usd_per_day', usd);
+      const poolCost = el('dm-pool-cost'); if (poolCost) poolCost.textContent = scenarioValue('POOL', 'direct_cost_usd_per_day', usd);
+      const soloCost = el('dm-solo-cost'); if (soloCost) soloCost.textContent = scenarioValue('SOLO', 'direct_cost_usd_per_day', usd);
+      const rentalCost = el('dm-rental-cost'); if (rentalCost) rentalCost.textContent = scenarioValue('RENTAL', 'direct_cost_usd_per_day', usd);
+      const leaseCost = el('dm-lease-cost'); if (leaseCost) leaseCost.textContent = scenarioValue('LEASE', 'direct_cost_usd_per_day', usd);
+      const horizonEl = el('dm-horizon'); if (horizonEl) horizonEl.textContent = 'MODELED · ' + String(matrix.horizon || 'UNKNOWN');
+    } else {
+      const poolEl = el('dm-pool-usd'); if (poolEl) poolEl.textContent = usd(rows.pool && rows.pool.net_usd_per_day);
+      const soloEl = el('dm-solo-time'); if (soloEl) soloEl.textContent = days(rows.solo && rows.solo.expected_time_days);
+      const leaseEl = el('dm-lease-usd'); if (leaseEl) leaseEl.textContent = usd(rows.lease && rows.lease.net_usd_per_day);
     }
-    const leaseEl = el('dm-lease-usd'); if (leaseEl) leaseEl.textContent = usd(rows.lease && rows.lease.net_usd_per_day);
-    const comparable = Number.isFinite(rows.pool && rows.pool.net_usd_per_day) && Number.isFinite(rows.lease && rows.lease.net_usd_per_day);
-    const best = comparable && dm && ['pool', 'lease'].includes(dm.best_option) ? dm.best_option : null;
+    const legacyComparable = Number.isFinite(rows.pool && rows.pool.net_usd_per_day) && Number.isFinite(rows.lease && rows.lease.net_usd_per_day);
+    const matrixBest = matrix && ['POOL', 'RENTAL', 'LEASE'].includes(matrix.best_option) ? matrix.best_option.toLowerCase() : null;
+    const best = matrix ? matrixBest : (legacyComparable && dm && ['pool', 'lease'].includes(dm.best_option) ? dm.best_option : null);
     const bestEl = el('dm-best-badge'); if (bestEl) bestEl.textContent = best ? 'BEST: ' + best.toUpperCase() : 'INSUFFICIENT DATA';
-    const recoEl = el('dm-reco'); if (recoEl) recoEl.textContent = best ? dm.recommendation : 'Comparable pool and lease estimates are required. Solo shows a model mean, not a deadline or guaranteed payout.';
+    const recoEl = el('dm-reco'); if (recoEl) recoEl.textContent = matrix
+      ? matrix.recommendation
+      : (best ? dm.recommendation : 'Comparable pool and lease estimates are required. Solo shows a model mean, not a deadline or guaranteed payout.');
     const beEl = el('dm-breakeven');
     if (beEl) {
       const be = dm && dm.breakeven_cost_per_th_day;
