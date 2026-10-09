@@ -309,41 +309,21 @@ def api_share_statistics():
     )
 
 
-@dashboard_bp.route("/evidence-state", methods=["GET", "POST"])
-@dashboard_bp.route("/session-evidence", methods=["GET", "POST"])
+@dashboard_bp.route("/evidence-state", methods=["GET"])
 def api_evidence_state():
     """Map live inputs to one of GOOD COVERAGE | PARTIAL | STALE |
-    INSUFFICIENT | NO DATA. Pure derivation; no scoring. Also returns
-    SESSION EVIDENCE fields."""
-    body = request.get_json(silent=True) or {}
+    INSUFFICIENT | NO DATA. Pure derivation; no scoring."""
     try:
-        user_hr = float(body.get("user_hashrate", request.args.get("user_hashrate", 0)))
-        net_hr = float(body.get("network_hashrate", request.args.get("network_hashrate", 0)))
-        shares = int(body.get("session_share_count", request.args.get("session_share_count", 0)))
-        age = float(body.get("age_seconds", request.args.get("age_seconds", 0)))
-        share_calc_history = body.get("share_calc_history", body.get("history")) or []
-        window = float(body.get("window_seconds", request.args.get("window_seconds", 3600.0)))
+        user_hr = float(request.args.get("user_hashrate", 0))
+        net_hr = float(request.args.get("network_hashrate", 0))
+        shares = int(request.args.get("session_share_count", 0))
+        age = float(request.args.get("age_seconds", 0))
     except (TypeError, ValueError):
         return jsonify({
             "error": "user_hashrate, network_hashrate, session_share_count and age_seconds must be numbers"
         }), 400
-    stats = share_statistics(shares, share_calc_history, window)
     return jsonify({
-        "evidence_state": evidence_state_from_inputs(user_hr, net_hr, shares, age),
-        "session_evidence": {
-            "session_shares": shares,
-            "valid_modeled_shares": stats.get("valid_modeled_shares", len([x for x in share_calc_history or [] if x.get("share_diff_raw")])) if share_calc_history else stats.get("valid_modeled_shares"),
-            "observed_window": stats.get("observed_window"),
-            "observed_window_seconds": stats.get("observed_window_seconds"),
-            "last_share_age": stats.get("last_share_age"),
-            "last_share_age_seconds": stats.get("last_share_age_seconds"),
-            "data_gaps": stats.get("data_gaps", 0),
-            "avg_share_difficulty": stats.get("avg_share_difficulty"),
-            "share_difficulty_trend": stats.get("share_diff_trend", stats.get("trend")),
-            "sample_count": stats.get("sample_count"),
-            "evidence_state": evidence_state_from_inputs(user_hr, net_hr, shares, age),
-        },
-        **stats,
+        "evidence_state": evidence_state_from_inputs(user_hr, net_hr, shares, age)
     })
 
 
