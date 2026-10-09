@@ -2174,32 +2174,29 @@
     </div>
   </div>
   <div class="chart-wrap"><canvas id="chart-share-dist"></canvas></div>
-</section>
-
-<!-- ─── SESSION WORK SIGNAL (legacy API key: quantum_lock) ─── -->
-<section class="panel panel--large" id="quantum-lock-panel" data-module="probability">
-  <div class="panel__header">
-    <div class="panel__eyebrow">◈ SESSION WORK SIGNAL · HEURISTIC <span class="tip-wrap" data-tip="Source: retained session shares; window: session + rolling 1h; unit: 0–100 heuristic. Not block probability, device health or prediction."><span class="tip-wrap__icon">?</span></span></div>
-    <div class="panel__tools">
-      <span class="badge" id="ql-status-badge">NO DATA</span>
-      <span class="badge badge--mute" id="ql-score-badge">0/100</span>
+</section>  <!-- ─── SESSION EVIDENCE ─── -->
+  <section class="panel panel--large" id="session-evidence-panel" data-module="probability">
+    <div class="panel__header">
+      <div class="panel__eyebrow">◈ SESSION EVIDENCE</div>
+      <div class="panel__tools">
+        <span class="badge" id="se-evidence-state">NO DATA</span>
+      </div>
     </div>
-  </div>
-  <div class="ql-grid">
-    <div class="ql-bar-wrap">
-      <div class="ql-bar" id="ql-bar"><div class="ql-bar__fill" id="ql-bar-fill" style="width:0%"></div></div>
-      <div class="ql-bar__labels"><span>0</span><span>25</span><span>50</span><span>75</span><span>100</span></div>
+    <div class="ql-grid">
+      <div class="ql-components" id="ql-components" style="grid-template-columns: repeat(auto-fill, minmax(220px, 1fr))">
+        <div class="ql-comp"><span class="ql-comp__label">SESSION SHARES</span><div class="lc-v" id="se-session-shares">0</div></div>
+        <div class="ql-comp"><span class="ql-comp__label">VALID MODELED SHARES</span><div class="lc-v" id="se-valid-modeled">0</div></div>
+        <div class="ql-comp"><span class="ql-comp__label">OBSERVED WINDOW</span><div class="lc-v" id="se-observed-window">—</div></div>
+        <div class="ql-comp"><span class="ql-comp__label">LAST SHARE AGE</span><div class="lc-v" id="se-last-share-age">—</div></div>
+        <div class="ql-comp"><span class="ql-comp__label">DATA GAPS</span><div class="lc-v" id="se-data-gaps">0</div></div>
+        <div class="ql-comp"><span class="ql-comp__label">AVG SHARE DIFF</span><div class="lc-v" id="se-avg-share-diff">—</div></div>
+        <div class="ql-comp"><span class="ql-comp__label">SHARE DIFF TREND</span><div class="lc-v" id="se-share-trend">—</div></div>
+        <div class="ql-comp"><span class="ql-comp__label">SAMPLE COUNT</span><div class="lc-v" id="se-sample-count">0</div></div>
+        <div class="ql-comp"><span class="ql-comp__label">EVIDENCE STATE</span><div class="lc-v" id="se-evidence-state2">NO DATA</div></div>
+      </div>
+      <div class="prox-footnote">Source: retained session shares. Descriptive evidence, not a prediction or a guarantee.</div>
     </div>
-    <div class="ql-components" id="ql-components">
-      <div class="ql-comp"><span class="ql-comp__label">Shares</span><span class="ql-comp__bar" id="ql-comp-shares"><span style="width:0%"></span></span></div>
-      <div class="ql-comp"><span class="ql-comp__label">Best-share ratio</span><span class="ql-comp__bar" id="ql-comp-prox"><span style="width:0%"></span></span></div>
-      <div class="ql-comp"><span class="ql-comp__label">Power</span><span class="ql-comp__bar" id="ql-comp-power"><span style="width:0%"></span></span></div>
-      <div class="ql-comp"><span class="ql-comp__label">Momentum</span><span class="ql-comp__bar" id="ql-comp-momentum"><span style="width:0%"></span></span></div>
-    </div>
-    <div class="ql-label" id="ql-label">Awaiting share data. This heuristic is not block probability, device health or a prediction.</div>
-    <div class="prox-footnote">Source: retained session shares; window: current session/rolling 1h; unit: 0–100 heuristic. A higher score does not increase the next-hash odds.</div>
-  </div>
-</section>
+  </section>
 
 <!-- ─── HR COMPARISON: REPORTED vs POOL ─── -->
 <section class="panel panel--large" id="hr-compare-panel" data-module="fleet">

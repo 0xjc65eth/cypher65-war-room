@@ -25,6 +25,7 @@ This module is pure math and never hits the network or storage.
 """
 
 import math
+import time
 from datetime import datetime, timezone
 from typing import Dict, Any, Iterable, List, Optional
 
@@ -358,6 +359,28 @@ def share_statistics(
     out["p90"] = _pct(0.90)
     out["p95"] = _pct(0.95)
     out["p99"] = _pct(0.99)
+    # Share difficulty trend: compare recent to earlier portion (last 20% vs first 20%) if enough data
+    trend = "INSUFFICIENT"
+    if n >= 20:
+        half = n // 5
+        first = diffs[:half] if half > 0 else diffs
+        last = diffs[-half:] if half > 0 else diffs
+        avg_first = sum(first) / len(first)
+        avg_last = sum(last) / len(last)
+        if avg_first > 0:
+            if avg_last > avg_first * 1.05:
+                trend = "INCREASING"
+            elif avg_last < avg_first * 0.95:
+                trend = "DECREASING"
+            else:
+                trend = "STABLE"
+        else:
+            trend = "STABLE"
+    elif n >= 5:
+        trend = "STABLE"
+    else:
+        trend = "INSUFFICIENT"
+    out["share_diff_trend"] = trend
     out["share_diff_summary"] = {
         "p50": out["p50"],
         "p75": out["p75"],
@@ -367,7 +390,40 @@ def share_statistics(
         "max": out["max"],
         "sample_count": out["sample_count"],
         "window_seconds": window_seconds,
+        "trend": trend,
     }
+    # Session evidence fields
+    now = time.time()
+    last_share_age = 0
+    first_ts = 0
+    if history:
+        last = history[-1]
+        first = history[0]
+        for ts_key in ('ts', 'timestamp', 'time'):
+            if last.get(ts_key):
+                try:
+                    last_ts = float(last[ts_key])
+                    if last_ts > 0:
+                        last_share_age = max(0, int(now - last_ts))
+                except Exception:
+                    pass
+            if first.get(ts_key):
+                try:
+                    first_ts = float(first[ts_key])
+                except Exception:
+                    pass
+    out["last_share_age_seconds"] = last_share_age
+    out["last_share_age"] = f"{last_share_age}s" if last_share_age < 3600 else f"{last_share_age // 60}m"
+    out["data_gaps"] = 0  # descriptive only
+    if diffs:
+        out["avg_share_difficulty"] = sum(diffs) / len(diffs)
+    out["valid_modeled_shares"] = len(diffs)
+    observed_window = max(0, int(now - first_ts)) if first_ts > 0 else window_seconds
+    out["observed_window_seconds"] = observed_window
+    out["observed_window"] = f"{observed_window}s" if observed_window < 3600 else f"{observed_window // 60}m"
+    out["sample_count"] = n
+    out["evidence_state"] = evidence_state_from_inputs(None, None, session_share_count or 0, age_seconds=last_share_age)
+    out["evidence_state_label"] = out["evidence_state"]
     return out
 
 
