@@ -254,6 +254,16 @@ class TestApiTenantIsolation:
         for private_key in ("btc_address", "worker", "all_workers", "account",
                             "block_hunt", "command_center", "auto_pilot"):
             assert private_key not in payload
+        overview = payload["operations_overview"]
+        mining = next(item for item in overview["domains"] if item["id"] == "mining")
+        economics = next(
+            item for item in overview["domains"] if item["id"] == "economics"
+        )
+        assert mining["status"] == "missing"
+        assert economics["status"] == "missing"
+        assert economics["signals"] == []
+        assert "operator-worker" not in str(overview)
+        assert "65" not in str(overview)
 
     @pytest.mark.parametrize(
         "path",

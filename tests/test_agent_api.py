@@ -1298,7 +1298,8 @@ class TestTombstoneNoZombies:
         with patch("axe_fleet.routes._registry", registry), \
                 patch("axe_fleet.routes._can_add_worker", return_value=True):
             client.post("/api/agent/register", headers=_headers(agent_token),
-                        json={"devices": [{"ip": ip, "type": "bitaxe"}]})
+                        json={"devices": [                    {"ip": ip, "type": "bitaxe"}
+]})
         dev = registry.get_device_by_ip(ip, tenant_id="acme")
         assert registry.remove_device(dev["id"], tenant_id="acme") is True
         with patch("axe_fleet.routes._registry", registry), \
@@ -1332,14 +1333,16 @@ class TestTombstoneNoZombies:
             assert registry.get_removed_by_ip(ip, tenant_id="acme") == {}
             again = client.post(
                 "/api/agent/register", headers=_headers(agent_token),
-                json={"devices": [{"ip": ip, "type": "bitaxe"}]},
+                json={"devices": [                    {"ip": ip, "type": "bitaxe"}
+]},
             )
             assert again.status_code == 201
             assert again.get_json()["count"] == 1
             assert registry.get_device_by_ip(ip, tenant_id="acme")
             other_reg = client.post(
                 "/api/agent/register", headers=_headers(other_agent),
-                json={"devices": [{"ip": ip, "type": "bitaxe"}]},
+                json={"devices": [                    {"ip": ip, "type": "bitaxe"}
+]},
             )
             assert other_reg.status_code == 201
             assert registry.get_device_by_ip(ip, tenant_id="brave")

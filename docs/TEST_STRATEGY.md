@@ -2,11 +2,9 @@
 
 ## Objetivo e prioridades
 
-O War Room processa telemetria operacional e produz estimativas financeiras;
-portanto, a suíte deve prevenir quatro falhas: número/valor fictício,
-comando físico indevido, acesso entre tenants e perda/corrupção de eventos.
-O primeiro gate de cada PR é determinístico e sem rede. Integrações usam
-adaptadores locais/fakes de protocolo, nunca ASICs, pools ou credenciais reais.
+O primeiro gate de cada PR é determinístico e sem rede.
+Integrações usam adaptadores locais e fakes de protocolo,
+nunca ASICs, pools ou credenciais reais.
 E2E roda contra a aplicação local com dados explícitos.
 
 Os IDs `MF`, `API`, `OPS`, `TEL`, `SEC`, `CMD`, `AUD`, `PER`, `UI`, `LOAD` e `OBS`
@@ -20,6 +18,7 @@ reforçado ali em vez de duplicado.
 | MF-002 | Unitário | Probabilidade com zero, negativo, `NaN`, `Infinity` e overflow | parâmetros de hashrate/duração inválidos ou extremos | resposta JSON finita e erro explícito; nunca promessa de bloco | `tests/test_mining_formula_contracts.py` |
 | MF-003 | Unitário | Rentabilidade pool/rental/power por vetor conhecido | TH/s, recompensa, fees, BTC/USD e custos fixos | receita, custo e break-even seguem a fórmula e arredondamento contratado | `tests/test_pool_rental_break_even.py`, `tests/test_poll_compute.py` |
 | MF-004 | Unitário | Dados insuficientes para rentabilidade | hashrate da rede 0, cotação ausente, custo 0 | sem divisão por zero e campos em fiat indisponíveis, não estimados | `tests/test_poll_compute.py` |
+| MF-005 | Unitário | Custo de energia e cadência de recompensa | custo/kWh, hashrate operacional e recompensa/bloco | break-even raiz, com premissas declaradas e campo indisponível tratado como indisponível | `tests/test_pool_rental_break_even.py`, `tests/test_poll_compute.py` |
 | API-001 | Integração HTTP | Corpo JSON malformado ou não objeto | JSON inválido, lista e escalar em comando | HTTP 400 JSON, sem `AttributeError`/500 | `tests/core/test_app_device_routes.py` |
 | API-002 | Integração HTTP | Tipos e schema de comando inválidos | `command` numérico, `parameters` lista, comando desconhecido | HTTP 400 com erro específico; nenhum adaptador chamado | `tests/core/test_app_device_routes.py` |
 | OPS-001 | Integração | ASIC offline recebe comando remoto | device `OFFLINE`, `restart` | HTTP 403, motivo `offline`, confirmação requerida e tentativa auditada | `tests/core/test_app_device_routes.py` |
@@ -93,7 +92,7 @@ POST /api/devices/:id/command/confirmation
 
 A resposta 201 devolve `confirmation_token` de uso único. O cliente o envia
 somente na chamada seguinte a `POST /api/devices/:id/command`. O token expira
-em 120 segundos, é consumido inclusive quando os parâmetros não correspondem,
+em 120 segundos, é consumido inclusive quando os parâmetros não correspondam,
 e está vinculado ao tenant, device, comando e parâmetros canônicos. Reiniciar
 o processo invalida todas as confirmações pendentes (fail closed). O token não
 é persistido nem incluído no audit log.

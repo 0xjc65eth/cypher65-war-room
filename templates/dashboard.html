@@ -60,8 +60,7 @@
   }
 </script>
 {% endif %}
-<link rel="stylesheet" href="/static/style.css?v762">
-<link rel="stylesheet" href="/static/style.css?v760">
+<link rel="stylesheet" href="/static/style.css?v763">
 <link rel="icon" href="/static/favicon.ico" sizes="any">
 <link rel="icon" type="image/png" sizes="32x32" href="/static/icon-32x32.png">
 <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
@@ -222,7 +221,7 @@
 </div>
 
 <section class="operation-console" id="operation-console" data-module="dashboard" role="main" aria-labelledby="console-title" aria-busy="true">
-  <section class="console-market-strip desk-quote" aria-label="Cotações">
+  <section class="console-market-strip desk-quote" aria-label="Cotações" tabindex="0">
     <div class="console-market-heading"><span class="desk-mark" aria-hidden="true"></span><div><strong>CY65</strong><small>Mesa</small></div></div>
     <div><span>Preço BTC / USD</span><strong id="console-btc-price">—</strong><small id="console-btc-scope">fonte não informada</small></div>
     <div><span>Altura da rede</span><strong id="console-network-height">—</strong><small id="console-network-scope">fonte não informada</small></div>
@@ -281,7 +280,6 @@
   <div class="console-notice" id="console-notice" hidden><div><strong id="console-notice-title"></strong><p id="console-notice-detail"></p></div><button class="console-button" id="console-notice-action">Ver equipamentos</button></div>
   </div>
   <div class="console-inventory desk-inventory">
-  <div class="console-inventory">
   <div class="console-table-heading"><div><h2 id="console-table-title">Workers da pool</h2><p id="console-table-note">Dados da pool não incluem temperatura ou potência do equipamento.</p></div><label class="console-search">Filtrar <input id="console-search" type="search" placeholder="Nome ou modelo" autocomplete="off"></label></div>
   <div class="console-table-wrap"><table class="console-table" id="console-table"><caption class="sr-only">Entidades observadas pela fonte selecionada</caption><thead id="console-table-head"></thead><tbody id="console-table-body"><tr><td>Aguardando dados…</td></tr></tbody></table></div>
   <div class="console-table-footer"><span id="console-row-count">—</span><span>Selecione uma linha para investigar <span aria-hidden="true">↗</span></span></div>
@@ -310,9 +308,9 @@
   </div>
   <section class="console-market-strip" aria-label="Contexto da rede Bitcoin">
     <div class="console-market-heading"><span class="console-bitcoin" aria-hidden="true">₿</span><div><strong>Bitcoin</strong><small>Contexto de rede</small></div></div>
-    <div><span>Preço BTC / USD</span><strong id="console-btc-price">—</strong><small id="console-btc-scope">fonte não informada</small></div>
-    <div><span>Altura da rede</span><strong id="console-network-height">—</strong><small id="console-network-scope">fonte não informada</small></div>
-    <div><span>Dificuldade</span><strong id="console-network-diff">—</strong><small>referência da rede Bitcoin</small></div>
+    <div><span>Preço BTC / USD</span><strong id="console-btc-price-context" data-console-mirror="console-btc-price">—</strong><small id="console-btc-scope-context" data-console-mirror="console-btc-scope">fonte não informada</small></div>
+    <div><span>Altura da rede</span><strong id="console-network-height-context" data-console-mirror="console-network-height">—</strong><small id="console-network-scope-context" data-console-mirror="console-network-scope">fonte não informada</small></div>
+    <div><span>Dificuldade</span><strong id="console-network-diff-context" data-console-mirror="console-network-diff">—</strong><small>referência da rede Bitcoin</small></div>
   </section>
   <div class="console-sources" aria-label="Origem e idade dos dados"><span id="console-pool-source">Pool: aguardando</span><span id="console-fleet-source">Frota: aguardando</span><span id="console-network-source">Rede: aguardando</span></div>
   <div class="console-context-link"><span>Explore taxas, modelos e cenários.</span><button class="console-text-button" id="console-open-analysis">Abrir Análise <span aria-hidden="true">→</span></button></div>
@@ -391,7 +389,7 @@
 <!-- Operational decision strip: one scan answers health, loss, cost,
      freshness and the next SAFE diagnostic step. It never dispatches a
      hardware command; the CTA only navigates to an existing module. -->
-<section class="operational-overview" id="operational-overview" data-module="analysis" role="region" aria-labelledby="operational-overview-title" aria-busy="true">
+<section class="operational-overview" id="operational-overview" data-module="dashboard analysis" role="region" aria-labelledby="operational-overview-title" aria-busy="true">
   <div class="operational-overview__header">
     <div>
       <div class="operational-overview__eyebrow">OPERAÇÃO / ASICs</div>
@@ -431,6 +429,16 @@
       <span class="op-signal__detail" id="op-action-detail">Advisory only · no command is executed</span>
       <button class="btn btn--secondary op-signal__button" type="button" id="op-action" disabled>OPEN DIAGNOSTIC</button>
     </div>
+  </div>
+  <div class="op-evidence" id="op-evidence" aria-labelledby="op-evidence-title">
+    <div class="op-evidence__header">
+      <h3 id="op-evidence-title">OPERATIONS EVIDENCE</h3>
+      <span id="op-evidence-coverage">Waiting for domain evidence…</span>
+    </div>
+    <div class="op-evidence__domains" id="op-evidence-domains" aria-live="polite">
+      <div class="op-evidence__loading"><span class="skel skel--line w-60"></span></div>
+    </div>
+    <div class="op-evidence__limits" id="op-evidence-limits">Changes, explanations, anomalies, and economic impact require explicit supporting evidence.</div>
   </div>
   <p class="operational-overview__state" id="op-state" role="status" aria-live="polite">Loading real operational data…</p>
 </section>
@@ -873,6 +881,9 @@
   <details class="mkt-snapshot" id="mkt-snapshot" open>
     <summary class="mkt-snapshot__summary">RESUMO DO MERCADO <span id="mkt-snap-age" class="mkt-snapshot__age"></span><span class="mkt-snapshot__caret"></span></summary>
     <div class="mkt-snapshot__grid">
+      <div class="mkt-snapshot__item"><span class="mkt-snapshot__label">Provider Health</span><span class="mkt-snapshot__val" id="mkt-provider-health">NO DATA · 0/3 PROVIDERS</span></div>
+      <div class="mkt-snapshot__item"><span class="mkt-snapshot__label">Offer Rankings</span><span class="mkt-snapshot__val" id="mkt-provider-rankings">CHEAPEST NO DATA · BEST SCORE NO DATA · FRESHEST NO DATA · CAPACITY NO DATA</span></div>
+      <div class="mkt-snapshot__item"><span class="mkt-snapshot__label">Cache Age</span><span class="mkt-snapshot__val" id="mkt-provider-cache-age">CACHE AGE UNKNOWN</span></div>
       <div class="mkt-snapshot__item"><span class="mkt-snapshot__label">Best Execution</span><span class="mkt-snapshot__val mkt-snapshot__val--green" id="mkt-snap-best">—</span></div>
       <div class="mkt-snapshot__item"><span class="mkt-snapshot__label">Spread vs 2nd</span><span class="mkt-snapshot__val" id="mkt-snap-spread">—</span></div>
       <div class="mkt-snapshot__item"><span class="mkt-snapshot__label">Visible Liquidity</span><span class="mkt-snapshot__val" id="mkt-snap-liquidity">—</span></div>
@@ -946,21 +957,28 @@
       <span class="badge badge--mute" id="dm-breakeven">break-even —</span>
     </div>
   </div>
+  <div class="dm-scenario-meta" id="dm-horizon">SCENARIO DATA UNKNOWN</div>
   <div class="dm-grid">
     <div class="dm-card dm-card--pool">
       <div class="dm-card__title">POOL</div>
       <div class="dm-card__value" id="dm-pool-usd">—</div>
-      <div class="dm-card__sub">net USD/dia (pool mining)</div>
+      <div class="dm-card__sub">modeled net USD/day · cost <span id="dm-pool-cost">UNKNOWN</span></div>
     </div>
     <div class="dm-card dm-card--solo">
       <div class="dm-card__title">SOLO</div>
       <div class="dm-card__value" id="dm-solo-time">—</div>
-      <div class="dm-card__sub" id="dm-solo-sub">tempo esperado até bloco</div>
+      <div class="dm-card__sub" id="dm-solo-sub">model mean · not a deadline</div>
+      <div class="dm-card__sub">cost <span id="dm-solo-cost">UNKNOWN</span></div>
     </div>
     <div class="dm-card dm-card--lease">
       <div class="dm-card__title">LEASE</div>
       <div class="dm-card__value" id="dm-lease-usd">—</div>
-      <div class="dm-card__sub">net USD/dia (alugar hashrate)</div>
+      <div class="dm-card__sub">modeled net USD/day · cost <span id="dm-lease-cost">UNKNOWN</span></div>
+    </div>
+    <div class="dm-card dm-card--rental">
+      <div class="dm-card__title">RENTAL</div>
+      <div class="dm-card__value" id="dm-rental-usd">UNKNOWN</div>
+      <div class="dm-card__sub">modeled net USD/day · cost <span id="dm-rental-cost">UNKNOWN</span></div>
     </div>
   </div>
   <div class="dm-reco" id="dm-reco">Conecte a wallet para comparar estratégias.</div>
@@ -2124,7 +2142,7 @@
 
   <!-- LIVE HASH CALCULATOR -->
   <div class="prox-live-calc" id="prox-live-calc">
-    <div class="prox-live-calc__title">⚡ LIVE HASH CALCULATOR · PER-SHARE BREAKDOWN</div>
+    <div class="prox-live-calc__title">⚡ SINGLE-SHARE IMPLIED HASHRATE · PER-SHARE BREAKDOWN <span id="lc-estimated-badge" class="badge badge--yellow" style="display:none;">ESTIMATED</span></div>
     <div class="prox-live-calc__latest">
       <div class="prox-live-calc__latest-head">
         <span class="lc-head-label">⌖ LAST HASH @</span>
@@ -2174,32 +2192,33 @@
     </div>
   </div>
   <div class="chart-wrap"><canvas id="chart-share-dist"></canvas></div>
+  <div class="prox-footnote" id="share-dist-summary">P50 — · P75 — · P90 — · P95 — · P99 — · MAX — · SAMPLE — · WINDOW —</div>
 </section>
 
-<!-- ─── SESSION WORK SIGNAL (legacy API key: quantum_lock) ─── -->
-<section class="panel panel--large" id="quantum-lock-panel" data-module="probability">
-  <div class="panel__header">
-    <div class="panel__eyebrow">◈ SESSION WORK SIGNAL · HEURISTIC <span class="tip-wrap" data-tip="Source: retained session shares; window: session + rolling 1h; unit: 0–100 heuristic. Not block probability, device health or prediction."><span class="tip-wrap__icon">?</span></span></div>
-    <div class="panel__tools">
-      <span class="badge" id="ql-status-badge">NO DATA</span>
-      <span class="badge badge--mute" id="ql-score-badge">0/100</span>
+<!-- ─── SESSION EVIDENCE ─── -->
+<section class="panel panel--large" id="session-evidence-panel" data-module="probability">
+
+    <div class="panel__header">
+      <div class="panel__eyebrow">◈ SESSION EVIDENCE</div>
+      <div class="panel__tools">
+        <span class="badge" id="se-evidence-state">NO DATA</span>
+      </div>
     </div>
-  </div>
-  <div class="ql-grid">
-    <div class="ql-bar-wrap">
-      <div class="ql-bar" id="ql-bar"><div class="ql-bar__fill" id="ql-bar-fill" style="width:0%"></div></div>
-      <div class="ql-bar__labels"><span>0</span><span>25</span><span>50</span><span>75</span><span>100</span></div>
+    <div class="ql-grid">
+      <div class="ql-components" id="ql-components" style="grid-template-columns: repeat(auto-fill, minmax(220px, 1fr))">
+        <div class="ql-comp"><span class="ql-comp__label">SESSION SHARES</span><div class="lc-v" id="se-session-shares">—</div></div>
+        <div class="ql-comp"><span class="ql-comp__label">VALID MODELED SHARES</span><div class="lc-v" id="se-valid-modeled">0</div></div>
+        <div class="ql-comp"><span class="ql-comp__label">OBSERVED WINDOW</span><div class="lc-v" id="se-observed-window">—</div></div>
+        <div class="ql-comp"><span class="ql-comp__label">LAST SHARE AGE</span><div class="lc-v" id="se-last-share-age">—</div></div>
+        <div class="ql-comp"><span class="ql-comp__label">DATA GAPS</span><div class="lc-v" id="se-data-gaps">—</div></div>
+        <div class="ql-comp"><span class="ql-comp__label">AVG SHARE DIFF</span><div class="lc-v" id="se-avg-share-diff">—</div></div>
+        <div class="ql-comp"><span class="ql-comp__label">SHARE DIFF TREND</span><div class="lc-v" id="se-share-trend">—</div></div>
+        <div class="ql-comp"><span class="ql-comp__label">SAMPLE COUNT</span><div class="lc-v" id="se-sample-count">—</div></div>
+        <div class="ql-comp"><span class="ql-comp__label">EVIDENCE STATE</span><div class="lc-v" id="se-evidence-state2">NO DATA</div></div>
+      </div>
+      <div class="prox-footnote">Source: retained session shares. Descriptive evidence, not a prediction or a guarantee.</div>
     </div>
-    <div class="ql-components" id="ql-components">
-      <div class="ql-comp"><span class="ql-comp__label">Shares</span><span class="ql-comp__bar" id="ql-comp-shares"><span style="width:0%"></span></span></div>
-      <div class="ql-comp"><span class="ql-comp__label">Best-share ratio</span><span class="ql-comp__bar" id="ql-comp-prox"><span style="width:0%"></span></span></div>
-      <div class="ql-comp"><span class="ql-comp__label">Power</span><span class="ql-comp__bar" id="ql-comp-power"><span style="width:0%"></span></span></div>
-      <div class="ql-comp"><span class="ql-comp__label">Momentum</span><span class="ql-comp__bar" id="ql-comp-momentum"><span style="width:0%"></span></span></div>
-    </div>
-    <div class="ql-label" id="ql-label">Awaiting share data. This heuristic is not block probability, device health or a prediction.</div>
-    <div class="prox-footnote">Source: retained session shares; window: current session/rolling 1h; unit: 0–100 heuristic. A higher score does not increase the next-hash odds.</div>
-  </div>
-</section>
+  </section>
 
 <!-- ─── HR COMPARISON: REPORTED vs POOL ─── -->
 <section class="panel panel--large" id="hr-compare-panel" data-module="fleet">
@@ -3361,8 +3380,7 @@
     <span id="next-poll"></span>
   </div>
 
-  <script src="/static/app.js?v762" defer></script>
-  <script src="/static/app.js?v760" defer></script>
+  <script src="/static/app.js?v763" defer></script>
 </div> <!-- end #app-main -->
 </div> <!-- end #app-layout -->
   <!-- DESIGN SYSTEM v2: matrix rain canvas removido (zero decorativo) —

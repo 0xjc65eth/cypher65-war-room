@@ -360,7 +360,9 @@ def _identity_unresolved(dev):
         return True
     if dev.get("pending"):
         return True
-    return str(dev.get("type") or "").lower() in ("", "unknown")
+    if str(dev.get("type") or "").lower() in ("", "unknown"):
+        return True
+    return dev.get("type") in ("bitaxe", "braiins") and not dev.get("mac")
 
 
 def _extract_json_lenient(raw):
@@ -787,8 +789,7 @@ def _poll_telemetry(dev):
             return {}
         tel = {}
         if _extract_axeos_telemetry is not None:
-            try:
-                tel = _extract_axeos_telemetry(info)
+            try:            tel = _extract_axeos_telemetry(info)
             except Exception:
                 tel = {}
         if tel:
@@ -854,6 +855,7 @@ def _poll_telemetry(dev):
     # Parse defensively: real firmwares occasionally return non-numeric
     # strings ("N/A") or non-dict entries — a crash here would kill the
     # whole agent loop, so malformed data degrades to {} instead.
+    invalid_fields = []
     try:
         s = (
             summary["SUMMARY"][0]

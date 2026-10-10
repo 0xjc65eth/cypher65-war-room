@@ -13,6 +13,7 @@ import sqlite3
 import threading
 import collections
 import logging
+import math
 import hmac
 import re
 import secrets
@@ -69,7 +70,8 @@ from services.poll_compute import (
 )
 from services.proximity import (
     _compute_quantum_lock,
-)  # FENIX: composite confidence score for the Quantum-Lock panel
+)
+from services.block_probability_lab import share_statistics
 from services.session_manager import SessionManager
 from services.user_polling import (
     UserPollingWorker,
@@ -89,6 +91,7 @@ from agents import (
 from routes.solo_mining_routes import solo_mining_bp
 from routes.device_control import device_control_bp
 from services.probability_engine import register_probability_routes
+from routes.block_probability_lab_routes import dashboard_bp as block_probability_lab_bp
 from services.hashrate_market import (
     PH_TO_TH,
     MIN_PLAUSIBLE_PRICE_BTC_TH_DAY as _MIN_PLAUSIBLE_PRICE,
@@ -273,6 +276,10 @@ if _w:
 # ── Register blueprints ─────────────────────────────────────────────────────
 app.register_blueprint(solo_mining_bp, url_prefix="/api/solo-mining")
 register_probability_routes(app)
+
+# ── Register Block Probability Lab blueprint ────────────────────────────────
+from routes.block_probability_lab_routes import dashboard_bp as block_probability_lab_blueprint
+app.register_blueprint(block_probability_lab_blueprint, url_prefix="/api/block-probability-lab")
 
 # ── Register Axe Fleet blueprint ────────────────────────────────────────────
 app.register_blueprint(axe_fleet_bp, url_prefix="/api/axe-fleet")
@@ -3702,6 +3709,7 @@ def _do_poll():
                 # target). When that's missing, fall back to best_diff / 2
                 # (vardiff typically doubles after every accepted share).
                 share_diff_raw = 0.0
+                estimated = False
                 try:
                     d = worker.get("difficulty")
                     if isinstance(d, (int, float)) and d > 0:
@@ -3712,6 +3720,7 @@ def _do_poll():
                         share_diff_raw = (
                             parse_diff_to_float(worker.get("bestDifficulty")) / 2.0
                         )
+                        estimated = True
                 except Exception:
                     share_diff_raw = 0.0
                 if share_diff_raw and current_difficulty and gap and gap > 0:
@@ -3723,6 +3732,7 @@ def _do_poll():
                         current_difficulty,
                         worker.get("bestDifficulty"),
                         timeline_state["session_share_count"],
+                        estimated=estimated,
                     )
                     timeline_state["share_calc_history"].append(share_calc)
 
@@ -6285,9 +6295,21 @@ def _sync_market_prices_to_state(offers: list):
         estimated = bool(getattr(offer, "estimated", False))
         if isinstance(offer, dict):
             estimated = bool(offer.get("estimated", False))
+        meta = getattr(offer, "meta", None)
+        if meta is None and isinstance(offer, dict):
+            meta = offer.get("meta")
+        fetched_at = meta.get("fetched_at") if isinstance(meta, dict) else None
+        try:
+            observed_at = int(fetched_at) if fetched_at is not None else None
+        except (TypeError, ValueError, OverflowError):
+            observed_at = None
+        hashrate = getattr(offer, "hashrate", None)
+        if hashrate is None and isinstance(offer, dict):
+            hashrate = offer.get("hashrate")
         _shared_state.last_known_prices[provider] = {
             "price": price_ph,
-            "ts": int(time.time()),
+            "ts": observed_at,
+            "hashrate": hashrate,
             "label": provider.capitalize(),
             "source": source or provider,
             "estimated": estimated,
@@ -6314,7 +6336,9 @@ def api_hashrate_market():
     # HashratePulse Enterprise institutional view
     from services.hashrate_market import compute_institutional_view
 
-    inst_view = compute_institutional_view(offers, network_hashrate, btc_usd)
+    inst_view = compute_institutional_view(
+        offers, network_hashrate, btc_usd, provider_cache=_shared_state.last_known_prices
+    )
 
     return jsonify(
         {
@@ -6345,7 +6369,9 @@ def api_hashrate_market_institutional():
     return jsonify(
         {
             "success": True,
-            **compute_institutional_view(offers, network_hashrate, btc_usd),
+            **compute_institutional_view(
+                offers, network_hashrate, btc_usd, provider_cache=_shared_state.last_known_prices
+            ),
         }
     )
 
@@ -8230,12 +8256,22 @@ def api_chart_data():
                 labels.append(int(e.get("ts") or 0) * 1000)
                 values.append(round(cum * 100, 6))
         else:
-            # Histogram of share difficulty across the session
-            diffs = [
-                float(e.get("share_diff_raw") or 0)
-                for e in sch
-                if e.get("share_diff_raw")
-            ]
+            # Histogram and percentiles use only valid, finite share observations.
+            diffs = []
+            for entry in sch:
+                try:
+                    value = float(entry.get("share_diff_raw"))
+                except (AttributeError, TypeError, ValueError):
+                    continue
+                if math.isfinite(value) and value > 0:
+                    diffs.append(value)
+            share_stats = share_statistics(
+                timeline_state.get("session_share_count"), sch,
+                window_seconds=3600.0,
+                user_hashrate=(latest_snapshot.get("worker") or {}).get("hashrate"),
+                network_hashrate=(latest_snapshot.get("network") or {}).get("hashrate"),
+                observed_now=time.time(),
+            )
             target_diff = None
             target_bucket = None
             if diffs:
@@ -8280,6 +8316,7 @@ def api_chart_data():
                 # purple reference line overlay). Null when unavailable.
                 "target_diff": target_diff if chart == "share_dist" else None,
                 "target_bucket": target_bucket if chart == "share_dist" else None,
+                "share_statistics": share_stats if chart == "share_dist" else None,
                 "datasets": [
                     {
                         "label": (

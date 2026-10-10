@@ -24,6 +24,7 @@ from helpers import (
     compute_pool_rental_break_even,
     compute_lender_profitability,
     build_decision_matrix,
+    build_economic_scenario_matrix,
 )
 import services.names as _names
 
@@ -355,7 +356,8 @@ def dedup_workers(entries):
 
 
 def compute_share_calc(
-    ts, gap, share_diff_raw, current_difficulty, best_diff_str, session_share_count
+    ts, gap, share_diff_raw, current_difficulty, best_diff_str, session_share_count,
+    estimated=False,
 ):
     """Build the per-share LIVE HASH CALCULATOR payload (pure math).
 
@@ -389,6 +391,7 @@ def compute_share_calc(
         "network_diff_at_time": current_difficulty,
         "network_diff_at_time_str": fmt_diff(current_difficulty),
         "session_share_count_at_time": session_share_count,
+        "estimated": bool(estimated),
     }
 
 
@@ -604,6 +607,15 @@ def compute_profitability(
             round(lender_market_rate_btc * _btc_conv, 4)
             if lender_market_rate_btc and _btc_conv
             else None
+        )
+        profitability["economic_scenarios"] = build_economic_scenario_matrix(
+            solo_p_day_pct=None,
+            cost_modes={
+                "POOL": cost_mode != "none",
+                "SOLO": cost_mode != "none",
+                "RENTAL": cost_mode == "rental",
+                "LEASE": bool(lender_market_rate_btc and coerce_float(s.get("power_watts"), 0.0) > 0),
+            },
         )
 
         if cur_hr > 0 and net_hr > 0:
@@ -857,6 +869,31 @@ def compute_profitability(
                 breakeven_cost_per_th_day=profitability.get(
                     "breakeven_cost_per_th_day"
                 ),
+            )
+            profitability["economic_scenarios"] = build_economic_scenario_matrix(
+                pool_ev_btc_per_day=profitability.get("net_btc_per_day_pool"),
+                pool_net_usd_per_day=profitability.get("pool_net_usd_per_day"),
+                pool_cost_usd_per_day=profitability.get("cost_per_day_usd"),
+                solo_ev_btc_per_day=profitability.get("net_btc_per_day_solo"),
+                solo_net_usd_per_day=(
+                    round((solo_net_btc_per_day * btc_usd) - cost_per_day, 4)
+                    if btc_usd and not cost_unavailable
+                    else None
+                ),
+                solo_cost_usd_per_day=profitability.get("cost_per_day_usd"),
+                rental_ev_btc_per_day=profitability.get("net_btc_per_day_rental"),
+                rental_net_usd_per_day=profitability.get("rental_net_usd_per_day"),
+                rental_cost_usd_per_day=profitability.get("cost_per_day_usd"),
+                lease_ev_btc_per_day=profitability.get("lender_revenue_btc_per_day"),
+                lease_net_usd_per_day=profitability.get("lender_net_usd_per_day"),
+                lease_cost_usd_per_day=profitability.get("lender_power_cost_usd_per_day"),
+                solo_p_day_pct=profitability.get("solo_p_day_pct"),
+                cost_modes={
+                    "POOL": profitability["cost_model_configured"],
+                    "SOLO": profitability["cost_model_configured"],
+                    "RENTAL": cost_mode == "rental",
+                    "LEASE": bool(lender_market_rate_btc and lender_watts > 0),
+                },
             )
         else:
             profitability["unavailable_reason"] = "no hashrate or network hashrate"

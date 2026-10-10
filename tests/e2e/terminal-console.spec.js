@@ -45,9 +45,14 @@ test('pool-only operation has one summary and identified workers',async({page},i
   await expect(page.locator('#console-table-body tr').nth(1)).toContainText('14.00 TH/s');
   await expect(page.locator('#console-fleet-source')).toContainText('nenhum cadastrado');
   await expect(page.locator('#console-source-fleet')).toBeDisabled();
-  for(const id of ['hero-worker','operational-overview','network-panel','pool-overview','console-fleet-summary','tbar-status','tbar-hr']) await expect(page.locator('#'+id)).toBeHidden();
+  for(const id of ['hero-worker','network-panel','pool-overview','console-fleet-summary','tbar-status','tbar-hr']) await expect(page.locator('#'+id)).toBeHidden();
+  // PR7 (#797) deliberately exposes the evidence overview on dashboard.
+  await expect(page.locator('#operational-overview')).toBeVisible();
+  await expect(page.locator('#operational-overview')).toHaveAttribute('aria-busy', 'false');
   expect(await page.locator('.console-entity').first().evaluate(e=>parseFloat(getComputedStyle(e).fontSize))).toBeGreaterThanOrEqual(12);
   await noOverflow(page);
+  await expect(page.locator('.desk-workspace > .desk-inventory')).toHaveCount(1);
+  await expect(page.locator('.desk-workspace > .desk-secondary')).toHaveCount(1);
   const visual = await page.locator('#console-visual').boundingBox();
   expect(visual.y + visual.height).toBeLessThan(page.viewportSize().height);
   if(info.project.name==='chromium') {
@@ -100,6 +105,36 @@ test('Fleet prioritizes exceptions and opens an accessible detail without comman
   expect(writes).toEqual([]);
   await page.locator('#console-source-pool').click();
   await expect(page.locator('#operation-console')).toHaveAttribute('data-source','pool');
+});
+
+test('dashboard snapshot refresh reuses one Chart.js instance per canvas', async ({ page }) => {
+  const pageErrors = [];
+  page.on('pageerror', error => pageErrors.push(error.message));
+  let chartReads = 0;
+  await page.route('**/api/chart-data*', r => {
+    chartReads++;
+    return r.fulfill({json:{labels:['2026-10-10T10:00:00Z'],datasets:[{data:[chartReads]}]}});
+  });
+  await fixture(page);
+  const chartIds = ['chart-hashrate', 'chart-pool', 'chart-bestdiff', 'chart-net', 'chart-cumulative-p', 'chart-share-dist'];
+  await expect.poll(() => page.evaluate(ids => ids.map(id => !!window.Chart?.getChart(id)), chartIds)).toEqual(chartIds.map(() => true));
+  const chartInstanceIds = await page.evaluate(ids => ids.map(id => window.Chart.getChart(id).id), chartIds);
+  const expectSameChartInstances = async () => {
+    await expect.poll(() => page.evaluate(ids => ids.map(id => window.Chart?.getChart(id)?.id ?? null), chartIds)).toEqual(chartInstanceIds);
+  };
+  for (let i = 0; i < 3; i++) {
+    const refreshed = page.waitForResponse(response => response.url().includes('/api/snapshot') && response.request().method() === 'GET');
+    await page.locator('#refresh-now').click();
+    await refreshed;
+    await expectSameChartInstances();
+  }
+  await openModule(page, 'live');
+  await expectSameChartInstances();
+  await openModule(page, 'probability');
+  await expectSameChartInstances();
+  await expect.poll(() => page.evaluate(() => window.Chart.getChart('chart-share-dist').data.datasets[0].data.length)).toBe(1);
+  expect(chartReads).toBeGreaterThan(0);
+  expect(pageErrors).toEqual([]);
 });
 
 test('old Fleet observations do not present current health or current hashrate',async({page},info)=>{
@@ -337,7 +372,12 @@ test('desk quote stays above the register and commands open the shift',async({pa
   const quote=await page.locator('.desk-quote').boundingBox();
   const table=await page.locator('#console-table').boundingBox();
   expect(quote.y).toBeLessThan(table.y);
-  await expect(page.locator('#console-btc-price')).toHaveCSS('color','rgb(247, 147, 26)');
+  await expect(page.locator('.desk-quote #console-btc-price')).toHaveCSS('color','rgb(247, 147, 26)');
+  await expect(page.locator('#console-btc-price-context')).toHaveText('$84,537');
+  await expect(page.locator('#console-network-height-context')).toHaveText('#969,641');
+  await expect(page.locator('#console-network-diff-context')).not.toHaveText('—');
+  await expect(page.locator('script[src="/static/app.js?v763"]')).toHaveCount(1);
+  await expect(page.locator('link[rel="stylesheet"][href="/static/style.css?v763"]')).toHaveCount(1);
   await expect(page.locator('#desk-command-input')).not.toHaveCount(0);
   await expect(page.locator('#console-detail #desk-command-input')).toHaveCount(0);
   await page.locator('#desk-command-input').fill('pool');

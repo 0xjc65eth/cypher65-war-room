@@ -96,8 +96,18 @@ def _sync_market_prices_to_state(offers):
             continue
         price_per_ph = float(price_per_th) * 1000.0
         estimated = bool(entry.get("estimated"))
+        meta = entry.get("meta") or {}
+        try:
+            observed_at = (
+                int(meta.get("fetched_at"))
+                if meta.get("fetched_at") is not None
+                else None
+            )
+        except (TypeError, ValueError, OverflowError):
+            observed_at = None
         _shared_state.last_known_prices[provider] = {
-            "ts": now,
+            "ts": observed_at,
+            "hashrate": entry.get("hashrate"),
             "price": price_per_ph,
             "source": entry.get("source", provider),
             "estimated": estimated,
@@ -378,6 +388,373 @@ def build_auto_pilot_context() -> dict:
 # ── Main enrichment ─────────────────────────────────────────────────────
 
 
+def build_operations_overview(snapshot: dict, now: Optional[int] = None) -> dict:
+    """Compose a read-only evidence inventory from an already-scoped snapshot.
+
+    Every observed signal carries its source timestamp, age, and measurement
+    window. This reports coverage only; it never infers causes or priced impact.
+    """
+    data = snapshot if isinstance(snapshot, dict) else {}
+    now_ts = int(time.time() if now is None else now)
+    stale_after_s = 150
+    snapshot_ts = coerce_ts(data.get("ts"))
+
+    def number(value):
+        if isinstance(value, bool) or value is None or value == "":
+            return None
+        try:
+            result = float(value)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        return result if result == result and abs(result) != float("inf") else None
+
+    def signal(name, value, unit, source, observed_at, window):
+        ts = coerce_ts(observed_at)
+        return {
+            "name": name,
+            "value": value,
+            "unit": unit,
+            "source": source,
+            "observed_at": ts,
+            "age_seconds": max(0, now_ts - ts) if ts is not None else None,
+            "window": window,
+        }
+
+    def domain(domain_id, label, source, signals, expected, target, forced_stale=False):
+        present = {item["name"] for item in signals}
+        missing = [name for name in expected if name not in present]
+        missing.extend(
+            item["name"] + "_observation_timestamp"
+            for item in signals
+            if item["observed_at"] is None
+        )
+        ages = [
+            item["age_seconds"] for item in signals if item["age_seconds"] is not None
+        ]
+
+        age = max(ages) if ages else None
+        stale = forced_stale or any(value > stale_after_s for value in ages)
+        status = (
+            "stale"
+            if stale
+            else ("missing" if not signals else ("partial" if missing else "observed"))
+        )
+        return {
+            "id": domain_id,
+            "label": label,
+            "status": status,
+            "source": source,
+            "age_seconds": age,
+            "window": "Per-signal; no broader window inferred",
+            "signals": signals,
+            "missing_signals": missing,
+            "evidence_target": target,
+        }
+
+    worker = data.get("worker") if isinstance(data.get("worker"), dict) else {}
+    worker_hr = number(worker.get("hashrate"))
+    mining_signals = []
+    if worker_hr is not None and worker_hr >= 0:
+        mining_signals.append(
+            signal(
+                "worker_hashrate",
+                worker_hr,
+                "H/s",
+                "snapshot.worker.hashrate",
+                snapshot_ts,
+                "point-in-time pool sample; averaging window unspecified",
+            )
+        )
+    mining = domain(
+        "mining",
+        "MINING",
+        "snapshot worker telemetry",
+        mining_signals,
+        ["worker_hashrate"],
+        "hero-worker",
+    )
+
+    fleet = data.get("axe_fleet") if isinstance(data.get("axe_fleet"), list) else []
+    fleet_samples = []
+    fleet_signals = []
+    fleet_status_counts = {}
+    fleet_status_observations = {}
+    for device in fleet:
+        if not isinstance(device, dict):
+            continue
+        value = number(device.get("hashrate_hs", device.get("hashrate")))
+        if value is not None and value >= 0:
+            fleet_samples.append((value, coerce_ts(device.get("ts"))))
+        status = device.get("status")
+        if isinstance(status, str) and status.strip():
+            normalized_status = status.strip().upper()
+            fleet_status_counts[normalized_status] = (
+                fleet_status_counts.get(normalized_status, 0) + 1
+            )
+            fleet_status_observations.setdefault(normalized_status, []).append(
+                coerce_ts(device.get("ts"))
+            )
+    fleet_status_all_timestamps = [
+        timestamp
+        for timestamps in fleet_status_observations.values()
+        for timestamp in timestamps
+    ]
+    fleet_status_ts = (
+        min(fleet_status_all_timestamps)
+        if fleet_status_all_timestamps
+        and all(timestamp is not None for timestamp in fleet_status_all_timestamps)
+        else None
+    )
+    anomaly_status_timestamps = {
+        status: (
+            min(timestamps)
+            if timestamps and all(timestamp is not None for timestamp in timestamps)
+            else None
+        )
+        for status, timestamps in fleet_status_observations.items()
+    }
+    if fleet_samples:
+        dated = [ts for _, ts in fleet_samples if ts is not None]
+        fleet_signals.extend(
+            [
+                signal(
+                    "timestamped_device_samples",
+                    len(dated),
+                    "devices",
+                    "snapshot.axe_fleet telemetry",
+                    max(dated) if dated else None,
+                    "point-in-time device samples",
+                ),
+                signal(
+                    "reported_hashrate",
+                    sum(value for value, _ in fleet_samples),
+                    "H/s",
+                    "snapshot.axe_fleet telemetry",
+                    min(dated) if dated else None,
+                    "sum of reported samples; no rolling window",
+                ),
+            ]
+        )
+    if fleet_status_counts:
+        fleet_signals.append(
+            signal(
+                "device_status_counts",
+                fleet_status_counts,
+                "devices",
+                "snapshot.axe_fleet.status",
+                fleet_status_ts,
+                "point-in-time reported device statuses",
+            )
+        )
+    fleet_incomplete = bool(fleet_samples) and (
+        len(fleet_samples) != len(fleet) or any(ts is None for _, ts in fleet_samples)
+    )
+    fleet_domain = domain(
+        "fleet",
+        "FLEET",
+        "tenant-scoped axe_fleet telemetry",
+        fleet_signals,
+        ["timestamped_device_samples", "reported_hashrate"],
+        "axe-fleet-panel",
+    )
+    if fleet_incomplete and fleet_domain["status"] != "missing":
+        fleet_domain["status"] = "partial"
+        if len(fleet_samples) != len(fleet):
+            fleet_domain["missing_signals"].append("device_telemetry_samples")
+        if any(ts is None for _, ts in fleet_samples):
+            fleet_domain["missing_signals"].append("fresh_device_timestamps")
+
+    pool = data.get("pool") if isinstance(data.get("pool"), dict) else {}
+    pool_hr = number(pool.get("hashrate"))
+    pool_signals = []
+    if pool_hr is not None and pool_hr >= 0:
+        pool_signals.append(
+            signal(
+                "pool_hashrate",
+                pool_hr,
+                "H/s",
+                "snapshot.pool.hashrate",
+                snapshot_ts,
+                "point-in-time snapshot; averaging window unspecified",
+            )
+        )
+    pool_domain = domain(
+        "pool",
+        "POOL",
+        "snapshot pool stats",
+        pool_signals,
+        ["pool_hashrate"],
+        "pool-overview",
+        forced_stale=pool.get("_stale") is True,
+    )
+
+    network = data.get("network") if isinstance(data.get("network"), dict) else {}
+    price = data.get("btc_price") if isinstance(data.get("btc_price"), dict) else {}
+    market = (
+        data.get("market_data") if isinstance(data.get("market_data"), dict) else {}
+    )
+    data_signals = []
+    for key in ("height", "difficulty", "hashrate"):
+        value = number(network.get(key))
+        if value is not None and value >= 0:
+            data_signals.append(
+                signal(
+                    "network_" + key,
+                    value,
+                    "",
+                    "snapshot.network." + key,
+                    snapshot_ts,
+                    "point-in-time snapshot",
+                )
+            )
+    btc_usd = number(price.get("usd"))
+    if btc_usd is not None and btc_usd >= 0:
+        data_signals.append(
+            signal(
+                "btc_usd",
+                btc_usd,
+                "USD/BTC",
+                "snapshot.btc_price.usd",
+                coerce_ts(price.get("updated_at")) or snapshot_ts,
+                "point-in-time quote; provider window unspecified",
+            )
+        )
+    market_ts = coerce_ts(market.get("updated_at"))
+    if market_ts is not None:
+        data_signals.append(
+            signal(
+                "market_updated_at",
+                market_ts,
+                "unix_seconds",
+                "snapshot.market_data.updated_at",
+                market_ts,
+                "provider fetch timestamp",
+            )
+        )
+    market_health = (
+        market.get("health") if isinstance(market.get("health"), dict) else {}
+    )
+    data_domain = domain(
+        "data",
+        "DATA",
+        "snapshot network, price, and market sources",
+        data_signals,
+        [
+            "network_height",
+            "network_difficulty",
+            "network_hashrate",
+            "btc_usd",
+            "market_updated_at",
+        ],
+        "network-panel",
+        forced_stale=(
+            network.get("stale") is True
+            or price.get("stale") is True
+            or market_health.get("stale") is True
+        ),
+    )
+
+    profitability = (
+        data.get("profitability") if isinstance(data.get("profitability"), dict) else {}
+    )
+    cost = number(profitability.get("cost_per_day_usd"))
+    economics_signals = []
+    if isinstance(profitability.get("cost_model_configured"), bool):
+        economics_signals.append(
+            signal(
+                "cost_model_configured",
+                profitability["cost_model_configured"],
+                "",
+                "snapshot.profitability.cost_model_configured",
+                snapshot_ts,
+                "configured model state at snapshot time",
+            )
+        )
+    if (
+        profitability.get("cost_model_configured") is True
+        and cost is not None
+        and cost >= 0
+    ):
+        economics_signals.append(
+            signal(
+                "configured_cost_per_day",
+                cost,
+                "USD/day",
+                "snapshot.profitability.cost_per_day_usd",
+                snapshot_ts,
+                "per-day configured cost model; estimated from configuration",
+            )
+        )
+    economics_expected = ["cost_model_configured"] + (
+        ["configured_cost_per_day"]
+        if profitability.get("cost_model_configured") is True
+        else []
+    )
+    economics = domain(
+        "economics",
+        "ECONOMICS",
+        "snapshot profitability cost model",
+        economics_signals,
+        economics_expected,
+        "profit-panel",
+    )
+
+    domains = [mining, fleet_domain, pool_domain, data_domain, economics]
+    statuses = [item["status"] for item in domains]
+    anomalies = []
+    for status in ("OFFLINE", "WARNING", "STALE"):
+        count = fleet_status_counts.get(status, 0)
+        if count:
+            anomalies.append(
+                {
+                    "id": "fleet_status_" + status.lower(),
+                    "status": status,
+                    "count": count,
+                    "message": str(count)
+                    + " device(s) explicitly report "
+                    + status
+                    + ".",
+                    "source": "snapshot.axe_fleet.status",
+                    "observed_at": anomaly_status_timestamps.get(status),
+                    "age_seconds": (
+                        max(0, now_ts - anomaly_status_timestamps[status])
+                        if anomaly_status_timestamps.get(status) is not None
+                        else None
+                    ),
+                    "window": "point-in-time reported device statuses",
+                }
+            )
+    return {
+        "schema_version": 1,
+        "status": (
+            "missing"
+            if all(value == "missing" for value in statuses)
+            else (
+                "partial"
+                if any(value in ("missing", "partial", "stale") for value in statuses)
+                else "observed"
+            )
+        ),
+        "as_of": now_ts,
+        "stale_after_seconds": stale_after_s,
+        "domains": domains,
+        "change_comparison": {
+            "status": "not_available",
+            "reason": "No comparable prior-window evidence supplied",
+        },
+        "metric_status": {
+            "anomaly_signals": "observed" if anomalies else "not_observed",
+            "explanations": "not_established",
+            "economic_impact": "not_established",
+        },
+        "anomalies": anomalies,
+        "explanations": [],
+        "explanation_status": "not_established",
+        "economic_impact": None,
+        "economic_impact_status": "not_established",
+    }
+
+
 def enrich_snapshot(snapshot: dict, axe_registry=None) -> dict:
     """Take a raw snapshot dict and enrich it with market_data, auto_pilot,
     command_center, block_hunt, and affiliate links. Returns a NEW dict
@@ -436,7 +813,13 @@ def enrich_snapshot(snapshot: dict, axe_registry=None) -> dict:
         snapshot.get("network") or {}
     ).get("btc_usd")
     all_offers = _fetch_all_offers(network_hr)
-    resp["institutional"] = _compute_institutional_view(all_offers, network_hr, btc_usd)
+    resp["institutional"] = _compute_institutional_view(
+        all_offers,
+        network_hr,
+        btc_usd,
+        provider_cache=_shared_state.last_known_prices,
+    )
+    resp["market_intelligence"] = resp["institutional"].get("market_intelligence")
     cache = _shared_state.market_data_cache
     if highlights and len(highlights) > 0:
         sorted_hl = sorted(highlights, key=_market_offer_sort_key)

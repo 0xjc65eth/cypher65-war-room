@@ -301,7 +301,7 @@
     proxLadderRow: $('#prox-ladder-row'), proxSparkline: $('#prox-sparkline'), proxTip: document.getElementById('prox-tip'),
     lcTimeBig: $('#lc-time-big'), lcSessionShareCount: $('#lc-session-share-count'), lcShareDiff: $('#lc-share-diff'), lcHashes: $('#lc-hashes'),
     lcTimeObs: $('#lc-time-obs'), lcPBlock: $('#lc-p-block'), lcInstHr: $('#lc-inst-hr'), lcSessionShares: $('#lc-session-shares'),
-    lcAvgShareDiff: $('#lc-avg-share-diff'), lcCumP: $('#lc-cum-p'), lcExpectedBlocks: $('#lc-expected-blocks'), lcTickerList: $('#lc-ticker-list'),
+    lcAvgShareDiff: $('#lc-avg-share-diff'), lcCumP: $('#lc-cum-p'), lcExpectedBlocks: $('#lc-expected-blocks'), lcTickerList: $('#lc-ticker-list'), lcEstimatedBadge: $('#lc-estimated-badge'),
     qlStatusBadge: $('#ql-status-badge'), qlScoreBadge: $('#ql-score-badge'), qlBarFill: $('#ql-bar-fill'),
     qlCompShares: $('#ql-comp-shares'), qlCompProx: $('#ql-comp-prox'), qlCompPower: $('#ql-comp-power'), qlCompMomentum: $('#ql-comp-momentum'), qlLabel: $('#ql-label'),
     lmStatusBadge: $('#lm-status-badge'), lmWorkersBadge: $('#lm-workers-badge'),
@@ -3841,6 +3841,10 @@ dom.walletSave?.addEventListener('click', async () => {
     put('console-network-height', height === null ? '—' : '#' + height.toLocaleString());
     put('console-network-diff', difficulty === null ? '—' : fmt.diff(difficulty));
     put('console-network-scope', height === null ? 'rede não informada' : net.stale || net._stale ? 'rede · dados em cache' : 'última altura informada');
+    document.querySelectorAll('[data-console-mirror]').forEach(function(mirror) {
+      const source = document.getElementById(mirror.getAttribute('data-console-mirror'));
+      if (source) mirror.textContent = source.textContent;
+    });
   }
 
   function renderOperationConsole(snap, fleetData, fleetError) {
@@ -4143,6 +4147,59 @@ dom.walletSave?.addEventListener('click', async () => {
     put('op-action-title', model.actionTitle);
     put('op-action-detail', model.actionEnabled ? 'Opens diagnostic only · no command is executed' : 'Advisory only · no command is executed');
     put('op-state', model.stateText);
+    const evidence = snap && snap.operations_overview;
+    const evidenceRoot = document.getElementById('op-evidence-domains');
+    if (evidenceRoot && evidence && Array.isArray(evidence.domains)) {
+      const domains = evidence.domains;
+      const byId = {};
+      domains.forEach(function(domain) { if (domain && domain.id) byId[domain.id] = domain; });
+      const expected = ['mining', 'fleet', 'pool', 'data', 'economics'];
+      const complete = expected.filter(function(id) { return byId[id] && byId[id].status === 'observed'; }).length;
+      put('op-evidence-coverage', complete + '/' + expected.length + ' domains fully observed · ' + String(evidence.status || 'missing').toUpperCase());
+      const valueText = function(value, unit) {
+        if (value === null || value === undefined || value === '') return '—';
+        const n = Number(value);
+        const shown = value && typeof value === 'object'
+          ? JSON.stringify(value)
+          : (isFinite(n)
+            ? (Math.abs(n) >= 1000 ? n.toLocaleString(undefined, { maximumFractionDigits: 2 }) : String(n))
+            : String(value));
+        return shown + (unit ? ' ' + unit : '');
+      };
+      const ageText = function(age) {
+        if (age === null || age === undefined || !isFinite(Number(age))) return 'age unavailable';
+        return fmt.secsToHuman(Number(age)) + ' old';
+      };
+      const html = expected.map(function(id) {
+        const domain = byId[id] || { id: id, label: id.toUpperCase(), status: 'missing', source: 'unavailable', signals: [], missing_signals: [], evidence_target: '' };
+        const status = ['observed', 'partial', 'stale', 'missing'].indexOf(domain.status) !== -1 ? domain.status : 'missing';
+        const signals = Array.isArray(domain.signals) ? domain.signals : [];
+        const signalHtml = signals.map(function(item) {
+          const title = String(item.name || 'signal').replace(/_/g, ' ');
+          const provenance = String(item.source || domain.source || 'source unavailable') + ' · ' + ageText(item.age_seconds) + ' · ' + String(item.window || 'window unavailable');
+          return '<p class="op-evidence__signal">' + escapeHtml(title) + ': <strong>' + escapeHtml(valueText(item.value, item.unit)) + '</strong><small class="op-evidence__provenance">' + escapeHtml(provenance) + '</small></p>';
+        }).join('');
+        const missing = Array.isArray(domain.missing_signals) ? domain.missing_signals : [];
+        const missingHtml = (!signals.length ? '<p class="op-evidence__missing">No signals observed</p>' : '') + (missing.length ? '<p class="op-evidence__missing">Missing: ' + escapeHtml(missing.join(', ').replace(/_/g, ' ')) + '</p>' : '');
+        const target = String(domain.evidence_target || '');
+        const link = target && document.getElementById(target) ? '<button class="op-evidence__open" type="button" data-evidence-target="' + escapeHtml(target) + '">Open evidence</button>' : '';
+        return '<article class="op-evidence__domain" data-status="' + status + '"><div class="op-evidence__domain-head"><strong>' + escapeHtml(domain.label || id.toUpperCase()) + '</strong><span class="op-evidence__status">' + status.toUpperCase() + '</span></div>' + signalHtml + missingHtml + link + '</article>';
+      }).join('');
+      if (typeof setHtmlIfChanged === 'function') setHtmlIfChanged(evidenceRoot, html);
+      else if (evidenceRoot.innerHTML !== html) evidenceRoot.innerHTML = html;
+      const limits = [];
+      if (Array.isArray(evidence.change_comparison) && evidence.change_comparison.length) limits.push(evidence.change_comparison.join('; '));
+      else limits.push((evidence.change_comparison && evidence.change_comparison.reason) || 'Change over time not established');
+      if (Array.isArray(evidence.anomalies) && evidence.anomalies.length) limits.push(evidence.anomalies.map(function(anomaly) { return String(anomaly.count || 1) + ' ' + String(anomaly.status || 'observed').toUpperCase() + ' device exception(s)'; }).join(' · '));
+      else limits.push('No anomaly asserted');
+      if (Array.isArray(evidence.explanations) && evidence.explanations.length) limits.push(evidence.explanations.length + ' supported explanation(s)');
+      else limits.push('No cause inferred');
+      limits.push(evidence.economic_impact_status === 'established' ? 'Economic impact has evidence' : 'Economic impact not established');
+      put('op-evidence-limits', limits.join(' · '));
+    } else {
+      put('op-evidence-coverage', 'Evidence summary unavailable');
+      if (evidenceRoot) evidenceRoot.innerHTML = '<div class="op-evidence__domain" data-status="missing"><div class="op-evidence__domain-head"><strong>OPERATIONS EVIDENCE</strong><span class="op-evidence__status">MISSING</span></div><p class="op-evidence__missing">Backend evidence summary unavailable.</p></div>';
+    }
     const action = document.getElementById('op-action');
     if (action) {
       action.disabled = !model.actionEnabled;
@@ -4155,6 +4212,20 @@ dom.walletSave?.addEventListener('click', async () => {
     initOperationConsoleControls();
     const action = document.getElementById('op-action');
     if (!action) return;
+    const evidenceDomains = document.getElementById('op-evidence-domains');
+    if (evidenceDomains) evidenceDomains.addEventListener('click', function(event) {
+      const button = event.target.closest('[data-evidence-target]');
+      if (!button) return;
+      const targetId = button.dataset.evidenceTarget || '';
+      const panel = document.getElementById(targetId);
+      if (!panel) return;
+      const module = panel.getAttribute('data-module') || 'analysis';
+      activateModule(module.split(/\s+/)[0]);
+      setTimeout(function() {
+        const reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+        panel.scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth', block: 'start' });
+      }, 140);
+    });
     action.addEventListener('click', function() {
       if (action.disabled) return;
       const target = action.dataset.target || '';
@@ -4523,6 +4594,7 @@ function renderPool(pool, luck) {
   // renderCharts refresh keeps the user's toolbar choice instead of silently
   // resetting every chart back to 1h (audit: range chips were being ignored).
   const _chartRange = {};
+  const _chartRequest = {};
   function _fmtChartLabel(t, cfg, id) {
     if (cfg.chart === 'share_dist') return String(t); // histogram bucket labels
     const d = new Date(t);
@@ -4534,14 +4606,27 @@ function renderPool(pool, luck) {
     }
     return hm;
   }
-  // The Share-Distribution panel badge was hardcoded to "0 shares" in the HTML
-  // and never updated. Reflect the real histogram count from the API.
+  // The Share-Distribution panel badge reflects the real histogram count.
   function _updateShareDistBadge(cfg, data, values) {
     if (!cfg || cfg.chart !== 'share_dist') return;
     const badge = document.getElementById('share-dist-count-badge');
     if (!badge) return;
     const n = (data && data.count != null) ? data.count : values.reduce((a, b) => a + (Number(b) || 0), 0);
     badge.textContent = `${n} shares`;
+  }
+
+
+  function _updateShareDistSummary(data) {
+    const summary = document.getElementById('share-dist-summary');
+    if (!summary) return;
+    const stats = data && data.share_statistics;
+    if (!stats || stats.status === 'NO_DATA') {
+      summary.textContent = 'P50 — · P75 — · P90 — · P95 — · P99 — · MAX — · SAMPLE — · WINDOW —';
+      return;
+    }
+    const value = (number) => number == null ? '—' : fmt.diff(number);
+    const window = stats.observed_window || (stats.window_seconds != null ? `${stats.window_seconds}s` : '—');
+    summary.textContent = `P50 ${value(stats.p50)} · P75 ${value(stats.p75)} · P90 ${value(stats.p90)} · P95 ${value(stats.p95)} · P99 ${value(stats.p99)} · MAX ${value(stats.max)} · SAMPLE ${stats.sample_count == null ? '—' : stats.sample_count} · WINDOW ${window}`;
   }
   // P0-1: overlay the network target difficulty on the share histogram — a
   // solid purple reference line + readable badge so the operator sees how far
@@ -4561,18 +4646,39 @@ function renderPool(pool, luck) {
   async function loadChartData(id) {
     const cfg = CHART_METRICS[id];
     if (!cfg) return;
+    const chart = _ensureDashboardChart(id);
+    if (!chart) return;
+    const range = _chartRange[id] || '1h';
+    const request = (_chartRequest[id] || 0) + 1;
+    _chartRequest[id] = request;
+    const isCurrent = () => _chartRequest[id] === request && charts[id] === chart &&
+      chart.canvas === document.getElementById(id) && Chart.getChart(chart.canvas) === chart &&
+      (_chartRange[id] || '1h') === range;
     try {
-      const r = await fetch(`/api/chart-data?chart=${cfg.chart}&range=${_chartRange[id] || '1h'}`);
-      if (r.status === 402) { await handleLicenseRequired(r); _chartRange[id] = '1h'; const _tb = document.getElementById('share-dist-target-badge'); if (_tb) _tb.textContent = 'target —'; return; }
+      const r = await fetch(`/api/chart-data?chart=${cfg.chart}&range=${range}`);
+      if (!isCurrent()) return;
+      if (r.status === 402) {
+        // Consume the async body before surfacing the lock; a newer range may
+        // have been selected while either fetch or JSON was in flight.
+        let locked = {};
+        try { locked = await r.json(); } catch (e) { /* status still proves a lock */ }
+        if (!isCurrent()) return;
+        await handleLicenseRequired({ json: async () => locked });
+        if (!isCurrent()) return;
+        _chartRange[id] = '1h';
+        const target = document.getElementById('share-dist-target-badge');
+        if (target) target.textContent = 'target —';
+        return;
+      }
       if (!r.ok) return;
       const data = await r.json();
-      const chart = charts[id];
-      if (!chart) return;
+      if (!isCurrent()) return;
       const rawLabels = (data.labels || []);
       const values = (data.datasets?.[0]?.data || data.datasets?.[0]?.values || []);
       chart.data.labels = rawLabels.map(t => _fmtChartLabel(t, cfg, id));
       chart.data.datasets[0].data = values;
       _updateShareDistBadge(cfg, data, values);
+      _updateShareDistSummary(data);
       // Fase 2.1: SMA overlay + shares bar + event annotations
       if (chart.data.datasets[1] && cfg.chart !== 'share_dist') {
         chart.data.datasets[1].data = computeSMA(values, Math.max(3, Math.round(values.length / 10)));
@@ -4584,7 +4690,9 @@ function renderPool(pool, luck) {
       chart._annotations = buildChartAnnotations(data.events || [], rawLabels);
       _applyShareDistTarget(cfg, data, chart);
       chart.update('none');
-    } catch (e) { /* chart load silently */ }
+    } catch (e) {
+      if (isCurrent()) logMessage('CHART', 'Falha ao carregar ' + cfg.label, 'WARN');
+    }
   }
   // R1: gated chart-data ranges (30d/all) return 402 when the gate is live
   // and no key is present — reset the range to 1h and surface the CTA so the
@@ -4599,18 +4707,13 @@ function renderPool(pool, luck) {
     if (!inModuleMode && !chartsTab.classList.contains('active')) return;
     Object.keys(CHART_METRICS).forEach(id => {
       const canvas = document.getElementById(id);
-      if (!canvas) return;
-      // Pula canvases dentro de painéis ocultos (outro módulo) —
-      // Chart.js não consegue medir display:none
-      if (inModuleMode && canvas.offsetParent === null) return;
-      // init chart if not yet created
-      if (!charts[id]) {
-        const cfg = CHART_METRICS[id];
-        charts[id] = makeChart(id, cfg.label, cfg.color);
-      }
+      // Release removed/replaced canvases even while their module is hidden.
+      if (charts[id] && charts[id].canvas !== canvas) _releaseDashboardChart(id);
+      if (!canvas || (inModuleMode && canvas.offsetParent === null)) return;
       loadChartData(id);
     });
   }
+
   // ── Main render ──
   let prevSnapshot = null;
   function render(snap) {
@@ -4650,7 +4753,7 @@ function renderPool(pool, luck) {
     renderComparison(snap);
     renderSoloStats(snap.proximity);
     renderProximity(snap.proximity);
-    renderQuantumLock(snap.proximity);
+    renderSessionEvidence(snap.proximity);
     renderLiveCalc(snap.proximity);
     renderNetworkGauge(snap);
     renderMilestones(snap.milestones);
@@ -4780,6 +4883,9 @@ function renderPool(pool, luck) {
   function _attachChartZoom(chart) {
     const canvas = chart.canvas;
     if (!canvas) return;
+    const controller = new AbortController();
+    chart._zoomController = controller;
+    const on = (event, handler, options = {}) => canvas.addEventListener(event, handler, { ...options, signal: controller.signal });
     const MIN_POINTS = 5;
     const maxPoints = () => Math.max(MIN_POINTS, (chart.data.labels || []).length);
     const resetZoom = () => {
@@ -4787,7 +4893,7 @@ function renderPool(pool, luck) {
       delete chart.options.scales.x.max;
       chart.update('none');
     };
-    canvas.addEventListener('wheel', e => {
+    on('wheel', e => {
       e.preventDefault();
       const xs = chart.scales.x;
       if (!xs) return;
@@ -4803,7 +4909,7 @@ function renderPool(pool, luck) {
       chart.update('none');
     }, { passive: false });
     let drag = null;
-    canvas.addEventListener('pointerdown', e => {
+    on('pointerdown', e => {
       if (e.button !== 0) return;
       const xs = chart.scales.x;
       if (!xs) return;
@@ -4811,7 +4917,7 @@ function renderPool(pool, luck) {
       try { canvas.setPointerCapture(e.pointerId); } catch (err) { /* ignore */ }
       canvas.style.cursor = 'grabbing';
     });
-    canvas.addEventListener('pointermove', e => {
+    on('pointermove', e => {
       if (!drag) return;
       const xs = chart.scales.x;
       if (!xs || !(xs.max - xs.min)) return;
@@ -4821,15 +4927,15 @@ function renderPool(pool, luck) {
       chart.options.scales.x.max = newMin + (xs.max - xs.min);
       chart.update('none');
     });
-    canvas.addEventListener('pointerup', () => {
+    on('pointerup', () => {
       drag = null;
       canvas.style.cursor = '';
     });
-    canvas.addEventListener('pointercancel', () => {
+    on('pointercancel', () => {
       drag = null;
       canvas.style.cursor = '';
     });
-    canvas.addEventListener('dblclick', resetZoom);
+    on('dblclick', resetZoom);
     canvas.title = 'scroll to zoom · drag to pan · double-click to reset';
   }
 
@@ -4892,48 +4998,45 @@ function renderPool(pool, luck) {
           },
         },
       },
-      plugins: [chartEventAnnotationsPlugin],
+      plugins: [chartEventAnnotationsPlugin, {
+        id: 'dashboardZoomCleanup',
+        afterDestroy(chart) {
+          if (chart._zoomController) chart._zoomController.abort();
+        },
+      }],
     });
     if (!isHistogram) _attachChartZoom(chart);
     return chart;
   }
 
+  function _releaseDashboardChart(id) {
+    const chart = charts[id];
+    delete charts[id];
+    _chartRequest[id] = (_chartRequest[id] || 0) + 1;
+    if (chart && chart.canvas) chart.destroy();
+  }
+
+  function _ensureDashboardChart(id) {
+    const canvas = document.getElementById(id);
+    if (charts[id] && (charts[id].canvas !== canvas ||
+        (typeof Chart !== 'undefined' && Chart.getChart(canvas) !== charts[id]))) {
+      _releaseDashboardChart(id);
+    }
+    if (!canvas || typeof Chart === 'undefined') return null;
+    if (!charts[id]) {
+      const cfg = CHART_METRICS[id];
+      charts[id] = Chart.getChart(canvas) || makeChart(id, cfg.label, cfg.color);
+    }
+    return charts[id];
+  }
+
   async function loadChart(id, metric, range) {
-    try {
-      _chartRange[id] = range || '1h'; // persist the toolbar choice across refreshes
-      const r = await fetch(`/api/chart-data?chart=${metric}&range=${range}`);
-      if (r.status === 402) { await handleLicenseRequired(r); _chartRange[id] = '1h'; const _tb = document.getElementById('share-dist-target-badge'); if (_tb) _tb.textContent = 'target —'; return; }
-      if (!r.ok) return;
-      const data = await r.json();
-      const chart = charts[id];
-      if (!chart) return;
-      const cfg = CHART_METRICS[id] || {};
-      const rawLabels = (data.labels || []);
-      const values = (data.datasets?.[0]?.data || data.datasets?.[0]?.values || []);
-      chart.data.labels = rawLabels.map(t => _fmtChartLabel(t, cfg, id));
-      chart.data.datasets[0].data = values;
-      _updateShareDistBadge(cfg, data, values);
-      // Fase 2.1: SMA overlay + shares bar + event annotations
-      if (chart.data.datasets[1] && cfg.chart !== 'share_dist') {
-        chart.data.datasets[1].data = computeSMA(values, Math.max(3, Math.round(values.length / 10)));
-      }
-      if (chart.data.datasets[2] && Array.isArray(data.shares)) {
-        chart.data.datasets[2].data = data.shares;
-        chart.options.scales.y1.display = data.shares.some(s => s > 0);
-      }
-      chart._annotations = buildChartAnnotations(data.events || [], rawLabels);
-      _applyShareDistTarget(cfg, data, chart);
-      chart.update('none');
-    } catch (e) { /* chart load silently */ }
+    _chartRange[id] = range || '1h';
+    return loadChartData(id);
   }
 
   function initCharts() {
-    charts['chart-hashrate'] = makeChart('chart-hashrate', 'Hashrate', 'rgb(247,147,26)');
-    charts['chart-pool'] = makeChart('chart-pool', 'Pool HR', 'rgb(6,214,240)');
-    charts['chart-bestdiff'] = makeChart('chart-bestdiff', 'Best Diff', 'rgb(16,185,129)');
-    charts['chart-net'] = makeChart('chart-net', 'Net Diff', 'rgb(139,92,246)');
-    charts['chart-cumulative-p'] = makeChart('chart-cumulative-p', 'Cum P(Block)', 'rgb(139,92,246)');
-    charts['chart-share-dist'] = makeChart('chart-share-dist', 'Share Dist', 'rgb(16,185,129)');
+    Object.keys(CHART_METRICS).forEach(_ensureDashboardChart);
   }
 
   // Fase 2.1: clear any manual zoom/pan state so the chart renders the full
@@ -7591,8 +7694,8 @@ function renderAccount(acct) {
   // ↳ R13 — Decision Matrix + Command Center (cards contextuais do snapshot)
 
   // ── P0-2: Decision Matrix — solo vs pool vs lease (capital allocation) ──
-  // Pure render of the backend-aggregated decision_matrix block; every field
-  // is read defensively and shows '—' when the strategy has no data yet.
+  // Render the normalized economic scenario matrix, preserving UNKNOWN,
+  // NOT CONFIGURED, and N/A instead of translating unavailable values to zero.
   function renderDecisionMatrix(p) {
     const dm = (p && p.decision_matrix) || null;
     const rows = (dm && dm.rows) || {};
@@ -7601,18 +7704,45 @@ function renderAccount(acct) {
     const days = (v) => (v != null && isFinite(v)) ? (v >= 365 ? (v/365).toFixed(1) + 'y' : Math.round(v) + 'd') : '—';
     const pct = (v) => (v != null && isFinite(v)) ? (v < 1 ? v.toFixed(4) : v.toFixed(1)) + '%' : '—';
 
-    const poolEl = el('dm-pool-usd'); if (poolEl) poolEl.textContent = usd(rows.pool && rows.pool.net_usd_per_day);
-    const soloTime = el('dm-solo-time'); if (soloTime) soloTime.textContent = days(rows.solo && rows.solo.expected_time_days);
-    const soloSub = el('dm-solo-sub');
-    if (soloSub) {
-      const py = rows.solo && rows.solo.p_year_pct;
-      soloSub.textContent = (py != null && isFinite(py)) ? 'P(bloco no ano) ' + pct(py) : 'média do modelo; não é prazo';
+    const matrix = (p && p.economic_scenarios) || null;
+    const scenarios = (matrix && matrix.scenarios) || {};
+    const statusText = (cell, formatter) => {
+      if (!cell || cell.value == null) return (cell && cell.status) || 'UNKNOWN';
+      return formatter(cell.value);
+    };
+    const scenarioValue = (name, metric, formatter) => statusText(
+      scenarios[name] && scenarios[name][metric], formatter
+    );
+    if (matrix) {
+      const poolEl = el('dm-pool-usd'); if (poolEl) poolEl.textContent = scenarioValue('POOL', 'modeled_net_usd_per_day', usd);
+      const soloEl = el('dm-solo-time'); if (soloEl) soloEl.textContent = scenarioValue('SOLO', 'modeled_ev_btc_per_day', (v) => Number(v).toFixed(8) + ' BTC/d');
+      const soloSub = el('dm-solo-sub');
+      if (soloSub) {
+        const probability = scenarios.SOLO && scenarios.SOLO.p_block_selected_window_pct;
+        const net = scenarios.SOLO && scenarios.SOLO.modeled_net_usd_per_day;
+        const pText = statusText(probability, (v) => 'P(block/24h) ' + pct(v));
+        const netText = statusText(net, usd);
+        soloSub.textContent = 'modeled EV · ' + netText + ' · ' + pText;
+      }
+      const leaseEl = el('dm-lease-usd'); if (leaseEl) leaseEl.textContent = scenarioValue('LEASE', 'modeled_net_usd_per_day', usd);
+      const rentalEl = el('dm-rental-usd'); if (rentalEl) rentalEl.textContent = scenarioValue('RENTAL', 'modeled_net_usd_per_day', usd);
+      const poolCost = el('dm-pool-cost'); if (poolCost) poolCost.textContent = scenarioValue('POOL', 'direct_cost_usd_per_day', usd);
+      const soloCost = el('dm-solo-cost'); if (soloCost) soloCost.textContent = scenarioValue('SOLO', 'direct_cost_usd_per_day', usd);
+      const rentalCost = el('dm-rental-cost'); if (rentalCost) rentalCost.textContent = scenarioValue('RENTAL', 'direct_cost_usd_per_day', usd);
+      const leaseCost = el('dm-lease-cost'); if (leaseCost) leaseCost.textContent = scenarioValue('LEASE', 'direct_cost_usd_per_day', usd);
+      const horizonEl = el('dm-horizon'); if (horizonEl) horizonEl.textContent = 'MODELED · ' + String(matrix.horizon || 'UNKNOWN');
+    } else {
+      const poolEl = el('dm-pool-usd'); if (poolEl) poolEl.textContent = usd(rows.pool && rows.pool.net_usd_per_day);
+      const soloEl = el('dm-solo-time'); if (soloEl) soloEl.textContent = days(rows.solo && rows.solo.expected_time_days);
+      const leaseEl = el('dm-lease-usd'); if (leaseEl) leaseEl.textContent = usd(rows.lease && rows.lease.net_usd_per_day);
     }
-    const leaseEl = el('dm-lease-usd'); if (leaseEl) leaseEl.textContent = usd(rows.lease && rows.lease.net_usd_per_day);
-    const comparable = Number.isFinite(rows.pool && rows.pool.net_usd_per_day) && Number.isFinite(rows.lease && rows.lease.net_usd_per_day);
-    const best = comparable && dm && ['pool', 'lease'].includes(dm.best_option) ? dm.best_option : null;
+    const legacyComparable = Number.isFinite(rows.pool && rows.pool.net_usd_per_day) && Number.isFinite(rows.lease && rows.lease.net_usd_per_day);
+    const matrixBest = matrix && ['POOL', 'RENTAL', 'LEASE'].includes(matrix.best_option) ? matrix.best_option.toLowerCase() : null;
+    const best = matrix ? matrixBest : (legacyComparable && dm && ['pool', 'lease'].includes(dm.best_option) ? dm.best_option : null);
     const bestEl = el('dm-best-badge'); if (bestEl) bestEl.textContent = best ? 'BEST: ' + best.toUpperCase() : 'INSUFFICIENT DATA';
-    const recoEl = el('dm-reco'); if (recoEl) recoEl.textContent = best ? dm.recommendation : 'Comparable pool and lease estimates are required. Solo shows a model mean, not a deadline or guaranteed payout.';
+    const recoEl = el('dm-reco'); if (recoEl) recoEl.textContent = matrix
+      ? matrix.recommendation
+      : (best ? dm.recommendation : 'Comparable pool and lease estimates are required. Solo shows a model mean, not a deadline or guaranteed payout.');
     const beEl = el('dm-breakeven');
     if (beEl) {
       const be = dm && dm.breakeven_cost_per_th_day;
@@ -8707,6 +8837,27 @@ function renderAccount(acct) {
     _setQlComp('ql-comp-momentum', comps.momentum, 10);
   }
 
+  function renderSessionEvidence(prox) {
+    const dash = '\u2014';
+    const get = (id, value) => {
+      const el = document.getElementById(id);
+      if (el) el.textContent = value == null ? dash : String(value);
+    };
+    const se = (prox && (prox.session_evidence || (prox.live_calc && prox.live_calc.session_evidence))) || {};
+    const totals = (prox && prox.live_calc && prox.live_calc.session_totals) || {};
+    get('se-session-shares', se.session_shares != null ? se.session_shares : totals.shares_so_far);
+    get('se-valid-modeled', se.valid_modeled_shares);
+    get('se-observed-window', se.observed_window);
+    get('se-last-share-age', se.last_share_age);
+    get('se-data-gaps', se.data_gaps);
+    get('se-avg-share-diff', fmt.diff(se.avg_share_difficulty));
+    get('se-share-trend', se.share_difficulty_trend);
+    get('se-sample-count', se.sample_count);
+    const state = se.evidence_state || se.evidence_state_label || 'NO DATA';
+    get('se-evidence-state', state);
+    get('se-evidence-state2', state);
+  }
+
   function _setQlComp(barId, val, max) {
     const bar = document.getElementById(barId);
     if (!bar) return;
@@ -8741,6 +8892,9 @@ function renderAccount(acct) {
     if (dom.lcAvgShareDiff) dom.lcAvgShareDiff.textContent = totals.avg_share_diff_str || dash;
     if (dom.lcCumP) dom.lcCumP.textContent = totals.cum_p_block_pct_str || dash;
     if (dom.lcExpectedBlocks) dom.lcExpectedBlocks.textContent = totals.expected_blocks_str || dash;
+    if (dom.lcEstimatedBadge) {
+      dom.lcEstimatedBadge.style.display = latest.estimated ? '' : 'none';
+    }
 
     // Ticker — newest first
     if (dom.lcTickerList) {
@@ -9347,6 +9501,27 @@ function renderAccount(acct) {
     });
 
     // Executive Snapshot
+    const intelligence = (inst && inst.market_intelligence) || {};
+    const healthEl = document.getElementById('mkt-provider-health');
+    if (healthEl) {
+      const count = Number(intelligence.available_provider_count || 0);
+      const total = Number(intelligence.total_provider_count || 3);
+      healthEl.textContent = String(intelligence.status || 'NO DATA') + ' · ' + count + '/' + total + ' PROVIDERS';
+      healthEl.dataset.status = String(intelligence.status || 'NO DATA').toLowerCase().replace(/[^a-z]+/g, '-');
+    }
+    const rankingsEl = document.getElementById('mkt-provider-rankings');
+    if (rankingsEl) {
+      const ranks = intelligence.rankings || {};
+      const label = (value) => value ? String(value).toUpperCase() : 'NO DATA';
+      const html = ['CHEAPEST ' + label(ranks.cheapest), 'BEST SCORE ' + label(ranks.best_score), 'FRESHEST ' + label(ranks.freshest), 'CAPACITY ' + label(ranks.most_capacity)].join(' · ');
+      if (rankingsEl.textContent !== html) rankingsEl.textContent = html;
+    }
+    const cacheAgeEl = document.getElementById('mkt-provider-cache-age');
+    if (cacheAgeEl) {
+      const age = intelligence.cache_age_seconds;
+      const source = intelligence.cache_age_source ? ' · ' + String(intelligence.cache_age_source).toUpperCase() : '';
+      cacheAgeEl.textContent = age == null ? 'CACHE AGE UNKNOWN' : 'CACHE AGE ' + Math.floor(Number(age) / 60) + 'm' + source;
+    }
     const snap = inst.snapshot || {};
     const bestEl = document.getElementById('mkt-snap-best');
     if (bestEl && snap.best_price_sats_th_day) {
@@ -10975,8 +11150,13 @@ function renderAccount(acct) {
       _rentalEvidenceMetric(summary, 'Última observação (UTC)', _rentalEvidenceUtc(evaluation.last_observed_at));
       _rentalEvidenceMetric(summary, 'Trecho de leituras baixas (UTC)', _rentalEvidenceUtc(evaluation.window_start) + ' → ' + _rentalEvidenceUtc(evaluation.window_end));
       _rentalEvidenceMetric(summary, 'Amostras baixas consecutivas', _rentalEvidenceNumber(evaluation.samples, ''));
+      const coverage = data.coverage || {};
+      _rentalEvidenceMetric(summary, 'Cobertura das amostras retidas', coverage.status === 'AVAILABLE'
+        ? _rentalEvidenceNumber(coverage.observed_pct, '%') + ' · ' + _rentalEvidenceNumber(coverage.observed_count, '') + '/' + _rentalEvidenceNumber(coverage.observation_count, '') + ' válidas'
+        : 'Sem observações');
       _rentalEvidenceMetric(summary, 'Hashrate observado', _rentalEvidenceNumber(evaluation.observed_th, ' TH/s'));
       _rentalEvidenceMetric(summary, 'Entrega amostrada', _rentalEvidenceNumber(evaluation.delivery_pct, '%'));
+      if (!binding) _rentalEvidenceMetric(summary, 'Contrato declarado', 'Não configurado');
       if (binding) _rentalEvidenceMetric(summary, 'Regra declarada', _rentalEvidenceNumber(binding.threshold_pct, '%') + ' · ' + _rentalEvidenceNumber(binding.duration_s, ' s') + ' · lacuna ≤ ' + _rentalEvidenceNumber(binding.max_gap_s, ' s'));
     }
     const select = document.getElementById('rentals-evidence-source');
@@ -11400,7 +11580,7 @@ function renderAccount(acct) {
         const cells = [
           { l: 'PERFORMANCE', v: verdict, c: cls },
           { l: 'AVG / ADVERTISED', v: avgThFinal ? fmt.hashrate(avgThFinal * 1e12) + ' / ' + fmt.hashrate((advTh || 0) * 1e12) : '—', c: '' },
-          { l: 'COST', v: costFinal != null ? costFinal.toFixed(2) + ' sats/TH/h' : '—', c: '' },
+          { l: 'COST (PROVIDER AVG)', v: costFinal != null ? costFinal.toFixed(2) + ' sats/TH/h' : '—', c: '', t: 'Unit cost uses provider-reported average hashrate and duration; destination-pool observations are separate sampled evidence and may have an unknown averaging window.' },
           { l: 'YIELD (exp)', v: yieldVal, c: '', t: 'expected GROSS yield of 1 TH·h at the current network hashrate (before pool fee)' },
           { l: 'DELIVERED', v: deliveredFinal != null ? deliveredFinal.toFixed(0) + ' TH·h' : '—', c: '' },
           { l: 'P/L', v: plVal, c: plCls, t: plTitle },

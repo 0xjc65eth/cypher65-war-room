@@ -901,6 +901,115 @@ def build_decision_matrix(
     }
 
 
+def build_economic_scenario_matrix(
+    *,
+    pool_ev_btc_per_day=None,
+    pool_net_usd_per_day=None,
+    pool_cost_usd_per_day=None,
+    solo_ev_btc_per_day=None,
+    solo_net_usd_per_day=None,
+    solo_cost_usd_per_day=None,
+    rental_ev_btc_per_day=None,
+    rental_net_usd_per_day=None,
+    rental_cost_usd_per_day=None,
+    lease_ev_btc_per_day=None,
+    lease_net_usd_per_day=None,
+    lease_cost_usd_per_day=None,
+    solo_p_day_pct=None,
+    cost_modes=None,
+) -> dict:
+    """Build a homogeneous one-day comparison without inventing missing data.
+
+    Every strategy exposes the same metric keys and each value carries an
+    explicit status. Values are modeled (not realized), use a 24-hour horizon,
+    and are only marked available when the source value is finite. Cost modes
+    are supplied per strategy so absent configuration is distinct from an
+    unavailable observation. Unimplemented evidence fields remain UNKNOWN.
+    """
+    def _cell(value, unconfigured=False, not_applicable=False, unit=None):
+        if not_applicable:
+            result = {"value": None, "status": "N/A"}
+            if unit:
+                result["unit"] = unit
+            return result
+        if unconfigured:
+            return {"value": None, "status": "NOT CONFIGURED"}
+        if isinstance(value, bool):
+            value = None
+        try:
+            number = float(value)
+        except (TypeError, ValueError, OverflowError):
+            number = None
+        if number is None or not math.isfinite(number):
+            result = {"value": None, "status": "UNKNOWN"}
+        else:
+            result = {"value": number, "status": "AVAILABLE"}
+        if unit:
+            result["unit"] = unit
+        return result
+
+    modes = cost_modes if isinstance(cost_modes, dict) else {}
+
+    def _input(value):
+        return _cell(value)
+
+    def _cost(value, strategy):
+        return _cell(value, unconfigured=not bool(modes.get(strategy, False)))
+
+    inputs = {
+        "POOL": (pool_ev_btc_per_day, pool_net_usd_per_day, pool_cost_usd_per_day),
+        "SOLO": (solo_ev_btc_per_day, solo_net_usd_per_day, solo_cost_usd_per_day),
+        "RENTAL": (rental_ev_btc_per_day, rental_net_usd_per_day, rental_cost_usd_per_day),
+        "LEASE": (lease_ev_btc_per_day, lease_net_usd_per_day, lease_cost_usd_per_day),
+    }
+    scenarios = {}
+    for strategy, (ev, net, cost) in inputs.items():
+        configured = bool(modes.get(strategy, False))
+        scenarios[strategy] = {
+            "modeled_ev_btc_per_day": _cell(ev),
+            "modeled_net_usd_per_day": (
+                _cell(net) if configured else _cell(None, unconfigured=True)
+            ),
+            "direct_cost_usd_per_day": _cost(cost, strategy),
+            "capital_required_usd": _cell(None),
+            "p_block_selected_window_pct": _cell(
+                solo_p_day_pct if strategy == "SOLO" else None,
+                not_applicable=strategy != "SOLO",
+                unit="percent over 24h",
+            ),
+            "variance": _cell(None),
+            "market_liquidity": _cell(None),
+            "data_quality": _cell(None),
+            "input_age_seconds": _cell(None),
+        }
+    comparable = {
+        name: cells["modeled_net_usd_per_day"]["value"]
+        for name, cells in scenarios.items()
+        if name != "SOLO"
+        and cells["modeled_net_usd_per_day"]["status"] == "AVAILABLE"
+    }
+    best = (
+        max(comparable, key=comparable.get)
+        if len(comparable) >= 2
+        else "insufficient"
+    )
+    return {
+        "horizon": "24h",
+        "unit_contract": {
+            "modeled_ev_btc_per_day": "BTC/day",
+            "modeled_net_usd_per_day": "USD/day",
+            "direct_cost_usd_per_day": "USD/day",
+        },
+        "scenarios": scenarios,
+        "best_option": best,
+        "recommendation": (
+            f"{best.title()} has the highest modeled net USD/day among comparable configured scenarios; solo EV is context, not a payout ranking. Actual results vary."
+            if best != "insufficient"
+            else "No configured scenarios have enough data for an economic comparison."
+        ),
+    }
+
+
 def affiliate_map_from_env() -> dict:
     """Parse HASH_MARKET_AFFILIATE_URLS (JSON {provider: url}) into a dict.
 

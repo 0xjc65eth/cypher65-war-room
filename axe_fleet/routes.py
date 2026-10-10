@@ -639,21 +639,27 @@ def list_removed_devices(tenant_id: str = ""):
 @require_tenant
 @_role_required("member")
 def restore_removed_device(tenant_id: str = ""):
-    """Clear a tombstone so the local agent may register the miner again.
+    """Restore one tombstoned row with an explicit, matching MAC identity.
 
-    Body: { "ip_address": "192.168.1.10" }
-
-    This is operator intent. It never probes the IP and never inserts an
-    active device, so a cloud deploy cannot use restore as an SSRF path
-    to private addresses. Auto-resurrection without this call stays blocked.
+    Body: {"ip_address": "192.168.1.10", "mac": "02:00:00:00:00:01"}
+    Restoration never probes the address and retains the original row/history.
     """
     if _registry is None:
         return jsonify({"error": "registry not initialized"}), 500
     data = request.get_json(silent=True) or {}
     ip = (data.get("ip_address") or "").strip()
-    if not ip:
-        return jsonify({"success": False, "error": "ip_address is required"}), 400
-    cleared = _registry.clear_tombstone(ip, tenant_id=tenant_id)
+    mac = data.get("mac")
+    if not ip or not mac:
+        return jsonify({"success": False, "error": "ip_address and verified mac are required"}), 400
+    try:
+        tombstone = _registry.get_removed_by_ip(ip, tenant_id=tenant_id)
+        if not tombstone:
+            return jsonify({"success": False, "error": "no removed device for this IP", "ip_address": ip}), 404
+        if normalize_device_mac(tombstone.get("mac_address")) != normalize_device_mac(mac):
+            return jsonify({"success": False, "error": "MAC does not match tombstoned device", "code": "DEVICE_IDENTITY_CONFLICT"}), 409
+        cleared = _registry.clear_tombstone(ip, tenant_id=tenant_id)
+    except DeviceIdentityConflict as exc:
+        return jsonify({"success": False, "error": "device identity conflict", "code": "DEVICE_IDENTITY_CONFLICT", "detail": str(exc)}), 409
     if not cleared:
         return (
             jsonify(
