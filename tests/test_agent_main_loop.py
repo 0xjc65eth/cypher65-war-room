@@ -75,7 +75,7 @@ def test_removed_device_does_not_crash_poll_loop_or_return_on_rescan(
     monkeypatch, removed
 ):
     devices = [
-        {"ip": "192.168.1.50", "type": "bitaxe"},
+        {"ip": "192.168.1.50", "type": "bitaxe", "mac": "02:00:00:00:01:50"},
         {"ip": "192.168.1.60", "type": "cgminer"},
     ]
     polls = []
@@ -133,3 +133,41 @@ def test_removed_device_does_not_crash_poll_loop_or_return_on_rescan(
     assert len(pulls) == 2
     # Tombstoned IPs stay in blocked_ips and are not re-registered (Issue #638).
     assert len(registrations) == 1
+
+
+def test_main_loop_skips_macless_bitaxe_while_polling_verified_peer(monkeypatch):
+    devices = [
+        {"ip": "192.168.1.50", "type": "bitaxe"},
+        {"ip": "192.168.1.60", "type": "cgminer"},
+    ]
+    polled = []
+    pushed = []
+
+    class StopLoop(Exception):
+        pass
+
+    def post(path, payload, **kwargs):
+        if path == "/api/agent/register":
+            return 200, {"count": 2, "blocked": []}
+        if path == "/api/agent/telemetry":
+            pushed.append(payload["ip"])
+        return 200, {"commands": []}
+
+    def stop(_seconds):
+        raise StopLoop
+
+    monkeypatch.setattr(agent, "AGENT_TOKEN", "fixture-token")
+    monkeypatch.setattr(agent, "EXPLICIT_DEVICES", [])
+    monkeypatch.setattr(agent, "RESCAN_EVERY", 100)
+    monkeypatch.setattr(agent, "scan_lan", lambda: devices)
+    monkeypatch.setattr(
+        agent, "_poll_telemetry", lambda dev: polled.append(dev["ip"]) or {}
+    )
+    monkeypatch.setattr(agent, "_post", post)
+    monkeypatch.setattr(
+        agent, "time", SimpleNamespace(time=agent.time.time, sleep=stop)
+    )
+    with pytest.raises(StopLoop):
+        agent.main()
+    assert polled == ["192.168.1.60"]
+    assert pushed == ["192.168.1.60"]

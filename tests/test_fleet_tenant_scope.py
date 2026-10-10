@@ -33,27 +33,43 @@ _axe_registry = _app_module._axe_registry
 
 
 @pytest.fixture(autouse=True)
-def _isolated(monkeypatch):
-    """Clean fleet state + fixed JWT secret + auth CONFIGURED (so the
-    role gates are active — open self-host mode would bypass them)."""
-    app.config["TESTING"] = True
-    saved = app.config.get("JWT_SECRET_KEY")
-    app.config["JWT_SECRET_KEY"] = "fleet-scope-secret-0123456789abcdef"
+def _isolated(monkeypatch, tmp_path):
+    """Use a new registry/database per test; soft removal is not cleanup.
+
+    A tombstone must survive inside its test. Reusing the session database
+    and removing rows at teardown caused the next test's same IP to be
+    correctly rejected by the explicit-restore guard.
+    """
+    from axe_fleet.registry import DeviceRegistry
+    from axe_fleet import routes
+    from services.bootstrap import get_db, init_db
+
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "fleet-scope.sqlite"))
     monkeypatch.setenv("SECRET_KEY", "fleet-scope-secret-0123456789abcdef")
     monkeypatch.setenv("API_KEY", "fleet-scope-test-key")
-    for d in _axe_registry.list_devices():
-        _axe_registry.remove_device(d["id"], tenant_id=d.get("tenant_id") or "default")
+    monkeypatch.setitem(app.config, "TESTING", True)
+    monkeypatch.setitem(app.config, "JWT_SECRET_KEY", "fleet-scope-secret-0123456789abcdef")
+    # get_db reads DB_PATH at call time; init_db only builds this scratch schema.
+    init_db()
+    registry = DeviceRegistry(get_db)
+    registry.ensure_tables()
+    monkeypatch.setitem(globals(), "_axe_registry", registry)
+    monkeypatch.setattr(_app_module, "_axe_registry", registry)
+    # snapshot enrichment and Fleet/remote routes resolve this actual owner.
+    monkeypatch.setattr(routes, "_registry", registry)
+    previous_cache = dict(_shared_state.axe_telemetry_cache)
+    missing = object()
+    previous_fleet = _app_module.latest_snapshot.pop("axe_fleet", missing)
     _shared_state.axe_telemetry_cache.clear()
-    _app_module.latest_snapshot.pop("axe_fleet", None)
-    yield
-    for d in _axe_registry.list_devices():
-        _axe_registry.remove_device(d["id"], tenant_id=d.get("tenant_id") or "default")
-    _shared_state.axe_telemetry_cache.clear()
-    _app_module.latest_snapshot.pop("axe_fleet", None)
-    if saved is not None:
-        app.config["JWT_SECRET_KEY"] = saved
-    else:
-        app.config.pop("JWT_SECRET_KEY", None)
+    try:
+        yield
+    finally:
+        _shared_state.axe_telemetry_cache.clear()
+        _shared_state.axe_telemetry_cache.update(previous_cache)
+        if previous_fleet is missing:
+            _app_module.latest_snapshot.pop("axe_fleet", None)
+        else:
+            _app_module.latest_snapshot["axe_fleet"] = previous_fleet
 
 
 @pytest.fixture
