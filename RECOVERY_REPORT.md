@@ -1,108 +1,143 @@
-# CYPHER65 — RECOVERY REPORT
+# CYPHER65 — MASTER ENGINEERING RECOVERY REPORT
 
-Data: 2026-10-10, Europe/Brussels. Base GitHub verificada: master `155dcc7a0ce9e725a54e06bba291932a5b8793a4`. Relatório inicial de recuperação; novas unidades #799/#800 terão evidência própria.
+Data: 2026-10-10, Europe/Brussels. Relatório consolidado da Issue #807. Snapshot inicial de master: `155dcc7a0ce9e725a54e06bba291932a5b8793a4`. As atualizações externas são atribuídas explicitamente abaixo. Evidência local não substitui CI do SHA exato, approval no GitHub ou prova física.
 
 ## 1. Recovery status
 
-**FATO:** este worktree começou limpo, HEAD destacado em #797. A interrupção recuperada estava no checkout principal `/Users/juliocesar/cypher65-war-room`, branch `fix/798-console-ids-chart-init`, base `ec3bdf6`, um commit atrás da master. Existiam alterações não commitadas em `templates/dashboard.html`, `static/src/39b-dashboard.js`, `static/app.js`, `static/style.css`, `tests/e2e/terminal-console.spec.js` e o mapa `docs/PR1-PR7-SERIES.md` não rastreado.
+**Concluído:** checkpoint FreeBuff reconstruído; originais, sete stashes e WIPs preservados; série PR1–PR7 reconstruída sem duplicar implementação; frontend recuperado e publicado; reparos de Fleet, restore e integridade, dependências mobile, fixtures de QA e gate Black separados por Issue, branch e PR; revisões independentes de /devil e /advisor executadas.
 
-O diff original foi preservado em `/tmp/c65-original-798.patch` e o mapa em `/tmp/c65-original-series.md`; os arquivos originais e os sete stashes foram mantidos. A recuperação aplica esse diff sobre master no worktree desta conversa, branch `fix/798-frontend-recovery`, e fortalece os pontos encontrados pela revisão. Não houve reset, force-push, merge, deploy ou leitura de secrets.
+**Validação composta concluída:** 4.261 testes passaram, 2 skips condicionais e cobertura de 85,59%. Os checks remotos dos PRs isolados ainda dependem de reparos em outras branches. **Não concluído:** redesign e migração histórica de #777, unificação completa dos 14 módulos de #757 e critérios externos de hardware, produção, dados e SLO. Nenhum desses itens é apresentado como terminado pela existência de mocks ou de um PR aberto.
 
-**Concluído:** identificação do checkpoint, reconstrução PR1–PR7, reparo frontend de #798, testes focados e revisões /devil e /advisor.
-**Incompleto:** gates globais quebrados na base e recuperação separada #799/#800. Não presumir que a execução interrompida de check:frontend terminou: esta recuperação reexecutou e observou exit 0.
+O worktree inicial desta conversa estava limpo e em detached HEAD. O checkpoint interrompido estava no checkout `/Users/juliocesar/cypher65-war-room`, branch `fix/798-console-ids-chart-init`, base `ec3bdf6`, com seis arquivos alterados e o mapa PR1–PR7 não rastreado. Foram preservados o backup `/tmp/c65-original-798.patch` e o mapa `/tmp/c65-original-series.md`. O diff original foi comparado novamente byte a byte após a recuperação e continua idêntico; os sete stashes foram preservados. Os WIPs de #777 em `/private/tmp/cypher65-777-clean` e `/Users/juliocesar/cypher65-777-device-identity` não foram incorporados integralmente.
 
-## 2. GitHub status
+O acesso ao GitHub no sandbox apresentou um falso aviso de autenticação; consultas com rede autorizada verificaram o estado real. Não houve reset, force push, fechamento manual de Issue, operação sobre secrets ou comandos físicos. Este agente não executou merge nem deploy.
 
-A matriz completa está em [PR1–PR7](docs/PR1-PR7-SERIES.md). Os sete ordinais já foram integrados; #793 complementa PR3. Nenhuma implementação duplicada foi aberta. #797 já era MERGED com checks em FAILURE e sem approval no snapshot consultado.
+## 2. GitHub status e rastreabilidade
 
-[Issue #798](https://github.com/0xjc65eth/cypher65-war-room/issues/798) já existia, com labels correction, priority: P1, team:frontend e team:qa. Foram abertas [#799](https://github.com/0xjc65eth/cypher65-war-room/issues/799) e [#800](https://github.com/0xjc65eth/cypher65-war-room/issues/800) para bloqueadores independentes antes de editar seus códigos.
+A matriz detalhada permanece em [PR1–PR7](docs/PR1-PR7-SERIES.md). Os sete ordinais já estavam integrados: #784, #785, #786, #794, #795, #796 e #797; #793 complementa PR3. PR2 não declara uma Issue no corpo. #797 foi encontrado como MERGED, com checks FAILURE e reviews vazios; não foi recriado nem apresentado como CI verde.
 
-As consultas ao GitHub no sandbox falharam; com rede permitida autenticaram e confirmaram a base. Portanto o primeiro aviso de token inválido não foi tratado como credencial realmente inválida.
+| Issue | Unidade / PR | Commit publicado | Estado de recuperação |
+|---|---|---|---|
+| #798 | [#801](https://github.com/0xjc65eth/cypher65-war-room/pull/801), frontend | `e12c3f3034aa8a016a7232793f15626e6bea1df1` | Validado; integração externa `0c765618f40ae16beeccc1e146635721e0972f14`. |
+| #799 | [#805](https://github.com/0xjc65eth/cypher65-war-room/pull/805), Fleet/restore | `5b9128eb06a4bd4a6676c536ae0250056a40f01a` | Publicado; dependências de QA/Black precisam ser integradas e o CI, refeito. |
+| #800 | [#804](https://github.com/0xjc65eth/cypher65-war-room/pull/804), mobile | `1dccbf7f4ac24187b5428ae37f3b446ece0d97bc` | Gate mobile remoto PASS; integração externa `b89c903e733c62f80b883497b4ea189af3a1a72e`. |
+| #802 | [#808](https://github.com/0xjc65eth/cypher65-war-room/pull/808), contratos, fixtures e MF-005 | Código `b04c82fac1b542ff711d446828b7dc8e76cdd950`; head documental `f0bc3c3a0b1da1a64ccfcdf7f23f896e39b3f6a8` | Publicado; composição final PASS. CI isolado depende de #805/#806. |
+| #803 | [#806](https://github.com/0xjc65eth/cypher65-war-room/pull/806), Black | `c43a9127aefd4587938344c5f9127bfb7687b744` | ASTs iguais em 7/7 arquivos; publicado. |
+| #807 | Relatório final | Este PR documental | Rastreabilidade consolidada. |
 
-## 3. Implementation status — #798
+**Alterações externas observadas:** #801 passou de draft para MERGED às 13:06:48 UTC por `0xjc65eth`, com `reviews: []` no snapshot. #804 recebeu merge de master no head `5dbbfd4a7c765486d34bf77ef1a9f3f39268277b` e foi integrado às 13:20:30 UTC pela mesma conta. Os checks globais de Python ainda estavam vermelhos. #806 recebeu uma atualização externa de master, passando ao head `409868d0fde81bfe6c7ff932bb12658bbf365801`. Essas operações não foram executadas nem aprovadas por este agente. A master verificada depois estava em `b89c903e733c62f80b883497b4ea189af3a1a72e`.
 
-| Origem | Falha comprovada | Reparo |
+## 3. Implementation status
+
+**Frontend #798:** cinco IDs duplicados ganharam IDs de contexto únicos e espelhamento por `textContent`. O template carregava CSS e `app.js` duas vezes; agora carrega uma instância de cada. Um bloco `:root` sem fechamento foi corrigido. Uma abertura duplicada de inventory aninhava secondary; ambos voltaram a ser irmãos no workspace. O fonte canônico `static/src/39b-dashboard.js` centraliza o ownership pelo canvas e por `Chart.getChart`, descarta respostas por token/range após `await`, executa `destroy` antes de substituir o canvas e libera o `AbortController` em `afterDestroy`. Respostas antigas, incluindo JSON e 402 atrasados, não sobrescrevem o estado atual. O bundle foi regenerado a partir dos 17 fragmentos; Chart.js 4.4.1. As assertions de primeira dobra e logout foram preservadas; o overview visível segue o contrato de #797.
+
+**Fleet #799:** recupera o normalizer, a classe e os imports ausentes, além do parâmetro `active_only` indefinido; SQL parametrizado elimina o bloqueio do Bandit. Restore compara duas MACs válidas e iguais dentro de `BEGIN IMMEDIATE`, conservando ID, histórico e aliases. Add de dispositivo removido retorna 409 e não apaga tombstones nem enfileira um falso restore. A mesma MAC removida em um IP novo também não ressuscita. O GC trava antes de ler candidatos e apaga os aliases correspondentes atomicamente; hard delete tem rollback. A atualização do agente renova `last_seen`, `agent_managed` e as capacidades derivadas de `type`/`firmware`. Não há fusão ou migração histórica automática. Registros já órfãos permanecem fail-closed.
+
+**Mobile #800:** a instalação antiga concluía com warnings, mas `npm ls` falhava; test-renderer 1.3 exigia reconciler/React 19.3. O Doctor identificou oito versões divergentes. As versões agora seguem Expo 57, React 19.2.3, Jest 29, TypeScript 6 e test-renderer 1.2; Stryker 9.6.1 mantém Babel 7. Forge mantém o mesmo SHA revisado e a resolução HTTPS; braces mantém o tarball e sua integridade. Os transitivos shell-quote e smol-toml foram corrigidos dentro dos ranges. Nenhum `--force` ou `--legacy-peer-deps` mascarou conflitos. O audit ainda tem 22 vulnerabilidades moderate na cadeia Jest e zero high/critical.
+
+**QA #802:** fixtures de polling usam MAC conhecida e mantêm os novos casos negativos sem MAC; o schema real é criado via `ensure_tables`. Mocks configuram os getters reais, em vez de serializar `MagicMock`. O worker CLI usa subprocesso como launcher, com os guards diretos preservados. MF-005 tem quatro testes novos de custo, cadência e recompensa, com vínculo verdadeiro na matriz; os testes matemáticos anteriores foram preservados. Fixtures de tenant usam SQLite por teste, em vez de soft delete e reuso de IPs. Mocks de add declaram explicitamente a ausência de tombstone.
+
+**Black #803:** apenas formatter 25.1.0 em sete arquivos. Os ASTs antes/depois são idênticos em 7/7 arquivos, com confirmação independente. Nenhuma mudança funcional ou tolerância foi adicionada ao gate.
+
+Os detalhes locais estão nos worktrees dos PRs, nos arquivos `docs/qa/ISSUE_799_RECOVERY.md`, `ISSUE_800_RECOVERY.md`, `ISSUE_802_RECOVERY.md` e `ISSUE_803_RECOVERY.md`.
+
+## 4. CI/CD e validação
+
+| Estado | Validação | Resultado / limite |
 |---|---|---|
-| dashboard.html | cinco IDs duplicados e dois scripts app.js + dois stylesheets | IDs de contexto únicos, textContent espelhado, um script e um CSS |
-| dashboard.html | abertura inventory duplicada aninhava desk-secondary indevidamente | inventory e secondary voltam a ser irmãos do workspace |
-| style.css | bloco :root sem fechamento | restaurado fechamento, regras premium continuam aplicadas |
-| 39b-dashboard.js | initCharts recriava dono de canvas; refresh/replacement divergiam | ownership único validado por canvas e Chart.getChart; destroy antes de substituição |
-| 39b-dashboard.js | handlers de zoom sobreviviam ao destroy | AbortController liberado em plugin afterDestroy |
-| 39b-dashboard.js | respostas fora de ordem/range/JSON/402 atualizavam estado obsoleto | tokens por chart, validação do dono/range e descarte após awaits |
-| tests | recuperação removia assertions de firstfold/logout | assertions preservadas; overview agora visible conforme contrato de #797 |
+| PASS | Syntax do fonte/bundle, drift e diff | 17 fragmentos sincronizados. |
+| PASS | JS core contra fonte real | 1694 assertions; 19 novas de lifecycle, async e cleanup. |
+| PASS | pytest focado em PR1–PR7 | 407 testes; 4,20 s no reparo Black. |
+| PASS | E2E terminal-console + operational-overview | 46 testes desktop/mobile; primeira dobra, logout e motion. |
+| PASS | `check:frontend` completo | DOM: 149 sinks; IDs, a11y, tokens, SW, XSS mobile, visual/axe e units/mutations do fetcher. |
+| PASS | Fleet/API/identidade/GC focado | 127 testes; 2,45 s; SQLite temporário. |
+| PASS | Revisão independente de Fleet | 42 testes; 0,53 s. |
+| PASS | Revisão independente de QA composta | 192 testes; 11,42 s. |
+| PASS | `npm ci` com peers estritos + `npm ls` | 911 pacotes; sem invalid/extraneous. |
+| PASS | Expo Doctor, Biome, TypeScript, Jest e exports | 21/21; 30 arquivos; 16 suítes e 111 testes; iOS/Android/Web. |
+| PASS | Guards forge/braces + audit high | RSA válido e exploit rejeitado; 10 testes de adulteração; zero high/critical; 22 moderate. |
+| PASS | Black composto, Flake8, Bandit `-ll` e monkeypatch guard | 107 arquivos Black; zero medium/high; sem alvo órfão. |
+| FAIL inicial | Python no sandbox | 191 failed, 4009 passed, 2 skipped e 12 errors; loopback bloqueado. |
+| FAIL base | Python com localhost permitido | 125 failed, 4087 passed e 2 skipped; 99 NameErrors. |
+| FAIL intermediário | Primitives de Fleet | 21 failed, 4191 passed e 2 skipped; contratos de QA restantes. |
+| FAIL intermediário | Composição + coverage | 12 failed, 4249 passed e 2 skipped; 85,49%; 208,13 s. O gate de coverage PASS não transforma testes FAIL em aprovados. |
+| PASS | Composição final com fixtures corrigidas | **4261 passed, 2 skipped, zero failures/errors; 85,59%; 188,32 s.** JUnit: 4263 casos, zero falhas/erros. |
+| PASS | pip-audit de requirements | Nenhuma vulnerabilidade conhecida encontrada; exit 0. |
+| PASS remoto | #801, head `e12c3f3` | Frontend: 1 min 51 s; E2E: 4 min 54 s. Python/mobile/validate: FAIL. |
+| PASS remoto | #804, head `5dbbfd4` | Mobile: 2 min 10 s; Doctor 21/21; Jest 111; guards e exports. Frontend/E2E: PASS; Python/validate: FAIL. |
+| FAIL remoto | #805, head `5b9128e` | Black apontou sete arquivos tratados em #803; QA #802 ausente; mobile antigo herdado. |
+| FAIL remoto | #806, head `409868d` | Python/Unit/validate FAIL; mobile, frontend e E2E PASS. Reparos de Fleet/QA ainda ausentes. |
+| FAIL remoto anterior / novo head em verificação | #808, código `b04c82f`; head documental `f0bc3c3` | Código: Python/Unit/validate FAIL, mobile/frontend/E2E PASS. Gates do novo head devem ser observados; não inferir sucesso. |
+| NOT RUN | Signing, TestFlight, hardware, aceite de SLO e produção | Exports e fixtures não substituem essas provas. |
 
-O bundle foi gerado a partir dos 17 fragmentos canônicos; nunca editado manualmente. Chart.js usado pelo template: 4.4.1. Nenhuma dependência de produção adicionada. O carregamento offline sem Chart permanece protegido. Overlays, ranges e mecanismo de licença são preservados.
+A composição foi feita em `/private/tmp/c65-recovery-validation` por patches verificados, sem git merge nem alteração dos WIPs. O servidor de QA em localhost:8765 importa WSGI sem `start_background_threads`, usa credenciais fixas de teste e SQLite temporário. A sessão própria foi encerrada ao final. Não há confirmação de conectividade física, pagamento real ou deploy.
 
-## 4. CI/CD e validações
-
-| Estado | Comando / ambiente | Resultado observado |
-|---|---|---|
-| PASS | build_app_js.cjs --check; node --check static/app.js; diff --check | 17 fragmentos sincronizados e sintaxe válida |
-| FAIL → PASS | check-dom-regression.cjs --report | reproduziu cinco duplicatas; após reparo, 149 sinks/blocos e IDs únicos |
-| PASS | node tests/test_app_js_core.js | 1.694 assertions; 19 novas contra o fragmento real, incluindo async inverso/JSON/402/canvas/cleanup |
-| PASS | pytest focado PR1–PR7: hashrate_market, block_probability_lab, session_evidence, economic_scenario_matrix, market_intelligence, rental_performance, command_center, dashboard_routes_migration | 407 passed, 5,04s; sem prova de integração externa |
-| PASS | Playwright terminal-console + operational-overview | 46 passed, 1,2min, Chromium e mobile Chromium; firstfold/logout/motion preservados |
-| PASS | AUDIT_URL=http://127.0.0.1:8765 npm run check:frontend | pipeline completo: DOM, a11y, tokens, XSS mobile, JS, SW, visual, axe, unidades e mutações |
-| FAIL | pytest tests/ -q no sandbox | 191 failed, 4.009 passed, 2 skipped, 12 errors, 60s; sockets localhost bloqueados |
-| FAIL | pytest tests/ -q com mocks localhost permitidos | 125 failed, 4.087 passed, 2 skipped, 172,23s; zero erros de execução |
-| FAIL histórico | CI do PR #797 | jobs principais falharam; logs consultados de runs 38048147190, 38048147222 e 38048147215 |
-| NOT RUN | CI do novo SHA remoto | será consultado após push/PR; nenhum sucesso remoto inferido dos testes locais |
-| NOT APPLICABLE | merge/deploy/hardware real | nenhuma dessas operações autorizada ou executada |
-
-O servidor de QA usa banco `/tmp/c65-recovery-frontend.sqlite`, credencial fixa de teste e import WSGI em localhost sem start_background_threads. Nenhum worker externo, pool, pagamento, compra ou comando físico foi ativado. `run-e2e.sh` foi inspecionado; a execução equivalente usa Playwright contra esse servidor isolado, porque o worktree não possui venv próprio.
-
-Logs locais: `/tmp/c65-recovery-js.log`, `/tmp/c65-recovery-series-tests.log`, `/tmp/c65-recovery-e2e-final.log`, `/tmp/c65-recovery-frontend-final.log`, `/tmp/c65-recovery-pytest-unsandboxed.log`. São evidência da sessão, não artefatos permanentes de CI.
+Logs locais da sessão: `/tmp/c65-recovery-{js,series-tests,e2e-final,frontend-final,pytest-unsandboxed}.log`, `/tmp/c65-recovery-combined-pytest.log`, `/tmp/c65-recovery-combined-final.log`, `/tmp/c65-recovery-final-tests.xml`, `/tmp/c65-recovery-final-coverage.xml`, `/tmp/c65-799-focused.log`, `/tmp/c65-advisor-{ci,tree,forge,braces,audit,jest,build,lint,types}.log`, `/tmp/c65-pr804-mobile-job.log` e `/tmp/c65-pr805-static-job.log`. Não são artefatos permanentes de CI; os links dos checks no GitHub fornecem evidência remota por SHA.
 
 ## 5. /devil findings
 
-Revisão independente por subagente /devil, somente leitura; não equivale a GitHub approval.
+Revisão por subagente independente; não equivale a approval no GitHub.
 
-| Severidade | Equipe | Evidência | Situação |
-|---|---|---|---|
-| HIGH | Frontend | vm do fonte reproduziu [111] antigo depois de [222] recente | corrigido e regression test |
-| MEDIUM | Frontend | canvas substituído mantinha chart/handlers antigos | destroy + afterDestroy cleanup + teste |
-| HIGH | QA | assert de limpeza de circles no logout havia sido removido | restaurado e E2E passou |
-| MEDIUM | QA | assertions de primeira dobra haviam sido removidas | restauradas; HTML estrutural corrigido; E2E passou |
-| MEDIUM | Frontend | resposta 402/JSON atrasada podia resetar range atual | corpo/estado revalidados e teste |
+| Severidade / equipe | Reprodução | Resolução |
+|---|---|---|
+| HIGH / Frontend | Resposta antiga com valor 111 substituía a recente com valor 222. | Tokens e owner verificados após `await`, com teste de regressão. |
+| MEDIUM / Frontend | Handlers antigos após substituição/destroy e JSON de 402 atrasado. | `AbortController`/`afterDestroy`; corpo e estado revalidados. |
+| HIGH / QA | Assertions de logout e primeira dobra removidas na recuperação original. | Assertions restauradas; DOM estrutural corrigido; E2E PASS. |
+| HIGH / Backend | Add de dispositivo removido apagava row/ID e deixava telemetry/alias órfãos. | DELETE removido; 409 e `allow_restore=False`; snapshots de SQLite. |
+| HIGH / Backend | GC deixava alias órfão e upsert permanentemente conflitante. | Exclusão de alias transacional e restrita ao tenant; rollback e concorrência. |
+| MEDIUM / Security | Transitivos mobile vulneráveis e resolução SSH de forge divergente do guard. | Ranges atualizados; mesmo SHA com resolução HTTPS; guards intactos. |
 
-O review não encontrou novo CRITICAL/HIGH no escopo final revisado; gates externos e achados da base continuam bloqueantes.
+A revisão independente concluída não encontrou novos CRITICAL/HIGH nos patches de frontend, mobile, no patch inicial de QA e em add/restore. Os três arquivos adicionais de fixtures foram revisados pelo executor principal e passaram na suíte completa; a repetição independente foi interrompida pelo limite de uso do subagente, sem resultado inferido. O autor principal e /advisor revisaram GC/hard delete, cujo autor era /devil. Registros legados já danificados, limites físicos e gates de integração continuam como pendências explícitas.
 
 ## 6. /advisor recommendations
 
-Segunda opinião independente por subagente, leitura do código e WIPs; não executou testes.
+Problema → alternativas → risco → recomendação → justificativa → aceite:
 
-**Problema → alternativas → riscos → recomendação → justificativa → aceite:**
+- **Frontend:** patch de ownership versus reescrita; a reescrita amplia o risco de regressões. Patch local com tokens, cleanup e DOM; fonte real e E2E comprovam o comportamento.
+- **Fleet:** primitives/hotfix versus WIP com 850–971 linhas; o WIP muda muitos contratos e a migração. Reparo isolado em #799 com restore verificado, concorrência em SQLite, tenants e histórico preservados; #777 permanece separado.
+- **Mobile:** tolerância de peers versus versões compatíveis; a tolerância deixa a árvore inválida. Doctor, instalação limpa e estrita, `npm ls`, exports e guards; sem lógica nova.
+- **Black:** misturar formatter no hotfix versus PR separado; o diff ruidoso dificulta o review. Unidade #803, ASTs iguais em 7/7 arquivos e 407 testes.
+- **GC:** manter exclusão sem tratar aliases versus transação; alias órfão impede registro. Exclusão correspondente, rollback e lock antes da seleção; 42 testes independentes.
 
-- Frontend: reparo local versus reescrever dashboard. Refatoração ampliaria superfície. Escolhido reparo de ownership/epochs e DOM; aceite: fontes reais, canvas único, async inverso, firstfold e logout.
-- Overview: ocultar versus atualizar teste. #797 já tornou overview visível; teste alinhado a visible/aria-busy=false, preservando os contratos de layout/isolamento.
-- Fleet: recuperar primitives versus incorporar WIP de 850–971 linhas adicionadas. WIP muda identidade, restore, agente e telemetria; escolhido hotfix #799 separado, Refs #777, com restore inválido sem mutação.
-- Mobile: instalação tolerante versus árvore determinística. Escolhido #800 com peers estritos, npm ci/npm ls/Doctor/lint/typecheck/Jest/exports. React sozinho não explica o erro: o peer react-reconciler ^19.3.0 está no lock.
+Houve concordância final, sem aprovação automática. A estratégia não foi usada como substituto de teste.
 
-## 7. Dívida técnica priorizada e auditoria CYPHER65
+## 7. Auditoria das Issues e CYPHER65
 
-| Prioridade | FATO / limite | Próximo passo |
+Os corpos e comentários das 13 Issues iniciais foram consultados novamente via GitHub; evidência em `/tmp/c65-final-issue-audit.json`. A classificação abaixo distingue requisitos da Issue, evidência histórica e execução atual.
+
+| Issue | Estado / causa | Próxima ação exata |
 |---|---|---|
-| P0 | CI transversal bloqueia integração; Bandit encontrou SQL composto em registry | #799, parametrização clara e gates estáticos |
-| P1 | Fleet chama normalizer/classe sem definição/imports; 99 NameErrors no run inicial | recuperar primitives e testar restore, sem alterar histórico real |
-| P1 | restore compara dois MACs inválidos como None==None após reintroduzir helper | exigir ambos válidos e iguais dentro da transação |
-| P1 | contrato/fallback AxeOS e discovery também falham | reproduzir separadamente após recuperar primitives; sem hardware |
-| P1 | árvore mobile CI tem React invalid e WASM extraneous | #800, instalação limpa e compatibilidade Expo/Babel |
-| P2 | MF-005 sem link de teste na matriz | provar cobertura relevante; acrescentar marker, nunca dispensar gate |
-| P2 | #787 aberta embora #793 e testes focados cubram parte do mesmo escopo | triagem por critérios, sem fechamento manual por PR aberto |
-| P2 | #777 WIPs de identidade são maiores que hotfix | manter isolados e executar corrida SQLite/tenants/tombstones antes de integração |
+| #798 | Reparo recuperado; integração externa de #801. | Validar a release de produção se o operador autorizar; nenhuma Issue foi fechada manualmente. |
+| #777 | Hotfix #799 restaura integridade; WIPs, migração e prova de deduplicação histórica incompletos. | Análise somente leitura e sanitizada de duplicatas, queries e reconciliação com rollback, além de testes de concorrência independentes; sem fusão cega. |
+| #787 | #793 e testes focados entregam parte de Session Evidence. | Conferir todos os critérios de UI, live e malformed; fechar somente pelo fluxo autorizado. |
+| #757 | Os 14 módulos, estados e unificação são um trabalho mais amplo. | Continuar em PR próprio; #798 corrige boot/chart, sem completar toda a UX. |
+| #659 | PR #715 entrega reconhecimento de host; schema da API não fornecido, segundo comentário. | Obter contrato versionado, com redação de dados sensíveis e unidades; manter fallback e não inventar normalizer. |
+| #598 | O snapshot não tem saldo de payout com tag de origem nem trilho confiável, segundo a auditoria da Issue. | Definir contrato atual de saldo/trilho; não reaproveitar saldo de marketplace. |
+| #600 | Issue bloqueada por ausência de fonte consumível para floor/ceiling. | Registrar dataset/endpoint verificável; nenhum valor de memória foi implementado. |
+| #606 | Baseline de 100/500 integrada em #727; SLO não aprovado. | Aprovar e versionar p95, memória, topologia e protocolo; baseline não vira gate. |
+| #607 | Baseline de 10k eventos/50 devices em #730; TEL001 já entregue. | Aprovar SLO de latência, backlog e memória; não inventar limite de CI. |
+| #399 | Épico iOS/pool parcial; gates e signing físicos externos. | Verificar cada gate; CI de simulator não equivale a archive/TestFlight. |
+| #386 | Matriz física com BLOCKED_EXTERNAL explícito. | Operador fornecer hardware e evidência de 200 dry runs/50 comandos controlados. |
+| #330 | Código/runbook integrado em #373; ativação requer secrets/settlement. | Operador configurar Render/webhook e comprovar checkout 200/settled; a restrição desta tarefa impede a ativação. |
+| #22 | Postgres condicionado à tração; readiness histórica de #374. | Comprovar tração/DSN/Gist e realizar ensaio isolado; nenhuma infraestrutura foi provisionada. |
 
-**Fleet Discovery:** existem manual add, Agent outbound e tombstones, mas primitives ausentes impedem prova de registro íntegro. LAN não foi acessada. **Telemetria:** testes verificam zero/ausência/stale; fixture não prova sensor físico ou conectividade. **Rentals:** contrato versus amostras/cobertura é separado; hashrate contratado não é entrega comprovada. **Probability:** testes focados passam para Poisson/unidades/unknown; probabilidade não é prazo. **Commands:** nenhuma alteração ou execução real; garantias físicas/ACK/rollback permanecem sem validação física. **Segurança/tenants:** E2E de logout preservado; testes globais Fleet falham, logo isolamento global não é declarado aprovado.
+**Fleet discovery/telemetria:** a LAN exige agente outbound; health cloud não comprova descoberta física. MAC normalizada por tenant é o contrato aprovado pelo mantenedor no comentário de #777, “Execução autorizada — identidade canônica aprovada (2026-10-06)”; essa decisão de contrato não equivale a approval de PR no GitHub. IP é locator; ausência é unknown. Fixtures comprovam o tratamento de zero, ausência e stale, sem comprovar o sensor.
 
-O inventário GitHub encontrou 13 Issues abertas. Além do recovery: #757 (unificação UX), #659 (BTC PoW Lab, PR #715 existente), #606/#607 (escala/ingestão), #600 (faixas de custo), #598 (payout), #399 (iOS epic), #386 (matriz física), #330 (pagamento em produção), #22 (Postgres gated). Essas funcionalidades requerem validação e escopo próprios; não foram implementadas como efeitos colaterais do reparo frontend. Ativação de pagamentos, produção e hardware permanece fora desta execução.
+**Rentals:** contratado, observado e cobertura permanecem separados; a entrega não é inferida. **Probability:** testes focados de Poisson, unidades e unknown passaram; probabilidade não é prazo garantido. **Economia:** MF-005 testa premissas declaradas e fiat ausente como `None`; SLO e custos externos não são inventados. **Commands:** nenhum comando físico foi executado; ACK, pós-estado e rollback físico continuam em #386. **Observabilidade/tenants:** gates de JSON/Sentry condicionado ao ambiente e testes reais; a suíte completa composta passou; dois skips condicionais permanecem: Gist privado sem credenciais explícitas e Sentry SDK ausente no Python local. Essas integrações não foram comprovadas.
 
 ## 8. Merge readiness
 
-#798: validado localmente e revisável; bloqueado para merge até CI do SHA exato verde e approval externo. #799/#800: unidades de recuperação em progresso com Issues próprias. #797: já integrado historicamente com falhas, sem nova autorização. Nenhum merge/deploy será realizado nesta tarefa.
+A recuperação local não autoriza integração. #801 e #804 foram integrados externamente, mesmo com checks globais vermelhos. #805, #806, QA e documentação precisam de CI do SHA exato e approval independente após a atualização das dependências. Subagentes não substituem approval no GitHub. Este agente não executou merge/deploy e não alega produção verde.
 
 ## 9. Next actions
 
-1. Publicar PR #798 com evidência e observar os checks do SHA enviado.
-2. Recuperar primitives Fleet/restore em #799, reexecutar testes e reduzir falhas por causa demonstrada.
-3. Recuperar a árvore mobile em #800 e validar sem mascarar peers.
-4. Corrigir falhas AxeOS/MF-005 remanescentes em unidades próprias.
-5. Registrar reviews/gates finais; obter aprovação humana independente antes de qualquer integração.
+1. Revisar os PRs #805 (Fleet), #806 (Black), #808 (QA) e este relatório; a composição passou no gate de cobertura 80%.
+2. Integrar normalmente as unidades restantes somente com autorização do mantenedor, approval e checks verdes; revalidar cada head após mudança de base.
+3. Reexecutar o CI da master consolidada; não inferir CI verde a partir de patches locais.
+4. Manter #777, #757 e os critérios externos em trilhas próprias conforme a tabela; preservar WIPs e histórico.
+
+## Evidência durável e limites de integração
+
+Os resultados locais são vinculados aos commits publicados e à composição destes patches. PRs isolados foram mantidos em draft; o CI não foi desativado. A integração das dependências e a atualização das branches publicadas devem seguir o fluxo autorizado pelo mantenedor; este agente não executará merge para contornar o bloqueio. Nenhum PR é declarado apto para merge com checks vermelhos.
+
+A revisão automática rejeitou uma cópia direta de testes entre worktrees por risco de sobrescrever WIP. Nenhum arquivo foi sobrescrito por essa tentativa. A composição foi feita posteriormente em checkout descartável, com patches verificados; o trabalho original permaneceu intacto.

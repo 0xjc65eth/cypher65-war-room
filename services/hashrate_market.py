@@ -405,7 +405,6 @@ def _source_for_network_hashrate(network_hashrate: Optional[float]) -> str:
     return "LIVE" if network_hashrate > 0 else "FALLBACK"
 
 
-
 def score_offer(
     offer: NormalizedOffer, network_hashrate: Optional[float] = None
 ) -> Dict[str, Any]:
@@ -660,6 +659,7 @@ def _estimate_own_mining_cost_usd_per_th_day(
 
 def market_rankings_view(offers: List[Dict[str, Any]]) -> Dict[str, Optional[str]]:
     """Pure, deterministic rankings over valid scored public offer records."""
+
     def finite_number(value: Any, default: float = 0.0) -> float:
         try:
             number = float(value)
@@ -669,24 +669,55 @@ def market_rankings_view(offers: List[Dict[str, Any]]) -> Dict[str, Optional[str
 
     provider = lambda row: str(row.get("provider") or "")
     real = [
-        row for row in offers or []
+        row
+        for row in offers or []
         if isinstance(row, dict)
         and not row.get("estimated")
         and finite_number(row.get("price_per_th_day")) > 0
         and finite_number(row.get("hashrate")) > 0
     ]
     if not real:
-        return {"cheapest": None, "best_score": None, "freshest": None, "most_capacity": None}
-    cheapest = min(real, key=lambda row: (finite_number(row.get("price_per_th_day"), float("inf")), provider(row)))
-    best_score = max(real, key=lambda row: (finite_number((row.get("metrics") or {}).get("score")), -finite_number(row.get("price_per_th_day")), provider(row)))
+        return {
+            "cheapest": None,
+            "best_score": None,
+            "freshest": None,
+            "most_capacity": None,
+        }
+    cheapest = min(
+        real,
+        key=lambda row: (
+            finite_number(row.get("price_per_th_day"), float("inf")),
+            provider(row),
+        ),
+    )
+    best_score = max(
+        real,
+        key=lambda row: (
+            finite_number((row.get("metrics") or {}).get("score")),
+            -finite_number(row.get("price_per_th_day")),
+            provider(row),
+        ),
+    )
     with_quote_age = []
     for row in real:
-        intelligence = row.get("market_intelligence") or (row.get("meta") or {}).get("market_intelligence") or {}
+        intelligence = (
+            row.get("market_intelligence")
+            or (row.get("meta") or {}).get("market_intelligence")
+            or {}
+        )
         age = intelligence.get("quote_age_seconds")
-        if intelligence.get("freshness") == "LIVE" and age is not None and finite_number(age, -1) >= 0:
+        if (
+            intelligence.get("freshness") == "LIVE"
+            and age is not None
+            and finite_number(age, -1) >= 0
+        ):
             with_quote_age.append((row, finite_number(age)))
-    freshest = min(with_quote_age, key=lambda pair: (pair[1], provider(pair[0])), default=None)
-    capacity = max(real, key=lambda row: (finite_number(row.get("hashrate")), provider(row)))
+    freshest = min(
+        with_quote_age, key=lambda pair: (pair[1], provider(pair[0])), default=None
+    )
+    capacity = max(
+        real, key=lambda row: (finite_number(row.get("hashrate")), provider(row))
+    )
     return {
         "cheapest": provider(cheapest),
         "best_score": provider(best_score),
@@ -729,7 +760,12 @@ def _valid_market_offer(offer: Any) -> bool:
     if price <= 0 or hashrate <= 0 or duration <= 0 or fee_pct < 0:
         return False
     cost = hashrate * price * duration * (1 + fee_pct / 100)
-    revenue = (hashrate * 1e12 / DEFAULT_NETWORK_HASHRATE) * BLOCKS_PER_DAY * BTC_BLOCK_REWARD * duration
+    revenue = (
+        (hashrate * 1e12 / DEFAULT_NETWORK_HASHRATE)
+        * BLOCKS_PER_DAY
+        * BTC_BLOCK_REWARD
+        * duration
+    )
     return math.isfinite(cost) and math.isfinite(revenue)
 
 
@@ -752,7 +788,8 @@ def build_market_intelligence(
     by_provider = {}
     for offer in offers or []:
         provider = str(
-            getattr(offer, "provider", "") or (offer.get("provider") if isinstance(offer, dict) else "")
+            getattr(offer, "provider", "")
+            or (offer.get("provider") if isinstance(offer, dict) else "")
         ).lower()
         if (
             provider in supported
@@ -766,7 +803,9 @@ def build_market_intelligence(
     fresh_count = 0
     for provider in supported:
         offer = by_provider.get(provider)
-        cache_entry = cache.get(provider) if isinstance(cache.get(provider), dict) else {}
+        cache_entry = (
+            cache.get(provider) if isinstance(cache.get(provider), dict) else {}
+        )
         if not cache_entry and provider_cache is None:
             cache_entry = _FETCH_CACHE.get(provider) or {}
         if not cache_entry and provider in cache and cache.get(provider):
@@ -775,7 +814,11 @@ def build_market_intelligence(
             cache_entry = {"unavailable": True}
         cache_ts = cache_entry.get("ts")
         cached_offer = cache_entry.get("value")
-        if offer is None and _valid_market_offer(cached_offer) and not bool(_offer_value(cached_offer, "estimated", False)):
+        if (
+            offer is None
+            and _valid_market_offer(cached_offer)
+            and not bool(_offer_value(cached_offer, "estimated", False))
+        ):
             offer = cached_offer
             by_provider[provider] = offer
             cache_ts = cache_entry.get("ts")
@@ -792,8 +835,15 @@ def build_market_intelligence(
         ):
             try:
                 cached_price = float(cache_entry["price"])
-                cached_hashrate = float(cache_entry.get("hashrate") or DEFAULT_RENTAL_HASHRATE_TH)
-                if math.isfinite(cached_price) and cached_price > 0 and math.isfinite(cached_hashrate) and cached_hashrate > 0:
+                cached_hashrate = float(
+                    cache_entry.get("hashrate") or DEFAULT_RENTAL_HASHRATE_TH
+                )
+                if (
+                    math.isfinite(cached_price)
+                    and cached_price > 0
+                    and math.isfinite(cached_hashrate)
+                    and cached_hashrate > 0
+                ):
                     offer = NormalizedOffer(
                         provider=provider,
                         hashrate=cached_hashrate,
@@ -823,7 +873,12 @@ def build_market_intelligence(
         quote_age = _timestamp_age_seconds(quote_ts, now)
         stale_flag = bool(meta.get("_stale"))
         has_quote = offer is not None
-        is_fresh = has_quote and quote_age is not None and quote_age <= stale_after_seconds and not stale_flag
+        is_fresh = (
+            has_quote
+            and quote_age is not None
+            and quote_age <= stale_after_seconds
+            and not stale_flag
+        )
         if is_fresh:
             status = "AVAILABLE"
             freshness = "LIVE"
@@ -832,13 +887,25 @@ def build_market_intelligence(
             status = "AVAILABLE"
             freshness = "STALE" if quote_age is not None or stale_flag else "UNKNOWN"
         else:
-            status = "UNAVAILABLE" if cache_ts is not None or (cache_entry and ("value" in cache_entry or cache_entry.get("unavailable"))) else "UNKNOWN"
+            status = (
+                "UNAVAILABLE"
+                if cache_ts is not None
+                or (
+                    cache_entry
+                    and ("value" in cache_entry or cache_entry.get("unavailable"))
+                )
+                else "UNKNOWN"
+            )
             freshness = "NO DATA"
         offer_source = (
-            getattr(offer, "source", "")
-            or (offer.get("source") if isinstance(offer, dict) else None)
-            or provider
-        ) if has_quote else None
+            (
+                getattr(offer, "source", "")
+                or (offer.get("source") if isinstance(offer, dict) else None)
+                or provider
+            )
+            if has_quote
+            else None
+        )
         offer_estimated = (
             bool(getattr(offer, "estimated", False))
             if has_quote and not isinstance(offer, dict)
@@ -856,6 +923,7 @@ def build_market_intelligence(
             "freshest": None,
             "most_capacity": None,
         }
+
     def _as_offer(raw_offer, provider):
         if isinstance(raw_offer, NormalizedOffer):
             return raw_offer
@@ -875,8 +943,7 @@ def build_market_intelligence(
             return None
 
     normalized = {
-        provider: _as_offer(offer, provider)
-        for provider, offer in by_provider.items()
+        provider: _as_offer(offer, provider) for provider, offer in by_provider.items()
     }
     normalized = {
         provider: offer
@@ -889,22 +956,53 @@ def build_market_intelligence(
     for offer in real_offers:
         metrics = compute_metrics(offer, None)
         try:
-            cost = float(offer.hashrate) * float(offer.price_per_th_day) * float(offer.duration_days or 1.0) * (1 + float(offer.fee_pct) / 100)
-            revenue = float(offer.hashrate) * 1e12 / DEFAULT_NETWORK_HASHRATE * BLOCKS_PER_DAY * BTC_BLOCK_REWARD * float(offer.duration_days or 1.0)
+            cost = (
+                float(offer.hashrate)
+                * float(offer.price_per_th_day)
+                * float(offer.duration_days or 1.0)
+                * (1 + float(offer.fee_pct) / 100)
+            )
+            revenue = (
+                float(offer.hashrate)
+                * 1e12
+                / DEFAULT_NETWORK_HASHRATE
+                * BLOCKS_PER_DAY
+                * BTC_BLOCK_REWARD
+                * float(offer.duration_days or 1.0)
+            )
             roi = (revenue - cost) / cost if cost > 0 else 0.0
             metrics["score"] = round(roi * 100, 2) if math.isfinite(roi) else 0.0
         except (TypeError, ValueError, OverflowError, ZeroDivisionError):
             metrics["score"] = 0.0
         scored.append((offer, metrics))
-    cheapest = min(scored, key=lambda pair: (pair[0].price_per_th_day, pair[0].provider)) if scored else None
-    best_score = max(scored, key=lambda pair: (pair[1]["score"], -pair[0].price_per_th_day, pair[0].provider)) if scored else None
+    cheapest = (
+        min(scored, key=lambda pair: (pair[0].price_per_th_day, pair[0].provider))
+        if scored
+        else None
+    )
+    best_score = (
+        max(
+            scored,
+            key=lambda pair: (
+                pair[1]["score"],
+                -pair[0].price_per_th_day,
+                pair[0].provider,
+            ),
+        )
+        if scored
+        else None
+    )
     freshest = min(
         (
-            pair for pair in scored
+            pair
+            for pair in scored
             if providers[pair[0].provider]["quote_age_seconds"] is not None
             and providers[pair[0].provider]["freshness"] == "LIVE"
         ),
-        key=lambda pair: (providers[pair[0].provider]["quote_age_seconds"], pair[0].provider),
+        key=lambda pair: (
+            providers[pair[0].provider]["quote_age_seconds"],
+            pair[0].provider,
+        ),
         default=None,
     )
     capacity = max(
@@ -920,14 +1018,18 @@ def build_market_intelligence(
         if provider_data["status"] != "AVAILABLE":
             continue
         for rank_name, rank_provider in rankings.items():
-            provider_data[rank_name] = rank_provider == provider if rank_provider else None
+            provider_data[rank_name] = (
+                rank_provider == provider if rank_provider else None
+            )
     available = len(normalized)
     status = (
         "NO DATA"
         if available == 0
-        else "AVAILABLE"
-        if available == len(supported) and fresh_count == len(supported)
-        else "PARTIAL"
+        else (
+            "AVAILABLE"
+            if available == len(supported) and fresh_count == len(supported)
+            else "PARTIAL"
+        )
     )
     return {
         "status": status,
@@ -935,14 +1037,24 @@ def build_market_intelligence(
         "total_provider_count": len(supported),
         "provider_denominator": list(supported),
         "fresh_provider_count": fresh_count,
-        "stale_provider_count": sum(1 for item in providers.values() if item["freshness"] == "STALE"),
+        "stale_provider_count": sum(
+            1 for item in providers.values() if item["freshness"] == "STALE"
+        ),
         "cache_age_seconds": max(
-            (item["cache_age_seconds"] for item in providers.values() if item["cache_age_seconds"] is not None),
+            (
+                item["cache_age_seconds"]
+                for item in providers.values()
+                if item["cache_age_seconds"] is not None
+            ),
             default=None,
         ),
         "cache_age_source": (
             max(
-                (item for item in providers.items() if item[1]["cache_age_seconds"] is not None),
+                (
+                    item
+                    for item in providers.items()
+                    if item[1]["cache_age_seconds"] is not None
+                ),
                 key=lambda item: item[1]["cache_age_seconds"],
                 default=(None, None),
             )[0]
@@ -1236,7 +1348,9 @@ def build_highlights(
                 continue
             is_stale = max_age_seconds > 0 and age > max_age_seconds
             try:
-                cached_hashrate = float(entry.get("hashrate") or DEFAULT_RENTAL_HASHRATE_TH)
+                cached_hashrate = float(
+                    entry.get("hashrate") or DEFAULT_RENTAL_HASHRATE_TH
+                )
             except (TypeError, ValueError, OverflowError):
                 continue
             if not math.isfinite(cached_hashrate) or cached_hashrate <= 0:
@@ -1262,7 +1376,9 @@ def build_highlights(
 
     scored = [score_offer(o, network_hashrate) for o in offers]
     scored.sort(key=market_offer_sort_key)
-    intelligence = build_market_intelligence(offers, last_known_prices or {}, now=ts_now, stale_after_seconds=max_age_seconds)
+    intelligence = build_market_intelligence(
+        offers, last_known_prices or {}, now=ts_now, stale_after_seconds=max_age_seconds
+    )
     for item in scored:
         provider = item.get("provider")
         if provider in intelligence["providers"]:
