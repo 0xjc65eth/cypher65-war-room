@@ -5713,6 +5713,119 @@ for (const temperature of [-41, 151, Infinity, NaN, null, undefined, true, false
   assertEqual('console rejects invalid Celsius '+String(temperature), consoleModel(consoleSnap,sample,false,'fleet',consoleNow,consoleNow).rows[0].temperature, null);
 }
 
+// Issue #798: exercise the actual chart owner, async loaders and zoom cleanup.
+{
+  const canvases = {};
+  const registry = new Map();
+  const requests = [];
+  const warnings = [];
+  let created = 0;
+  let licenseCalls = 0;
+  function canvas(id) {
+    const target = new EventTarget();
+    target.id = id;
+    target.offsetParent = {};
+    target.style = {};
+    target.getContext = () => ({canvas: target});
+    return target;
+  }
+  class TestChart {
+    static getChart(target) { return registry.get(target); }
+    constructor(ctx, config) {
+      if (registry.has(ctx.canvas)) throw new Error('Canvas is already in use');
+      this.id = created++;
+      this.canvas = ctx.canvas;
+      this.data = config.data;
+      this.options = config.options;
+      this.plugins = config.plugins;
+      this.scales = {x: {min: 0, max: 10}};
+      this.updates = 0;
+      registry.set(this.canvas, this);
+    }
+    update() { this.updates++; }
+    destroy() {
+      registry.delete(this.canvas);
+      for (const plugin of this.plugins) plugin.afterDestroy?.(this);
+      this.canvas = null;
+    }
+  }
+  const lifecycle = loadFragment('39b-dashboard.js', '{initCharts, renderCharts, loadChartData, loadChart, charts, _releaseDashboardChart}', {
+    Chart: TestChart, AbortController, fmt, cssVar: () => '', chartEventAnnotationsPlugin: {},
+    computeSMA: () => [], buildChartAnnotations: () => [],
+    handleLicenseRequired: async () => { licenseCalls++; },
+    logMessage: (...args) => warnings.push(args),
+    document: {getElementById: id => canvases[id] || null},
+    fetch: url => new Promise(resolve => requests.push({url,resolve})),
+  });
+  const id = 'chart-hashrate';
+  canvases[id] = canvas(id);
+  lifecycle.initCharts();
+  const first = lifecycle.charts[id];
+  lifecycle.initCharts();
+  assertEqual('repeated chart init keeps one owner', lifecycle.charts[id], first);
+  assertEqual('repeated chart init does not allocate', created, 1);
+  const oldCanvas = canvases[id];
+  canvases[id] = canvas(id);
+  lifecycle.initCharts();
+  assertEqual('replaced canvas destroys prior chart', first.canvas, null);
+  assertEqual('destroy releases zoom handlers', first._zoomController.signal.aborted, true);
+  const beforeUpdates = first.updates;
+  oldCanvas.dispatchEvent(new Event('dblclick'));
+  assertEqual('old canvas cannot invoke destroyed chart', first.updates, beforeUpdates);
+  assertEqual('new canvas obtains its own owner', lifecycle.charts[id].canvas, canvases[id]);
+  const second = lifecycle.charts[id];
+  second.destroy();
+  lifecycle.initCharts();
+  assertEqual('externally destroyed chart is recreated', created, 3);
+  const current = lifecycle.charts[id];
+  const reply = value => ({ok:true, status:200, json: async () => ({labels:['2026-10-10T10:00:00Z'], datasets:[{data:[value]}]})});
+  const older = lifecycle.loadChartData(id);
+  const newer = lifecycle.loadChartData(id);
+  requests[1].resolve(reply(222)); await newer;
+  requests[0].resolve(reply(111)); await older;
+  assertEqual('out-of-order reply cannot overwrite newest data', current.data.datasets[0].data[0], 222);
+  const oldRange = lifecycle.loadChart(id, 'hashrate', '24h');
+  const newRange = lifecycle.loadChart(id, 'hashrate', '7d');
+  assertEqual('range requests retain selected range', requests[3].url.endsWith('range=7d'), true);
+  requests[3].resolve(reply(333)); await newRange;
+  requests[2].resolve({ok:false,status:402}); await oldRange;
+  assertEqual('stale 402 cannot reset range or open license CTA', licenseCalls, 0);
+  assertEqual('stale range response cannot overwrite data', current.data.datasets[0].data[0], 333);
+  const removedResponse = lifecycle.loadChartData(id);
+  delete canvases[id]; lifecycle.initCharts();
+  requests[4].resolve(reply(444)); await removedResponse;
+  assertEqual('removed canvas owner is released', lifecycle.charts[id], undefined);
+  assertEqual('late response never updates destroyed chart', current.data.datasets[0].data[0], 333);
+  // Response headers may be current while its JSON body is still pending.
+  canvases[id] = canvas(id); lifecycle.initCharts();
+  let releaseBody;
+  const body = new Promise(resolve => { releaseBody = resolve; });
+  const pendingBody = lifecycle.loadChartData(id);
+  requests[5].resolve({ok:true,status:200,json:() => body});
+  await Promise.resolve(); await Promise.resolve();
+  const previous = lifecycle.charts[id];
+  canvases[id] = canvas(id); lifecycle.initCharts();
+  releaseBody({labels:[],datasets:[{data:[555]}]}); await pendingBody;
+  assertEqual('delayed JSON cannot affect replacement canvas', lifecycle.charts[id].data.datasets[0].data.length, 0);
+  assertEqual('delayed JSON cannot update destroyed owner', previous.updates, 0);
+  let releaseLocked;
+  const lockedBody = new Promise(resolve => { releaseLocked = resolve; });
+  const lateLock = lifecycle.loadChart(id, 'hashrate', 'all');
+  requests[6].resolve({ok:false,status:402,json:() => lockedBody});
+  await Promise.resolve(); await Promise.resolve();
+  const afterLock = lifecycle.loadChart(id, 'hashrate', '24h');
+  requests[7].resolve(reply(777)); await afterLock;
+  releaseLocked({error:'locked'}); await lateLock;
+  assertEqual('delayed 402 body cannot surface an obsolete lock', licenseCalls, 0);
+  assertEqual('delayed 402 body cannot revert selected chart data', lifecycle.charts[id].data.datasets[0].data[0], 777);
+  assertEqual('normal chart lifecycle emits no warnings', warnings.length, 0);
+  const failedRead = lifecycle.loadChartData(id);
+  requests[8].resolve({ok:true,status:200,json:async()=>{throw new Error('invalid response');}});
+  await failedRead;
+  assertEqual('active chart fetch error is surfaced', warnings.length, 1);
+  lifecycle._releaseDashboardChart(id);
+}
+
 //  RESULTS
 // ═══════════════════════════════════════════════════════════════════════════
 
