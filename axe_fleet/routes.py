@@ -66,7 +66,12 @@ from .models import (
     derive_device_status,
     validate_agent_telemetry,
 )
-from .registry import DeviceRegistry, TelemetryIdempotencyConflict
+from .registry import (
+    DeviceRegistry,
+    TelemetryIdempotencyConflict,
+    DeviceIdentityConflict,
+    normalize_device_mac,
+)
 
 log = logging.getLogger("cypher65.axe.routes")
 
@@ -429,6 +434,19 @@ def add_device(tenant_id: str = ""):
         emit_event("manual_add.failed", tenant_id=tenant_id, reason="duplicate")
         return jsonify({"error": "device already registered", "device": existing}), 409
 
+    if _registry.get_removed_by_ip(ip, tenant_id=tenant_id):
+        emit_event("manual_add.failed", tenant_id=tenant_id, reason="tombstoned")
+        return (
+            jsonify(
+                {
+                    "success": False,
+                    "code": "DEVICE_REMOVED",
+                    "error": "device was removed; use explicit restore with its valid MAC",
+                }
+            ),
+            409,
+        )
+
     # ── SaaS topology guard: on a cloud deploy a private LAN IP is
     #    unreachable by construction — registering it would create a card
     #    that stays OFFLINE forever (the server poll can't reach it either),
@@ -440,10 +458,6 @@ def add_device(tenant_id: str = ""):
     from .scanner import is_private_ip
 
     if is_cloud_deploy() and is_private_ip(ip):
-        # Operator typed this IP on cloud: that is restore intent for a
-        # previously removed miner. Clearing the tombstone does not probe
-        # the address — the agent on the LAN does.
-        restored = _registry.clear_tombstone(ip, tenant_id=tenant_id)
         queued = _registry.enqueue_agent_command(
             "_probe",
             "probe",
@@ -462,20 +476,20 @@ def add_device(tenant_id: str = ""):
             details={
                 "reason": "cloud_private_ip_agent_probe",
                 "queued": bool(queued),
-                "tombstone_cleared": bool(restored),
+                "tombstone_cleared": False,
             },
         )
         response = {
             "success": bool(queued),
             "queued": bool(queued),
             "is_cloud": True,
-            "restored": bool(restored),
+            "restored": False,
             "command_id": (queued or {}).get("id"),
             "error": None if queued else "agent command queue unavailable",
             "message": (
                 "IP privado enfileirado para o AGENTE LOCAL. Com o agente online na mesma LAN, o miner será sondado e registrado automaticamente — o Render nunca conecta em 192.168.x.x."
                 if queued
-                else "Não foi possível enfileirar o probe. O IP foi restaurado; tente novamente quando a fila do agente estiver disponível."
+                else "Não foi possível enfileirar o probe; tente novamente quando a fila do agente estiver disponível."
             ),
         }
         return jsonify(response), (202 if queued else 503)
@@ -516,6 +530,19 @@ def add_device(tenant_id: str = ""):
         )
         log.error("[axe] add_device error: %s", e)
         return jsonify({"error": f"failed to add device: {str(e)}"}), 500
+
+    if not device:
+        emit_event("manual_add.failed", tenant_id=tenant_id, reason="tombstoned")
+        return (
+            jsonify(
+                {
+                    "success": False,
+                    "code": "DEVICE_REMOVED",
+                    "error": "device identity was removed; explicit MAC-verified restore required",
+                }
+            ),
+            409,
+        )
 
     firmware = ""
     model = ""
@@ -648,18 +675,53 @@ def restore_removed_device(tenant_id: str = ""):
         return jsonify({"error": "registry not initialized"}), 500
     data = request.get_json(silent=True) or {}
     ip = (data.get("ip_address") or "").strip()
-    mac = data.get("mac")
+    mac = normalize_device_mac(data.get("mac"))
     if not ip or not mac:
-        return jsonify({"success": False, "error": "ip_address and verified mac are required"}), 400
+        return (
+            jsonify(
+                {"success": False, "error": "ip_address and verified mac are required"}
+            ),
+            400,
+        )
     try:
         tombstone = _registry.get_removed_by_ip(ip, tenant_id=tenant_id)
         if not tombstone:
-            return jsonify({"success": False, "error": "no removed device for this IP", "ip_address": ip}), 404
-        if normalize_device_mac(tombstone.get("mac_address")) != normalize_device_mac(mac):
-            return jsonify({"success": False, "error": "MAC does not match tombstoned device", "code": "DEVICE_IDENTITY_CONFLICT"}), 409
-        cleared = _registry.clear_tombstone(ip, tenant_id=tenant_id)
+            return (
+                jsonify(
+                    {
+                        "success": False,
+                        "error": "no removed device for this IP",
+                        "ip_address": ip,
+                    }
+                ),
+                404,
+            )
+        if normalize_device_mac(tombstone.get("mac_address")) != normalize_device_mac(
+            mac
+        ):
+            return (
+                jsonify(
+                    {
+                        "success": False,
+                        "error": "MAC does not match tombstoned device",
+                        "code": "DEVICE_IDENTITY_CONFLICT",
+                    }
+                ),
+                409,
+            )
+        cleared = _registry.clear_tombstone(ip, tenant_id=tenant_id, mac_address=mac)
     except DeviceIdentityConflict as exc:
-        return jsonify({"success": False, "error": "device identity conflict", "code": "DEVICE_IDENTITY_CONFLICT", "detail": str(exc)}), 409
+        return (
+            jsonify(
+                {
+                    "success": False,
+                    "error": "device identity conflict",
+                    "code": "DEVICE_IDENTITY_CONFLICT",
+                    "detail": str(exc),
+                }
+            ),
+            409,
+        )
     if not cleared:
         return (
             jsonify(

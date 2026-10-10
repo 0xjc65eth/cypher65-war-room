@@ -37,6 +37,31 @@ class TelemetryIdempotencyConflict(ValueError):
     """Raised when a telemetry event key is reused for another payload."""
 
 
+class DeviceIdentityConflict(ValueError):
+    """Registration evidence conflicts with a tenant-scoped identity."""
+
+    code = "DEVICE_IDENTITY_CONFLICT"
+
+
+def normalize_device_mac(value):
+    """Normalize six-octet unicast MAC evidence; malformed values are unknown."""
+    if not isinstance(value, str):
+        return None
+    raw = value.strip()
+    if re.fullmatch(r"[0-9A-Fa-f]{12}", raw):
+        compact = raw
+    elif re.fullmatch(r"[0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5}", raw):
+        compact = raw.replace(":", "")
+    elif re.fullmatch(r"[0-9A-Fa-f]{2}(?:-[0-9A-Fa-f]{2}){5}", raw):
+        compact = raw.replace("-", "")
+    else:
+        return None
+    octets = [int(compact[i : i + 2], 16) for i in range(0, 12, 2)]
+    if not any(octets) or octets[0] & 1:
+        return None
+    return ":".join(f"{octet:02X}" for octet in octets)
+
+
 def _caps_for_type(info: dict) -> dict:
     """Capabilities derived from the agent's discovery info (type + firmware).
 
@@ -246,26 +271,10 @@ class DeviceRegistry:
         """Register a new device by IP. Attempts to connect and auto-detect.
         Returns the device dict with detected info, or basic info if connection failed.
 
-        Manual operator add UN-TOMBSTONES the IP: the operator explicitly
-        re-adding a device they previously removed must get a fresh active
-        row (the agent path refuses tombstones, the manual path clears them)."""
-        # Revive: purge any tombstoned row for this IP+tenant so the manual
-        # add is authoritative (a removed device the operator explicitly
-        # wants back must not stay blocked by the agent-side tombstone).
-        conn = self._get_db()
-        c = conn.cursor()
-        if tenant_id:
-            c.execute(
-                "DELETE FROM axe_devices WHERE ip_address=? AND tenant_id=? AND COALESCE(removed_at,0)>0",
-                (ip_address, tenant_id),
-            )
-        else:
-            c.execute(
-                "DELETE FROM axe_devices WHERE ip_address=? AND COALESCE(removed_at,0)>0",
-                (ip_address,),
-            )
-        conn.commit()
-        conn.close()
+        Removed devices require explicit MAC-verified restore. A manual add
+        must never delete their identity or history."""
+        if self.get_removed_by_ip(ip_address, tenant_id=tenant_id):
+            return {}
         device_id = uuid.uuid4().hex[:12]
         now = int(time.time())
         device = new_device(ip_address, name)
@@ -300,7 +309,7 @@ class DeviceRegistry:
             device["status"] = STATUS_OFFLINE
             device["capabilities"] = {}
 
-        return self._persist_registered_device(device, allow_restore=True)
+        return self._persist_registered_device(device, allow_restore=False)
 
     def remove_device(
         self, device_id: str, tenant_id: str = "default", hard: bool = False
@@ -316,27 +325,38 @@ class DeviceRegistry:
         hard=True physically deletes the row (used by the seed/test purges,
         which must not accumulate tombstones)."""
         conn = self._get_db()
-        c = conn.cursor()
-        if hard:
+        try:
+            c = conn.cursor()
+            if hard:
+                c.execute(
+                    "DELETE FROM axe_devices WHERE id=? AND tenant_id=?",
+                    (device_id, tenant_id),
+                )
+                deleted = c.rowcount > 0
+                if deleted:
+                    c.execute(
+                        "DELETE FROM axe_device_identity_aliases "
+                        "WHERE device_id=? AND tenant_id=?",
+                        (device_id, tenant_id),
+                    )
+            else:
+                c.execute(
+                    "UPDATE axe_devices SET removed_at=?, status='OFFLINE' "
+                    "WHERE id=? AND tenant_id=? AND COALESCE(removed_at,0)=0",
+                    (int(time.time()), device_id, tenant_id),
+                )
+                deleted = c.rowcount > 0
             c.execute(
-                "DELETE FROM axe_devices WHERE id=? AND tenant_id=?",
+                "DELETE FROM axe_telemetry_quarantine WHERE device_id=? AND tenant_id=?",
                 (device_id, tenant_id),
             )
-            deleted = c.rowcount > 0
-        else:
-            c.execute(
-                "UPDATE axe_devices SET removed_at=?, status='OFFLINE' "
-                "WHERE id=? AND tenant_id=? AND COALESCE(removed_at,0)=0",
-                (int(time.time()), device_id, tenant_id),
-            )
-            deleted = c.rowcount > 0
-        c.execute(
-            "DELETE FROM axe_telemetry_quarantine WHERE device_id=? AND tenant_id=?",
-            (device_id, tenant_id),
-        )
-        conn.commit()
-        conn.close()
-        return deleted
+            conn.commit()
+            return deleted
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
     def gc_tombstones(self, max_age_days: int = 30) -> int:
         """Physically purge tombstoned rows older than max_age_days (and
@@ -344,9 +364,13 @@ class DeviceRegistry:
         Returns the number of tombstoned rows removed. Never raises."""
         cutoff = int(time.time()) - max_age_days * 86400
         removed = 0
+        conn = None
         try:
             conn = self._get_db()
             c = conn.cursor()
+            # Lock before selecting candidates so a concurrent restore cannot
+            # reactivate a row between the candidate read and its deletion.
+            c.execute("BEGIN IMMEDIATE")
             c.execute(
                 "SELECT id, tenant_id FROM axe_devices WHERE COALESCE(removed_at,0)>0 AND removed_at<?",
                 (cutoff,),
@@ -354,10 +378,15 @@ class DeviceRegistry:
             removed_devices = [dict(r) for r in c.fetchall()]
             ids = [row["id"] for row in removed_devices]
             if ids:
+                owners = [(row["tenant_id"], row["id"]) for row in removed_devices]
+                c.executemany(
+                    "DELETE FROM axe_device_identity_aliases WHERE tenant_id=? AND device_id=?",
+                    owners,
+                )
                 # Quarantine metadata is scoped by both tenant and device ID.
                 c.executemany(
                     "DELETE FROM axe_telemetry_quarantine WHERE tenant_id=? AND device_id=?",
-                    [(row["tenant_id"], row["id"]) for row in removed_devices],
+                    owners,
                 )
                 placeholders = ",".join("?" * len(ids))
                 # placeholders are generated ?-markers only — no user input.
@@ -369,13 +398,17 @@ class DeviceRegistry:
                     f"DELETE FROM axe_devices WHERE id IN ({placeholders})",  # nosec B608
                     ids,
                 )
-                removed = len(ids)
-                conn.commit()
-                if removed:
-                    log.info("[gc] purged %d old tombstoned devices", removed)
-            conn.close()
+            conn.commit()
+            removed = len(ids)
+            if removed:
+                log.info("[gc] purged %d old tombstoned devices", removed)
         except Exception as e:
+            if conn is not None:
+                conn.rollback()
             log.warning("[gc] tombstone gc failed: %s", e)
+        finally:
+            if conn is not None:
+                conn.close()
         return removed
 
     def _tombstone_query(self):
@@ -416,13 +449,16 @@ class DeviceRegistry:
         conn.close()
         return rows
 
-    def clear_tombstone(self, ip_address: str, tenant_id: str = "") -> dict:
+    def clear_tombstone(
+        self, ip_address: str, tenant_id: str = "", mac_address: str = ""
+    ) -> dict:
         """Explicitly restore a tenant-scoped locator without deleting history.
 
         Does not create a device or probe the IP. The tombstoned row, MAC alias,
         telemetry and command ledger remain attached to the same canonical ID.
         """
-        if not ip_address or not tenant_id:
+        mac = normalize_device_mac(mac_address)
+        if not ip_address or not tenant_id or not mac:
             return {}
         conn = self._get_db()
         try:
@@ -438,6 +474,8 @@ class DeviceRegistry:
                 conn.rollback()
                 return {}
             row = self._row_to_device(rows[0])
+            if normalize_device_mac(row.get("mac_address")) != mac:
+                raise DeviceIdentityConflict("MAC does not match tombstoned device")
             c.execute(
                 "UPDATE axe_devices SET removed_at=0, status='OFFLINE', updated_at=? "
                 "WHERE id=? AND tenant_id=? AND COALESCE(removed_at,0)>0 "
@@ -577,15 +615,17 @@ class DeviceRegistry:
                 device = self.get_device(alias["device_id"], tenant_id=tenant_id)
                 return device
             # Compatibility for legacy rows written before the alias table.
-            rows = c.execute(
-                "SELECT * FROM axe_devices WHERE "
-                + ("tenant_id=? AND " if tenant_id else "")
-                + self._tombstone_query(),
-                (tenant_id,) if tenant_id else (),
-            ).fetchall()
+            if tenant_id:
+                rows = c.execute(
+                    "SELECT * FROM axe_devices WHERE tenant_id=? AND COALESCE(removed_at,0)=0",
+                    (tenant_id,),
+                ).fetchall()
+            else:
+                rows = c.execute(
+                    "SELECT * FROM axe_devices WHERE COALESCE(removed_at,0)=0"
+                ).fetchall()
             matches = [
-                row for row in rows
-                if normalize_device_mac(row["mac_address"]) == mac
+                row for row in rows if normalize_device_mac(row["mac_address"]) == mac
             ]
             if len(matches) > 1:
                 raise DeviceIdentityConflict("MAC maps to multiple legacy device rows")
@@ -634,10 +674,13 @@ class DeviceRegistry:
             alias = c.fetchone()
         alias_id = alias["device_id"] if alias else None
 
-        c.execute("SELECT * FROM axe_devices WHERE tenant_id=? ORDER BY id", (tenant_id,))
+        c.execute(
+            "SELECT * FROM axe_devices WHERE tenant_id=? ORDER BY id", (tenant_id,)
+        )
         tenant_rows = [self._row_to_device(row) for row in c.fetchall()]
         mac_rows = [
-            row for row in tenant_rows
+            row
+            for row in tenant_rows
             if mac and normalize_device_mac(row.get("mac_address")) == mac
         ]
         mac_ids = {row["id"] for row in mac_rows}
@@ -655,47 +698,83 @@ class DeviceRegistry:
             raise DeviceIdentityConflict("IP locator maps to multiple registry rows")
         ip_row = ip_rows[0] if ip_rows else None
         if target is not None and ip_row is not None and target["id"] != ip_row["id"]:
-            raise DeviceIdentityConflict("MAC identity and IP locator point to different devices")
+            raise DeviceIdentityConflict(
+                "MAC identity and IP locator point to different devices"
+            )
         if target is None and ip_row is not None:
             stored_mac = normalize_device_mac(ip_row.get("mac_address"))
             if mac and stored_mac and stored_mac != mac:
-                raise DeviceIdentityConflict("IP locator is already assigned to another MAC")
+                raise DeviceIdentityConflict(
+                    "IP locator is already assigned to another MAC"
+                )
             target = ip_row
         return target
 
     @staticmethod
     def _write_device_tx(c, device: dict, *, insert: bool):
         fields = (
-            "id", "name", "model", "manufacturer", "firmware", "firmware_version",
-            "api_version", "ip_address", "hostname", "mac_address", "last_seen",
-            "status", "group_id", "capabilities", "added_at", "updated_at",
-            "tenant_id", "agent_managed", "removed_at",
+            "id",
+            "name",
+            "model",
+            "manufacturer",
+            "firmware",
+            "firmware_version",
+            "api_version",
+            "ip_address",
+            "hostname",
+            "mac_address",
+            "last_seen",
+            "status",
+            "group_id",
+            "capabilities",
+            "added_at",
+            "updated_at",
+            "tenant_id",
+            "agent_managed",
+            "removed_at",
         )
         values = [
-            device.get("id", ""), device.get("name", ""), device.get("model", ""),
-            device.get("manufacturer", ""), device.get("firmware", ""),
-            device.get("firmware_version", ""), device.get("api_version", ""),
-            device.get("ip_address", ""), device.get("hostname", ""),
-            device.get("mac_address", ""), device.get("last_seen", 0),
-            device.get("status", STATUS_OFFLINE), device.get("group_id", ""),
-            json.dumps(device.get("capabilities", {})), device.get("added_at", int(time.time())),
-            int(time.time()), device.get("tenant_id", "default"),
-            int(device.get("agent_managed", 0) or 0), int(device.get("removed_at", 0) or 0),
+            device.get("id", ""),
+            device.get("name", ""),
+            device.get("model", ""),
+            device.get("manufacturer", ""),
+            device.get("firmware", ""),
+            device.get("firmware_version", ""),
+            device.get("api_version", ""),
+            device.get("ip_address", ""),
+            device.get("hostname", ""),
+            device.get("mac_address", ""),
+            device.get("last_seen", 0),
+            device.get("status", STATUS_OFFLINE),
+            device.get("group_id", ""),
+            json.dumps(device.get("capabilities", {})),
+            device.get("added_at", int(time.time())),
+            int(time.time()),
+            device.get("tenant_id", "default"),
+            int(device.get("agent_managed", 0) or 0),
+            int(device.get("removed_at", 0) or 0),
         ]
         if insert:
             c.execute(
-                "INSERT INTO axe_devices (" + ",".join(fields) + ") VALUES (" +
-                ",".join("?" for _ in fields) + ")",
+                "INSERT INTO axe_devices (id, name, model, manufacturer, firmware, "
+                "firmware_version, api_version, ip_address, hostname, mac_address, "
+                "last_seen, status, group_id, capabilities, added_at, updated_at, "
+                "tenant_id, agent_managed, removed_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 values,
             )
             return
         c.execute(
-            "UPDATE axe_devices SET " + ",".join(f"{field}=?" for field in fields[1:]) +
-            " WHERE id=? AND tenant_id=?",
+            "UPDATE axe_devices SET name=?, model=?, manufacturer=?, firmware=?, "
+            "firmware_version=?, api_version=?, ip_address=?, hostname=?, mac_address=?, "
+            "last_seen=?, status=?, group_id=?, capabilities=?, added_at=?, updated_at=?, "
+            "tenant_id=?, agent_managed=?, removed_at=? WHERE id=? AND tenant_id=?",
             values[1:] + [device["id"], device["tenant_id"]],
         )
         if c.rowcount != 1:
-            raise DeviceIdentityConflict("canonical registry row disappeared during update")
+            raise DeviceIdentityConflict(
+                "canonical registry row disappeared during update"
+            )
 
     def _persist_registered_device(self, device: dict, *, allow_restore: bool) -> dict:
         """Atomically resolve and persist manual registration by MAC evidence."""
@@ -711,19 +790,33 @@ class DeviceRegistry:
                 conn.rollback()
                 return {}
             if target:
-                if mac and normalize_device_mac(target.get("mac_address")) not in (None, mac):
+                if mac and normalize_device_mac(target.get("mac_address")) not in (
+                    None,
+                    mac,
+                ):
                     raise DeviceIdentityConflict("canonical row has a different MAC")
                 merged = dict(target)
                 for field in (
-                    "name", "model", "manufacturer", "firmware", "firmware_version",
-                    "api_version", "hostname", "status", "last_seen", "group_id",
-                    "capabilities", "agent_managed",
+                    "name",
+                    "model",
+                    "manufacturer",
+                    "firmware",
+                    "firmware_version",
+                    "api_version",
+                    "hostname",
+                    "status",
+                    "last_seen",
+                    "group_id",
+                    "capabilities",
+                    "agent_managed",
                 ):
                     if device.get(field) not in (None, ""):
                         merged[field] = device[field]
                 merged["ip_address"] = ip_address
                 merged["mac_address"] = mac or target.get("mac_address", "")
-                merged["removed_at"] = 0 if allow_restore else int(target.get("removed_at", 0) or 0)
+                merged["removed_at"] = (
+                    0 if allow_restore else int(target.get("removed_at", 0) or 0)
+                )
                 self._write_device_tx(c, merged, insert=False)
             else:
                 merged = dict(device)
@@ -744,7 +837,9 @@ class DeviceRegistry:
                 )
                 alias = c.fetchone()
                 if not alias or alias["device_id"] != merged["id"]:
-                    raise DeviceIdentityConflict("MAC alias is already bound to another device")
+                    raise DeviceIdentityConflict(
+                        "MAC alias is already bound to another device"
+                    )
             conn.commit()
             return self.get_device(merged["id"], tenant_id=tenant_id) or merged
         except Exception:
@@ -773,7 +868,8 @@ class DeviceRegistry:
         caps = _caps_for_type(info)
         proposed = {
             "id": uuid.uuid4().hex[:12],
-            "name": name or str(info.get("hostname") or info.get("model") or ip_address),
+            "name": name
+            or str(info.get("hostname") or info.get("model") or ip_address),
             "model": str(info.get("model") or ""),
             "manufacturer": str(info.get("manufacturer") or ""),
             "firmware": str(info.get("firmware") or ""),
@@ -802,16 +898,36 @@ class DeviceRegistry:
                 log.info("[agent] refusing tombstoned device registration")
                 return {}
             if target:
-                if mac and normalize_device_mac(target.get("mac_address")) not in (None, mac):
+                if mac and normalize_device_mac(target.get("mac_address")) not in (
+                    None,
+                    mac,
+                ):
                     raise DeviceIdentityConflict("canonical row has a different MAC")
                 merged = dict(target)
                 for field in (
-                    "model", "manufacturer", "firmware", "firmware_version", "hostname",
-                    "agent_managed", "last_seen", "capabilities",
+                    "model",
+                    "manufacturer",
+                    "firmware",
+                    "firmware_version",
+                    "hostname",
+                    "agent_managed",
+                    "last_seen",
+                    "capabilities",
                 ):
-                    if info.get({"firmware_version": "version"}.get(field, field)) not in (None, ""):
+                    if info.get(
+                        {"firmware_version": "version"}.get(field, field)
+                    ) not in (None, ""):
                         source = "version" if field == "firmware_version" else field
-                        merged[field] = str(info[source]) if field not in ("agent_managed", "last_seen", "capabilities") else proposed[field]
+                        merged[field] = (
+                            str(info[source])
+                            if field
+                            not in ("agent_managed", "last_seen", "capabilities")
+                            else proposed[field]
+                        )
+                merged["agent_managed"] = 1
+                merged["last_seen"] = now
+                if info.get("type") or info.get("firmware"):
+                    merged["capabilities"] = caps
                 merged["ip_address"] = ip_address
                 merged["mac_address"] = mac or target.get("mac_address", "")
                 if name:
@@ -833,7 +949,9 @@ class DeviceRegistry:
                 )
                 alias = c.fetchone()
                 if not alias or alias["device_id"] != merged["id"]:
-                    raise DeviceIdentityConflict("MAC alias is already bound to another device")
+                    raise DeviceIdentityConflict(
+                        "MAC alias is already bound to another device"
+                    )
             conn.commit()
             return self.get_device(merged["id"], tenant_id=tenant_id) or merged
         except Exception:
@@ -1089,6 +1207,8 @@ class DeviceRegistry:
         updates: dict,
         tenant_id: str = "",
         transition_events=None,
+        *,
+        active_only: bool = False,
     ) -> bool:
         """Update device fields. Keys in 'updates' overwrite stored values.
         Returns True if device exists and was updated.
