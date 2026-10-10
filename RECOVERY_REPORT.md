@@ -24,8 +24,8 @@ A matriz detalhada permanece em [PR1–PR7](docs/PR1-PR7-SERIES.md). Os sete ord
 | #802 | [#808](https://github.com/0xjc65eth/cypher65-war-room/pull/808), contratos, fixtures e MF-005 | Código `b04c82f`; último head integrado `205994ba9698750b5e7c978722b62c7a5f13f942` | Integração externa `e4f3e63`; follow-up hermético separado em #811. |
 | #803 | [#806](https://github.com/0xjc65eth/cypher65-war-room/pull/806), Black | Head `409868d0fde81bfe6c7ff932bb12658bbf365801` | Integração externa `e125e2e`; ASTs iguais em 7/7 arquivos. |
 | #807 | [#809](https://github.com/0xjc65eth/cypher65-war-room/pull/809), relatório | Head externo `2aa828de0aa8a61a92e5c5bf1afb138f874387a7` | Integração externa `3eb42c9`; este follow-up atualiza o checkpoint. |
-| #777 | [#810](https://github.com/0xjc65eth/cypher65-war-room/pull/810), evidência no envelope Agent | Código `abd93aa2835650410a1390764d7c68c0d7772633`; atualização externa de base `8a5ec0d` | Draft parcial; nove testes; os HIGH de associação continuam abertos. |
-| #811 | Follow-up de QA após #808 | Branch `fix/811-hermetic-manual-add` | Fixture de probes e atualização de evidência; sem mudanças no servidor. |
+| #777 | [#810](https://github.com/0xjc65eth/cypher65-war-room/pull/810), evidência no envelope Agent | Código `abd93aa2835650410a1390764d7c68c0d7772633`; base externa `8a5ec0d`; evidência final `c24f5bc` | Parcial; nove testes; os HIGH de associação continuam abertos. Tornado não draft externamente; approval ainda requerido. |
+| #811 | [#812](https://github.com/0xjc65eth/cypher65-war-room/pull/812), follow-up de QA após #808 | Código `598adf5da1ed02ef11dab0adae23a28bf68a04d5`; branch `fix/811-hermetic-manual-add` | Draft; fixture de probes e atualização de evidência; sem mudanças no servidor. |
 
 **Alterações externas observadas:** #801 passou de draft para MERGED às 13:06:48 UTC por `0xjc65eth`, com `reviews: []` no snapshot. #804 recebeu merge de master no head `5dbbfd4a7c765486d34bf77ef1a9f3f39268277b` e foi integrado às 13:20:30 UTC pela mesma conta. Os checks globais de Python ainda estavam vermelhos. #806 recebeu uma atualização externa de master, passando ao head `409868d0fde81bfe6c7ff932bb12658bbf365801`. Essas operações não foram executadas nem aprovadas por este agente. A master verificada depois estava em `b89c903e733c62f80b883497b4ea189af3a1a72e`.
 
@@ -143,7 +143,7 @@ Os corpos e comentários das 13 Issues iniciais foram consultados novamente via 
 
 ## 8. Merge readiness
 
-A recuperação local não autoriza integração. #801/#804/#806/#808/#809 foram integrados externamente; isso não comprova CI global verde nem approval independente. #805, #810 e o follow-up #811 exigem checks do SHA exato e approval após atualização das dependências. #777 permanece incompleta pelos HIGH documentados. Subagentes não substituem approval no GitHub. Este agente não executou merge/deploy e não alega produção verde.
+A recuperação local não autoriza integração. #801/#804/#806/#808/#809 foram integrados externamente; isso não comprova CI global verde nem approval independente. #805, #810 e #812 exigem checks do SHA exato e approval após atualização das dependências. Snapshot: #805 `5b9128e` FAIL nos gates globais; #810 `c24f5bc` Python FAIL e outros jobs em andamento; #812 `598adf5` checks iniciados. Nenhum deles tinha approval observado. A atualização documental seguinte requer seus próprios checks; não se herda resultado de SHA anterior. #777 permanece incompleta pelos HIGH documentados. Subagentes não substituem approval no GitHub. Este agente não executou merge/deploy e não alega produção verde.
 
 ## 9. Next actions
 
