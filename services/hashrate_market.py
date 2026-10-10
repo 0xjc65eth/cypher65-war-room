@@ -12,6 +12,7 @@ import json
 import os
 import time
 import logging
+import math
 from dataclasses import dataclass, asdict, field
 from typing import Any, Dict, List, Optional
 
@@ -657,18 +658,328 @@ def _estimate_own_mining_cost_usd_per_th_day(
     return cost if cost > 0 else None
 
 
+def market_rankings_view(offers: List[Dict[str, Any]]) -> Dict[str, Optional[str]]:
+    """Pure, deterministic rankings over valid scored public offer records."""
+    def finite_number(value: Any, default: float = 0.0) -> float:
+        try:
+            number = float(value)
+            return number if math.isfinite(number) else default
+        except (TypeError, ValueError, OverflowError):
+            return default
+
+    provider = lambda row: str(row.get("provider") or "")
+    real = [
+        row for row in offers or []
+        if isinstance(row, dict)
+        and not row.get("estimated")
+        and finite_number(row.get("price_per_th_day")) > 0
+        and finite_number(row.get("hashrate")) > 0
+    ]
+    if not real:
+        return {"cheapest": None, "best_score": None, "freshest": None, "most_capacity": None}
+    cheapest = min(real, key=lambda row: (finite_number(row.get("price_per_th_day"), float("inf")), provider(row)))
+    best_score = max(real, key=lambda row: (finite_number((row.get("metrics") or {}).get("score")), -finite_number(row.get("price_per_th_day")), provider(row)))
+    with_quote_age = []
+    for row in real:
+        intelligence = row.get("market_intelligence") or (row.get("meta") or {}).get("market_intelligence") or {}
+        age = intelligence.get("quote_age_seconds")
+        if intelligence.get("freshness") == "LIVE" and age is not None and finite_number(age, -1) >= 0:
+            with_quote_age.append((row, finite_number(age)))
+    freshest = min(with_quote_age, key=lambda pair: (pair[1], provider(pair[0])), default=None)
+    capacity = max(real, key=lambda row: (finite_number(row.get("hashrate")), provider(row)))
+    return {
+        "cheapest": provider(cheapest),
+        "best_score": provider(best_score),
+        "freshest": provider(freshest[0]) if freshest else None,
+        "most_capacity": provider(capacity),
+    }
+
+
+def _timestamp_age_seconds(timestamp: Any, now: int) -> Optional[int]:
+    """Return age only for finite, non-future timestamps; bad clocks are UNKNOWN."""
+    try:
+        stamp = float(timestamp)
+        if not math.isfinite(stamp) or stamp > now:
+            return None
+        return max(0, now - int(stamp))
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _offer_value(offer: Any, key: str, default: Any = None) -> Any:
+    if isinstance(offer, dict):
+        return offer.get(key, default)
+    return getattr(offer, key, default)
+
+
+def _valid_market_offer(offer: Any) -> bool:
+    """Reject malformed provider records before they affect availability or ranks."""
+    try:
+        numbers = [
+            float(_offer_value(offer, "price_per_th_day")),
+            float(_offer_value(offer, "hashrate")),
+            float(_offer_value(offer, "duration_days", 1.0) or 1.0),
+            float(_offer_value(offer, "fee_pct", 0.0) or 0.0),
+        ]
+    except (TypeError, ValueError, OverflowError):
+        return False
+    if not all(math.isfinite(number) for number in numbers):
+        return False
+    price, hashrate, duration, fee_pct = numbers
+    if price <= 0 or hashrate <= 0 or duration <= 0 or fee_pct < 0:
+        return False
+    cost = hashrate * price * duration * (1 + fee_pct / 100)
+    revenue = (hashrate * 1e12 / DEFAULT_NETWORK_HASHRATE) * BLOCKS_PER_DAY * BTC_BLOCK_REWARD * duration
+    return math.isfinite(cost) and math.isfinite(revenue)
+
+
+def build_market_intelligence(
+    offers: List[NormalizedOffer],
+    provider_cache: Optional[Dict[str, Dict[str, Any]]] = None,
+    now: Optional[int] = None,
+    stale_after_seconds: int = 300,
+) -> Dict[str, Any]:
+    """Summarize provider health, quote/cache freshness, and ranks.
+
+    ``provider_cache`` accepts provider-name to ``{ts, price, source}`` entries.
+    Timestamps are evidence: without one a quote is AVAILABLE but freshness is
+    UNKNOWN, never LIVE by assumption.
+    """
+    now = int(time.time()) if now is None else int(now)
+    stale_after_seconds = max(0, int(stale_after_seconds))
+    cache = provider_cache if isinstance(provider_cache, dict) else {}
+    supported = ("braiins", "mrr", "nicehash")
+    by_provider = {}
+    for offer in offers or []:
+        provider = str(
+            getattr(offer, "provider", "") or (offer.get("provider") if isinstance(offer, dict) else "")
+        ).lower()
+        if (
+            provider in supported
+            and provider not in by_provider
+            and not bool(_offer_value(offer, "estimated", False))
+            and _valid_market_offer(offer)
+        ):
+            by_provider[provider] = offer
+
+    providers = {}
+    fresh_count = 0
+    for provider in supported:
+        offer = by_provider.get(provider)
+        cache_entry = cache.get(provider) if isinstance(cache.get(provider), dict) else {}
+        if not cache_entry and provider_cache is None:
+            cache_entry = _FETCH_CACHE.get(provider) or {}
+        if not cache_entry and provider in cache and cache.get(provider):
+            cache_entry = {"ts": cache.get(provider)}
+        if not cache_entry and not offers and provider_cache is None:
+            cache_entry = {"unavailable": True}
+        cache_ts = cache_entry.get("ts")
+        cached_offer = cache_entry.get("value")
+        if offer is None and _valid_market_offer(cached_offer) and not bool(_offer_value(cached_offer, "estimated", False)):
+            offer = cached_offer
+            by_provider[provider] = offer
+            cache_ts = cache_entry.get("ts")
+        if not cache_entry and provider in cache:
+            cache_entry = {"ts": cache.get(provider)}
+            cache_ts = cache_entry.get("ts")
+        cache_age = _timestamp_age_seconds(cache_ts, now)
+        if (
+            offer is None
+            and cache_entry.get("price")
+            and not cache_entry.get("estimated", False)
+            and cache_age is not None
+            and cache_age <= stale_after_seconds * 2
+        ):
+            try:
+                cached_price = float(cache_entry["price"])
+                cached_hashrate = float(cache_entry.get("hashrate") or DEFAULT_RENTAL_HASHRATE_TH)
+                if math.isfinite(cached_price) and cached_price > 0 and math.isfinite(cached_hashrate) and cached_hashrate > 0:
+                    offer = NormalizedOffer(
+                        provider=provider,
+                        hashrate=cached_hashrate,
+                        price_per_th_day=cached_price / PH_TO_TH,
+                        duration_days=1.0,
+                        fee_pct=0.0,
+                        algorithm="sha256",
+                        source=cache_entry.get("source") or provider,
+                        estimated=bool(cache_entry.get("estimated", False)),
+                        meta={"cached_ts": cache_ts, "_stale": True},
+                    )
+                    by_provider[provider] = offer
+            except (TypeError, ValueError, OverflowError):
+                pass
+        meta = getattr(offer, "meta", {}) if offer is not None else {}
+        if not meta and isinstance(offer, dict):
+            meta = offer.get("meta", {})
+        meta = meta if isinstance(meta, dict) else {}
+        cached_meta = getattr(cached_offer, "meta", {})
+        quote_ts = meta.get("fetched_at")
+        if quote_ts is None:
+            quote_ts = meta.get("cached_ts")
+        if quote_ts is None and isinstance(cached_meta, dict):
+            quote_ts = cached_meta.get("fetched_at")
+        if quote_ts is None and cached_offer is offer and cache_ts is not None:
+            quote_ts = meta.get("fetched_at") or meta.get("cached_ts") or cache_ts
+        quote_age = _timestamp_age_seconds(quote_ts, now)
+        stale_flag = bool(meta.get("_stale"))
+        has_quote = offer is not None
+        is_fresh = has_quote and quote_age is not None and quote_age <= stale_after_seconds and not stale_flag
+        if is_fresh:
+            status = "AVAILABLE"
+            freshness = "LIVE"
+            fresh_count += 1
+        elif has_quote:
+            status = "AVAILABLE"
+            freshness = "STALE" if quote_age is not None or stale_flag else "UNKNOWN"
+        else:
+            status = "UNAVAILABLE" if cache_ts is not None or (cache_entry and ("value" in cache_entry or cache_entry.get("unavailable"))) else "UNKNOWN"
+            freshness = "NO DATA"
+        offer_source = (
+            getattr(offer, "source", "")
+            or (offer.get("source") if isinstance(offer, dict) else None)
+            or provider
+        ) if has_quote else None
+        offer_estimated = (
+            bool(getattr(offer, "estimated", False))
+            if has_quote and not isinstance(offer, dict)
+            else bool(offer.get("estimated", False)) if has_quote else None
+        )
+        providers[provider] = {
+            "status": status,
+            "freshness": freshness,
+            "quote_age_seconds": quote_age,
+            "cache_age_seconds": cache_age,
+            "source": offer_source,
+            "estimated": offer_estimated,
+            "cheapest": None,
+            "best_score": None,
+            "freshest": None,
+            "most_capacity": None,
+        }
+    def _as_offer(raw_offer, provider):
+        if isinstance(raw_offer, NormalizedOffer):
+            return raw_offer
+        try:
+            return NormalizedOffer(
+                provider=provider,
+                hashrate=float(raw_offer.get("hashrate") or 0),
+                price_per_th_day=float(raw_offer.get("price_per_th_day") or 0),
+                duration_days=float(raw_offer.get("duration_days") or 1),
+                fee_pct=float(raw_offer.get("fee_pct") or 0),
+                algorithm=str(raw_offer.get("algorithm") or "sha256"),
+                source=str(raw_offer.get("source") or ""),
+                estimated=bool(raw_offer.get("estimated", False)),
+                meta=dict(raw_offer.get("meta") or {}),
+            )
+        except (AttributeError, TypeError, ValueError, OverflowError):
+            return None
+
+    normalized = {
+        provider: _as_offer(offer, provider)
+        for provider, offer in by_provider.items()
+    }
+    normalized = {
+        provider: offer
+        for provider, offer in normalized.items()
+        if offer is not None and _valid_market_offer(offer) and not offer.estimated
+    }
+
+    real_offers = [offer for offer in normalized.values() if not offer.estimated]
+    scored = []
+    for offer in real_offers:
+        metrics = compute_metrics(offer, None)
+        try:
+            cost = float(offer.hashrate) * float(offer.price_per_th_day) * float(offer.duration_days or 1.0) * (1 + float(offer.fee_pct) / 100)
+            revenue = float(offer.hashrate) * 1e12 / DEFAULT_NETWORK_HASHRATE * BLOCKS_PER_DAY * BTC_BLOCK_REWARD * float(offer.duration_days or 1.0)
+            roi = (revenue - cost) / cost if cost > 0 else 0.0
+            metrics["score"] = round(roi * 100, 2) if math.isfinite(roi) else 0.0
+        except (TypeError, ValueError, OverflowError, ZeroDivisionError):
+            metrics["score"] = 0.0
+        scored.append((offer, metrics))
+    cheapest = min(scored, key=lambda pair: (pair[0].price_per_th_day, pair[0].provider)) if scored else None
+    best_score = max(scored, key=lambda pair: (pair[1]["score"], -pair[0].price_per_th_day, pair[0].provider)) if scored else None
+    freshest = min(
+        (
+            pair for pair in scored
+            if providers[pair[0].provider]["quote_age_seconds"] is not None
+            and providers[pair[0].provider]["freshness"] == "LIVE"
+        ),
+        key=lambda pair: (providers[pair[0].provider]["quote_age_seconds"], pair[0].provider),
+        default=None,
+    )
+    capacity = max(
+        scored, key=lambda pair: (pair[0].hashrate, pair[0].provider), default=None
+    )
+    rankings = {
+        "cheapest": cheapest[0].provider if cheapest else None,
+        "best_score": best_score[0].provider if best_score else None,
+        "freshest": freshest[0].provider if freshest else None,
+        "most_capacity": capacity[0].provider if capacity else None,
+    }
+    for provider, provider_data in providers.items():
+        if provider_data["status"] != "AVAILABLE":
+            continue
+        for rank_name, rank_provider in rankings.items():
+            provider_data[rank_name] = rank_provider == provider if rank_provider else None
+    available = len(normalized)
+    status = (
+        "NO DATA"
+        if available == 0
+        else "AVAILABLE"
+        if available == len(supported) and fresh_count == len(supported)
+        else "PARTIAL"
+    )
+    return {
+        "status": status,
+        "available_provider_count": available,
+        "total_provider_count": len(supported),
+        "provider_denominator": list(supported),
+        "fresh_provider_count": fresh_count,
+        "stale_provider_count": sum(1 for item in providers.values() if item["freshness"] == "STALE"),
+        "cache_age_seconds": max(
+            (item["cache_age_seconds"] for item in providers.values() if item["cache_age_seconds"] is not None),
+            default=None,
+        ),
+        "cache_age_source": (
+            max(
+                (item for item in providers.items() if item[1]["cache_age_seconds"] is not None),
+                key=lambda item: item[1]["cache_age_seconds"],
+                default=(None, None),
+            )[0]
+        ),
+        "providers": providers,
+        "rankings": rankings,
+    }
+
+
 def compute_institutional_view(
     offers: List[NormalizedOffer],
     network_hashrate: Optional[float] = None,
     btc_usd: Optional[float] = None,
+    provider_cache: Optional[Dict[str, Dict[str, Any]]] = None,
+    now: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Build the HashratePulse Enterprise institutional view from raw offers.
 
     Returns the Executive Snapshot + Ranked Venue Table as a single dict
     that the frontend renders directly.
     """
+    offers = [offer for offer in (offers or []) if _valid_market_offer(offer)]
+    market_intelligence = build_market_intelligence(
+        offers,
+        provider_cache if provider_cache is not None else _FETCH_CACHE,
+        now,
+        stale_after_seconds=300,
+    )
+    offers = [offer for offer in offers if _valid_market_offer(offer)]
     if not offers:
-        return {"regime": "No Data", "snapshot": None, "venues": [], "notes": []}
+        return {
+            "regime": "No Data",
+            "snapshot": None,
+            "venues": [],
+            "notes": [],
+            "market_intelligence": market_intelligence,
+        }
 
     # Score every offer
     scored = [score_offer(o, network_hashrate) for o in offers]
@@ -870,11 +1181,16 @@ def compute_institutional_view(
                 "verify payout reliability before deploying > 1 PH."
             )
 
+    intelligence = market_intelligence
+    snapshot["market_intelligence"] = {
+        key: value for key, value in intelligence.items() if key != "providers"
+    }
     return {
         "regime": regime,
         "snapshot": snapshot,
         "venues": venues,
         "notes": notes,
+        "market_intelligence": intelligence,
     }
 
 
@@ -897,25 +1213,38 @@ def build_highlights(
     if snapshot is not None:
         network_hashrate = (snapshot.get("network") or {}).get("hashrate")
 
+    if last_known_prices is None:
+        return []
     stale_grace = max_age_seconds * 2  # allow up to 2x TTL before discarding
     ts_now = int(time.time())
     offers: List[NormalizedOffer] = []
-    if last_known_prices:
+    if last_known_prices is not None:
         for provider, entry in last_known_prices.items():
-            if not entry or not entry.get("price"):
+            if not isinstance(entry, dict) or not entry.get("price"):
                 continue
-            entry_ts = entry.get("ts") or 0
-            age = ts_now - entry_ts
+            entry_ts = entry.get("ts")
+            age = _timestamp_age_seconds(entry_ts, ts_now)
+            if age is None:
+                continue  # no trustworthy timestamp; never treat as a current highlight
             if max_age_seconds > 0 and age > stale_grace:
                 continue  # too old, discard
-            price_per_ph_day = float(entry["price"])
-            if price_per_ph_day <= 0:
+            try:
+                price_per_ph_day = float(entry["price"])
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if not math.isfinite(price_per_ph_day) or price_per_ph_day <= 0:
                 continue
             is_stale = max_age_seconds > 0 and age > max_age_seconds
+            try:
+                cached_hashrate = float(entry.get("hashrate") or DEFAULT_RENTAL_HASHRATE_TH)
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if not math.isfinite(cached_hashrate) or cached_hashrate <= 0:
+                continue
             offers.append(
                 NormalizedOffer(
                     provider=provider,
-                    hashrate=DEFAULT_RENTAL_HASHRATE_TH,
+                    hashrate=cached_hashrate,
                     price_per_th_day=price_per_ph_day / PH_TO_TH,
                     duration_days=1.0,
                     fee_pct=0.0,
@@ -923,7 +1252,7 @@ def build_highlights(
                     source=entry.get("source") or provider,
                     estimated=bool(entry.get("estimated", False)),
                     meta={
-                        "cached_ts": entry.get("ts"),
+                        "cached_ts": entry_ts,
                         "label": entry.get("label", ""),
                         "_stale": is_stale,
                         "_age_s": age,
@@ -933,6 +1262,12 @@ def build_highlights(
 
     scored = [score_offer(o, network_hashrate) for o in offers]
     scored.sort(key=market_offer_sort_key)
+    intelligence = build_market_intelligence(offers, last_known_prices or {}, now=ts_now, stale_after_seconds=max_age_seconds)
+    for item in scored:
+        provider = item.get("provider")
+        if provider in intelligence["providers"]:
+            item["market_intelligence"] = intelligence["providers"][provider]
+    intelligence["rankings"] = market_rankings_view(scored)
     return scored[:max_items]
 
 

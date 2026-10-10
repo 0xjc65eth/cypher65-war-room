@@ -96,8 +96,14 @@ def _sync_market_prices_to_state(offers):
             continue
         price_per_ph = float(price_per_th) * 1000.0
         estimated = bool(entry.get("estimated"))
+        meta = entry.get("meta") or {}
+        try:
+            observed_at = int(meta.get("fetched_at")) if meta.get("fetched_at") is not None else None
+        except (TypeError, ValueError, OverflowError):
+            observed_at = None
         _shared_state.last_known_prices[provider] = {
-            "ts": now,
+            "ts": observed_at,
+            "hashrate": entry.get("hashrate"),
             "price": price_per_ph,
             "source": entry.get("source", provider),
             "estimated": estimated,
@@ -436,7 +442,13 @@ def enrich_snapshot(snapshot: dict, axe_registry=None) -> dict:
         snapshot.get("network") or {}
     ).get("btc_usd")
     all_offers = _fetch_all_offers(network_hr)
-    resp["institutional"] = _compute_institutional_view(all_offers, network_hr, btc_usd)
+    resp["institutional"] = _compute_institutional_view(
+        all_offers,
+        network_hr,
+        btc_usd,
+        provider_cache=_shared_state.last_known_prices,
+    )
+    resp["market_intelligence"] = resp["institutional"].get("market_intelligence")
     cache = _shared_state.market_data_cache
     if highlights and len(highlights) > 0:
         sorted_hl = sorted(highlights, key=_market_offer_sort_key)

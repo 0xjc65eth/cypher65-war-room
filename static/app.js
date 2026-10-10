@@ -9413,6 +9413,27 @@ function renderAccount(acct) {
     });
 
     // Executive Snapshot
+    const intelligence = (inst && inst.market_intelligence) || {};
+    const healthEl = document.getElementById('mkt-provider-health');
+    if (healthEl) {
+      const count = Number(intelligence.available_provider_count || 0);
+      const total = Number(intelligence.total_provider_count || 3);
+      healthEl.textContent = String(intelligence.status || 'NO DATA') + ' · ' + count + '/' + total + ' PROVIDERS';
+      healthEl.dataset.status = String(intelligence.status || 'NO DATA').toLowerCase().replace(/[^a-z]+/g, '-');
+    }
+    const rankingsEl = document.getElementById('mkt-provider-rankings');
+    if (rankingsEl) {
+      const ranks = intelligence.rankings || {};
+      const label = (value) => value ? String(value).toUpperCase() : 'NO DATA';
+      const html = ['CHEAPEST ' + label(ranks.cheapest), 'BEST SCORE ' + label(ranks.best_score), 'FRESHEST ' + label(ranks.freshest), 'CAPACITY ' + label(ranks.most_capacity)].join(' · ');
+      if (rankingsEl.textContent !== html) rankingsEl.textContent = html;
+    }
+    const cacheAgeEl = document.getElementById('mkt-provider-cache-age');
+    if (cacheAgeEl) {
+      const age = intelligence.cache_age_seconds;
+      const source = intelligence.cache_age_source ? ' · ' + String(intelligence.cache_age_source).toUpperCase() : '';
+      cacheAgeEl.textContent = age == null ? 'CACHE AGE UNKNOWN' : 'CACHE AGE ' + Math.floor(Number(age) / 60) + 'm' + source;
+    }
     const snap = inst.snapshot || {};
     const bestEl = document.getElementById('mkt-snap-best');
     if (bestEl && snap.best_price_sats_th_day) {
