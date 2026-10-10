@@ -477,6 +477,7 @@ class TestAutoDetectOnAddDevice:
 
         mock_reg = MagicMock()
         mock_reg.get_device_by_ip.return_value = None
+        mock_reg.get_removed_by_ip.return_value = {}
         mock_reg.add_device.return_value = {
             "id": "dev-001", "name": "my-s19", "status": "OFFLINE",
             "ip_address": "10.0.0.1", "tenant_id": "default"
@@ -523,6 +524,7 @@ class TestAutoDetectOnAddDevice:
 
         mock_reg = MagicMock()
         mock_reg.get_device_by_ip.return_value = None
+        mock_reg.get_removed_by_ip.return_value = {}
         mock_reg.add_device.return_value = {
             "id": "dev-002", "name": "dead-miner", "status": "OFFLINE",
             "ip_address": "10.0.0.99", "tenant_id": "default"
@@ -549,6 +551,7 @@ class TestAutoDetectOnAddDevice:
 
         mock_reg = MagicMock()
         mock_reg.get_device_by_ip.return_value = None
+        mock_reg.get_removed_by_ip.return_value = {}
         mock_reg.add_device.return_value = {
             "id": "dev-003", "name": "timeout-miner", "status": "OFFLINE",
             "ip_address": "10.0.0.50", "tenant_id": "default"
@@ -577,6 +580,7 @@ class TestAutoDetectOnAddDevice:
 
         mock_reg = MagicMock()
         mock_reg.get_device_by_ip.return_value = None
+        mock_reg.get_removed_by_ip.return_value = {}
         mock_reg.add_device.return_value = {
             "id": "dev-004", "name": "blackhole", "status": "OFFLINE",
             "ip_address": "10.0.0.77", "tenant_id": "default",
@@ -606,6 +610,7 @@ class TestAutoDetectOnAddDevice:
 
         mock_reg = MagicMock()
         mock_reg.get_device_by_ip.return_value = None
+        mock_reg.get_removed_by_ip.return_value = {}
         mock_reg.add_device.return_value = {
             "id": "dev-005", "name": "E2E Alpha", "status": "OFFLINE",
             "ip_address": "192.0.2.10", "tenant_id": "default",
@@ -633,6 +638,7 @@ class TestAutoDetectOnAddDevice:
 
         mock_reg = MagicMock()
         mock_reg.get_device_by_ip.return_value = None
+        mock_reg.get_removed_by_ip.return_value = {}
         mock_reg.add_device.return_value = {
             "id": "dev-004", "name": "antminer", "status": "OFFLINE",
             "ip_address": "10.0.0.2", "tenant_id": "default"

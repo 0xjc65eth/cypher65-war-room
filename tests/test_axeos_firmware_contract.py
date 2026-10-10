@@ -138,7 +138,9 @@ class TestAgentUsesOfficialContract:
         with patch.object(
             agent_mod, "_probe_axeos", return_value=OFFICIAL
         ), patch.object(agent_mod, "_extract_axeos_telemetry", None):
-            tel = agent_mod._poll_telemetry({"ip": "192.168.1.50", "type": "bitaxe"})
+            tel = agent_mod._poll_telemetry(
+                agent_mod._identity_from_axeos("192.168.1.50", OFFICIAL)
+            )
 
         assert tel["hashrate_hs"] == OFFICIAL_HS
         assert tel["shares_accepted"] == 42
@@ -152,11 +154,11 @@ class TestAgentUsesOfficialContract:
         self, raw_hashrate
     ):
         info = {**OFFICIAL, "hashRate": raw_hashrate}
-        with patch.object(
-            agent_mod, "_probe_axeos", return_value=info
-        ), patch.object(agent_mod, "_extract_axeos_telemetry", None):
+        with patch.object(agent_mod, "_probe_axeos", return_value=info), patch.object(
+            agent_mod, "_extract_axeos_telemetry", None
+        ):
             tel = agent_mod._poll_telemetry(
-                {"ip": "192.168.1.50", "type": "bitaxe"}
+                agent_mod._identity_from_axeos("192.168.1.50", OFFICIAL)
             )
 
         assert tel["hashrate_hs"] is None
@@ -164,7 +166,9 @@ class TestAgentUsesOfficialContract:
 
     def test_poll_telemetry_reads_official_fields(self):
         with patch.object(agent_mod, "_probe_axeos", return_value=OFFICIAL):
-            tel = agent_mod._poll_telemetry({"ip": "192.168.1.50", "type": "bitaxe"})
+            tel = agent_mod._poll_telemetry(
+                agent_mod._identity_from_axeos("192.168.1.50", OFFICIAL)
+            )
         assert tel["hashrate_hs"] == OFFICIAL_HS
         assert tel["pool_user"] == "virtual.worker"
         assert tel["uptime_seconds"] == 7200
@@ -221,7 +225,9 @@ class TestAgentPollsVirtualHardware:
                 info = agent_mod._probe_axeos(host)
                 assert info is not None
                 assert "hashRate" in info
-                tel = agent_mod._poll_telemetry({"ip": host, "type": "bitaxe"})
+                identity = agent_mod._identity_from_axeos(host, info)
+                assert identity["mac"] == OFFICIAL["macAddr"]
+                tel = agent_mod._poll_telemetry(identity)
             finally:
                 agent_mod.AXEOS_PORT = orig
         assert tel["hashrate_hs"] == OFFICIAL_HS
@@ -267,17 +273,6 @@ class TestDhcpMacIdentity:
         import sqlite3
 
         db = tmp_path / "t.sqlite"
-        conn = sqlite3.connect(db)
-        conn.row_factory = sqlite3.Row
-        conn.execute(
-            "CREATE TABLE axe_devices (id TEXT PRIMARY KEY, name TEXT, model TEXT, "
-            "manufacturer TEXT, firmware TEXT, firmware_version TEXT, api_version TEXT, "
-            "ip_address TEXT, hostname TEXT, mac_address TEXT, last_seen INTEGER, "
-            "status TEXT, group_id TEXT, capabilities TEXT, added_at INTEGER, "
-            "updated_at INTEGER, tenant_id TEXT, agent_managed INTEGER DEFAULT 0, "
-            "removed_at INTEGER DEFAULT 0)"
-        )
-        conn.commit()
 
         def get_db():
             c = sqlite3.connect(db)
@@ -285,6 +280,7 @@ class TestDhcpMacIdentity:
             return c
 
         registry = DeviceRegistry(get_db)
+        registry.ensure_tables()
         a = registry.upsert_agent_device(
             "192.168.1.10",
             tenant_id="acme",
@@ -334,3 +330,13 @@ class TestDiagnoseRejectsGenericJson:
             result = diagnose_host("192.168.1.1")
         assert result.get("protocol") != "bitaxe"
         assert result.get("reachable") is False
+
+
+@pytest.mark.parametrize("kind", ["bitaxe", "braiins"])
+def test_unverified_macless_identity_is_not_polled(kind):
+    """The fixture repairs must never remove the real agent's identity guard."""
+    device = {"ip": "192.168.1.50", "type": kind}
+    with patch.object(agent_mod, "_probe_axeos") as probe:
+        assert agent_mod._identity_unresolved(device) is True
+        assert agent_mod._poll_telemetry(device) == {}
+    probe.assert_not_called()

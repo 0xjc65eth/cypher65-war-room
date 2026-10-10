@@ -302,7 +302,12 @@ class TestTelemetry:
     def test_axeos_poll_is_full_telemetry(self, monkeypatch, axeos_mock):
         monkeypatch.setattr(agent, "AXEOS_PORT", axeos_mock)
         tel = agent._poll_telemetry(
-            {"ip": "127.0.0.1", "type": "bitaxe", "model": "Gamma 900"}
+            {
+                "ip": "127.0.0.1",
+                "type": "bitaxe",
+                "model": "Gamma 900",
+                "mac": _AXEOS_INFO["mac"],
+            }
         )
         assert tel["hashrate_hs"] == 912345678901
         assert tel["temperature"] == 53.2
@@ -319,7 +324,7 @@ class TestTelemetry:
         (miningResume) desliga o flag e devolve o hashrate."""
         monkeypatch.setattr(agent, "AXEOS_PORT", axeos_mock)
         known = {"127.0.0.1": {"type": "bitaxe"}}
-        dev = {"ip": "127.0.0.1", "type": "bitaxe"}
+        dev = agent._identity_from_axeos("127.0.0.1", _AXEOS_INFO)
         ok, _ = agent._exec_command(
             {"ip_address": "127.0.0.1", "command": "pause"}, known=known
         )
