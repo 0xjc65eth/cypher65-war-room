@@ -6295,9 +6295,21 @@ def _sync_market_prices_to_state(offers: list):
         estimated = bool(getattr(offer, "estimated", False))
         if isinstance(offer, dict):
             estimated = bool(offer.get("estimated", False))
+        meta = getattr(offer, "meta", None)
+        if meta is None and isinstance(offer, dict):
+            meta = offer.get("meta")
+        fetched_at = meta.get("fetched_at") if isinstance(meta, dict) else None
+        try:
+            observed_at = int(fetched_at) if fetched_at is not None else None
+        except (TypeError, ValueError, OverflowError):
+            observed_at = None
+        hashrate = getattr(offer, "hashrate", None)
+        if hashrate is None and isinstance(offer, dict):
+            hashrate = offer.get("hashrate")
         _shared_state.last_known_prices[provider] = {
             "price": price_ph,
-            "ts": int(time.time()),
+            "ts": observed_at,
+            "hashrate": hashrate,
             "label": provider.capitalize(),
             "source": source or provider,
             "estimated": estimated,
@@ -6324,7 +6336,9 @@ def api_hashrate_market():
     # HashratePulse Enterprise institutional view
     from services.hashrate_market import compute_institutional_view
 
-    inst_view = compute_institutional_view(offers, network_hashrate, btc_usd)
+    inst_view = compute_institutional_view(
+        offers, network_hashrate, btc_usd, provider_cache=_shared_state.last_known_prices
+    )
 
     return jsonify(
         {
@@ -6355,7 +6369,9 @@ def api_hashrate_market_institutional():
     return jsonify(
         {
             "success": True,
-            **compute_institutional_view(offers, network_hashrate, btc_usd),
+            **compute_institutional_view(
+                offers, network_hashrate, btc_usd, provider_cache=_shared_state.last_known_prices
+            ),
         }
     )
 

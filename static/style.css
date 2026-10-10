@@ -2026,6 +2026,9 @@ tr:hover td { background: var(--bg-hover); }
 .dm-card__sub { font-size: 8px; color: var(--text-tertiary); }
 .dm-reco { font-size: 10px; color: var(--text-secondary); border-top: 1px dashed var(--border-subtle); padding-top: 6px; margin-bottom: 6px; }
 .dm-actions { display: flex; justify-content: flex-end; }
+#mkt-provider-health, #mkt-provider-rankings, #mkt-provider-cache-age { overflow-wrap: anywhere; }
+#mkt-provider-health[data-status="partial"] { color: var(--amber); }
+#mkt-provider-health[data-status="no-data"] { color: var(--text-tertiary); }
 
 /* ── Command Center ──────────────────────────────────────────────── */
 .cc-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 6px; }
