@@ -32,7 +32,8 @@ O modelo usa 144 blocos/dia (600 segundos/bloco), rede de 5 EH/s, fees de pool d
 - **PASS**: CLI original `test_worker_cli_and_argument_errors` sozinha no checkout #799: 1 teste, 1,23 s. Isto não prova ausência de interferência na suíte completa.
 - **PASS**: Black nos novos testes e demais arquivos alterados; testes matemáticos preexistentes preservados exatamente (sem gate Black desse arquivo). Flake8 `E9,F63,F7,F82` e `git diff --check` passaram.
 - **PASS**: validação composta focada de todos os testes próprios e três arquivos adicionais de fixtures: **311 testes, 31,89 s**, `/tmp/c65-802-final-focused.log`.
-- **PENDENTE**: rerun da suíte completa com coverage após a correção das 12 falhas e revisão independente; o resultado será registrado pelo executor principal.
+- **PASS final composto**: 4.261 passed, 2 conditional skips, zero failures/errors, 188,32 s; cobertura 85,59% no gate de 80%.
+- **Review**: /devil revisou o patch inicial e executou 192 testes com sucesso. Os três arquivos adicionais foram revisados pelo executor principal; a última repetição independente foi interrompida pelo limite de uso do subagente.
 
 Logs locais: `/tmp/c65-802-runtime-focused.log`, `/tmp/c65-802-focused.log`. A validação por importação não altera nenhum arquivo de #799 e não substitui a validação composta final. O checkout base sem #799 permanece incapaz de executar os testes que dependem das primitivas de identidade.
 
