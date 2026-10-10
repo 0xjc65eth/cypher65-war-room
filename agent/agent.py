@@ -178,12 +178,17 @@ def _post_retry(path, payload, timeout=10.0, attempts=4):
     return last
 
 
-def _build_telemetry_event(ip, telemetry):
-    """Build a timestamped sample with one ID reused by all retry attempts."""
+def _build_telemetry_event(ip, telemetry, mac=""):
+    """Carry reported MAC evidence with one sample ID reused by all retries."""
     sample = dict(telemetry or {})
     if not sample.get("ts"):
         sample["ts"] = int(time.time())
-    return {"ip": ip, "telemetry": sample, "idempotency_key": uuid.uuid4().hex}
+    return {
+        "ip": ip,
+        "mac": mac,
+        "telemetry": sample,
+        "idempotency_key": uuid.uuid4().hex,
+    }
 
 
 def _push_telemetry_event(event):
@@ -1130,7 +1135,10 @@ def _run_main():
             if ip in blocked_ips or _identity_unresolved(dev):
                 continue
             tel = _poll_telemetry(dev)
-            telemetry_event = _build_telemetry_event(ip, tel)
+            # Preserve current sample evidence when present; a cached discovery
+            # MAC must not hide a changed or missing MAC in the device response.
+            sample_mac = tel.get("mac") if "mac" in tel else dev.get("mac") or ""
+            telemetry_event = _build_telemetry_event(ip, tel, mac=sample_mac)
             # Push UNCONDITIONALLY: `telemetry: {}` is legal presence evidence,
             # not proof of device health. The server preserves/degrades status
             # according to the last real reading. Empty heartbeats
