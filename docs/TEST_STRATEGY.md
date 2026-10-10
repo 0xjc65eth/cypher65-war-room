@@ -122,6 +122,7 @@ posteriores e registram o estado atual; não reinterpretam as conclusões histó
 | MF-002 | implementado | idem |
 | MF-003 | **implementado** | vetores de fórmula completa + arredondamento contratado em `tests/test_pool_rental_break_even.py` (2026-09-17, wave W3) → #613 |
 | MF-004 | **implementado** | indisponível ≠ 0: cotação ausente/rede 0/worker 0/custo 0 nunca produzem fiat estimado nem divisão por zero (idem) → #613 |
+| MF-005 | implementado | `TestEnergyRewardCadence` em `tests/test_pool_rental_break_even.py`: vetores explícitos de hashrate, recompensa/bloco, energia/kWh, break-even e cotação indisponível → #802 |
 | API-001 | parcial | testa JSON semanticamente inválido (lista/esquema), ainda não cobre sintaxe malformada |
 | API-002 | parcial | erros de schema estão cobertos; ainda falta afirmar explicitamente que nenhum adaptador é chamado |
 | OPS-001 | parcial | resposta offline negada está coberta; falta verificar audit persistido e ausência de I/O do adaptador |

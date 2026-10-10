@@ -254,9 +254,27 @@ class TestFleetAgentless:
     ):
         """Self-hosted: a private LAN IP add works (only the agent cap and
         duplicates reject), and the response is a 201 with the device."""
-        with patch("axe_fleet.routes._registry", registry), patch(
-            "config.is_cloud_deploy", return_value=False
+        from axe_fleet.axeos_contract import official_esp_miner_info
+
+        with (
+            patch("axe_fleet.routes._registry", registry),
+            patch("config.is_cloud_deploy", return_value=False),
+            patch("axe_fleet.registry.AxeOSConnector") as connector,
+            patch(
+                "core.registry.detector.detect_firmware",
+                return_value={
+                    "reachable": True,
+                    "adapter_type": "bitaxe",
+                    "firmware": "axeos",
+                },
+            ) as detector,
         ):
+            connector.return_value.fetch_info.return_value = official_esp_miner_info(
+                macAddr="02:00:00:00:01:77"
+            )
+            connector.return_value.detect_capabilities.return_value = {
+                "telemetry": True
+            }
             resp = client.post(
                 "/api/axe-fleet/devices",
                 headers=_headers(user_token),
@@ -264,6 +282,11 @@ class TestFleetAgentless:
             )
         assert resp.status_code == 201
         assert resp.get_json()["success"] is True
+        connector.return_value.fetch_info.assert_called_once_with()
+        detector.assert_called_once_with("192.168.1.77")
+        persisted = registry.get_device_by_ip("192.168.1.77", tenant_id="acme")
+        assert persisted["id"] == resp.get_json()["device"]["id"]
+        assert persisted["mac_address"] == "02:00:00:00:01:77"
 
 
 # ══════════════════════════════════════════════════════════════════════════

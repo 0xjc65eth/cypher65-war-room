@@ -356,7 +356,12 @@ def dedup_workers(entries):
 
 
 def compute_share_calc(
-    ts, gap, share_diff_raw, current_difficulty, best_diff_str, session_share_count,
+    ts,
+    gap,
+    share_diff_raw,
+    current_difficulty,
+    best_diff_str,
+    session_share_count,
     estimated=False,
 ):
     """Build the per-share LIVE HASH CALCULATOR payload (pure math).
@@ -614,7 +619,10 @@ def compute_profitability(
                 "POOL": cost_mode != "none",
                 "SOLO": cost_mode != "none",
                 "RENTAL": cost_mode == "rental",
-                "LEASE": bool(lender_market_rate_btc and coerce_float(s.get("power_watts"), 0.0) > 0),
+                "LEASE": bool(
+                    lender_market_rate_btc
+                    and coerce_float(s.get("power_watts"), 0.0) > 0
+                ),
             },
         )
 
@@ -886,7 +894,9 @@ def compute_profitability(
                 rental_cost_usd_per_day=profitability.get("cost_per_day_usd"),
                 lease_ev_btc_per_day=profitability.get("lender_revenue_btc_per_day"),
                 lease_net_usd_per_day=profitability.get("lender_net_usd_per_day"),
-                lease_cost_usd_per_day=profitability.get("lender_power_cost_usd_per_day"),
+                lease_cost_usd_per_day=profitability.get(
+                    "lender_power_cost_usd_per_day"
+                ),
                 solo_p_day_pct=profitability.get("solo_p_day_pct"),
                 cost_modes={
                     "POOL": profitability["cost_model_configured"],
