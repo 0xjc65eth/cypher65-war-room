@@ -278,8 +278,13 @@ app.register_blueprint(solo_mining_bp, url_prefix="/api/solo-mining")
 register_probability_routes(app)
 
 # ── Register Block Probability Lab blueprint ────────────────────────────────
-from routes.block_probability_lab_routes import dashboard_bp as block_probability_lab_blueprint
-app.register_blueprint(block_probability_lab_blueprint, url_prefix="/api/block-probability-lab")
+from routes.block_probability_lab_routes import (
+    dashboard_bp as block_probability_lab_blueprint,
+)
+
+app.register_blueprint(
+    block_probability_lab_blueprint, url_prefix="/api/block-probability-lab"
+)
 
 # ── Register Axe Fleet blueprint ────────────────────────────────────────────
 app.register_blueprint(axe_fleet_bp, url_prefix="/api/axe-fleet")
@@ -6337,7 +6342,10 @@ def api_hashrate_market():
     from services.hashrate_market import compute_institutional_view
 
     inst_view = compute_institutional_view(
-        offers, network_hashrate, btc_usd, provider_cache=_shared_state.last_known_prices
+        offers,
+        network_hashrate,
+        btc_usd,
+        provider_cache=_shared_state.last_known_prices,
     )
 
     return jsonify(
@@ -6370,7 +6378,10 @@ def api_hashrate_market_institutional():
         {
             "success": True,
             **compute_institutional_view(
-                offers, network_hashrate, btc_usd, provider_cache=_shared_state.last_known_prices
+                offers,
+                network_hashrate,
+                btc_usd,
+                provider_cache=_shared_state.last_known_prices,
             ),
         }
     )
@@ -8266,7 +8277,8 @@ def api_chart_data():
                 if math.isfinite(value) and value > 0:
                     diffs.append(value)
             share_stats = share_statistics(
-                timeline_state.get("session_share_count"), sch,
+                timeline_state.get("session_share_count"),
+                sch,
                 window_seconds=3600.0,
                 user_hashrate=(latest_snapshot.get("worker") or {}).get("hashrate"),
                 network_hashrate=(latest_snapshot.get("network") or {}).get("hashrate"),

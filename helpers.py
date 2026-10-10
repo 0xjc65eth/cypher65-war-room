@@ -926,6 +926,7 @@ def build_economic_scenario_matrix(
     are supplied per strategy so absent configuration is distinct from an
     unavailable observation. Unimplemented evidence fields remain UNKNOWN.
     """
+
     def _cell(value, unconfigured=False, not_applicable=False, unit=None):
         if not_applicable:
             result = {"value": None, "status": "N/A"}
@@ -959,7 +960,11 @@ def build_economic_scenario_matrix(
     inputs = {
         "POOL": (pool_ev_btc_per_day, pool_net_usd_per_day, pool_cost_usd_per_day),
         "SOLO": (solo_ev_btc_per_day, solo_net_usd_per_day, solo_cost_usd_per_day),
-        "RENTAL": (rental_ev_btc_per_day, rental_net_usd_per_day, rental_cost_usd_per_day),
+        "RENTAL": (
+            rental_ev_btc_per_day,
+            rental_net_usd_per_day,
+            rental_cost_usd_per_day,
+        ),
         "LEASE": (lease_ev_btc_per_day, lease_net_usd_per_day, lease_cost_usd_per_day),
     }
     scenarios = {}
@@ -985,13 +990,10 @@ def build_economic_scenario_matrix(
     comparable = {
         name: cells["modeled_net_usd_per_day"]["value"]
         for name, cells in scenarios.items()
-        if name != "SOLO"
-        and cells["modeled_net_usd_per_day"]["status"] == "AVAILABLE"
+        if name != "SOLO" and cells["modeled_net_usd_per_day"]["status"] == "AVAILABLE"
     }
     best = (
-        max(comparable, key=comparable.get)
-        if len(comparable) >= 2
-        else "insufficient"
+        max(comparable, key=comparable.get) if len(comparable) >= 2 else "insufficient"
     )
     return {
         "horizon": "24h",
