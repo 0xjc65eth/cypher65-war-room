@@ -391,7 +391,7 @@
 <!-- Operational decision strip: one scan answers health, loss, cost,
      freshness and the next SAFE diagnostic step. It never dispatches a
      hardware command; the CTA only navigates to an existing module. -->
-<section class="operational-overview" id="operational-overview" data-module="analysis" role="region" aria-labelledby="operational-overview-title" aria-busy="true">
+<section class="operational-overview" id="operational-overview" data-module="dashboard analysis" role="region" aria-labelledby="operational-overview-title" aria-busy="true">
   <div class="operational-overview__header">
     <div>
       <div class="operational-overview__eyebrow">OPERAÇÃO / ASICs</div>
@@ -431,6 +431,16 @@
       <span class="op-signal__detail" id="op-action-detail">Advisory only · no command is executed</span>
       <button class="btn btn--secondary op-signal__button" type="button" id="op-action" disabled>OPEN DIAGNOSTIC</button>
     </div>
+  </div>
+  <div class="op-evidence" id="op-evidence" aria-labelledby="op-evidence-title">
+    <div class="op-evidence__header">
+      <h3 id="op-evidence-title">OPERATIONS EVIDENCE</h3>
+      <span id="op-evidence-coverage">Waiting for domain evidence…</span>
+    </div>
+    <div class="op-evidence__domains" id="op-evidence-domains" aria-live="polite">
+      <div class="op-evidence__loading"><span class="skel skel--line w-60"></span></div>
+    </div>
+    <div class="op-evidence__limits" id="op-evidence-limits">Changes, explanations, anomalies, and economic impact require explicit supporting evidence.</div>
   </div>
   <p class="operational-overview__state" id="op-state" role="status" aria-live="polite">Loading real operational data…</p>
 </section>

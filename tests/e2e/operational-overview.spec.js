@@ -34,6 +34,11 @@ test.describe('Operational Overview — real data and critical states', () => {
       await expect(page.locator(selector)).not.toBeEmpty();
     }
     await expect(overview.locator('.skel')).toHaveCount(0);
+    await expect(page.locator('#op-evidence-coverage')).toContainText('/5 domains fully observed');
+    for (const domain of ['MINING', 'FLEET', 'POOL', 'DATA', 'ECONOMICS']) {
+      await expect(page.locator('.op-evidence__domain').filter({ hasText: domain })).toBeVisible();
+    }
+    await expect(page.locator('#op-evidence-limits')).toContainText('No cause inferred');
 
     const box = await overview.boundingBox();
     const viewport = page.viewportSize();
@@ -45,7 +50,16 @@ test.describe('Operational Overview — real data and critical states', () => {
     const columns = await page.locator('.operational-overview__grid').evaluate((node) =>
       getComputedStyle(node).gridTemplateColumns.split(' ').length
     );
-    expect(columns).toBe(test.info().project.name === 'mobile-chrome' ? 1 : 3);
+    expect(columns).toBe(test.info().project.name === 'mobile-chrome' ? 2 : 5);
+    const evidenceColumns = await page.locator('.op-evidence__domains').evaluate((node) =>
+      getComputedStyle(node).gridTemplateColumns.split(' ').length
+    );
+    expect(evidenceColumns).toBe(test.info().project.name === 'mobile-chrome' ? 1 : 5);
+
+    const networkEvidence = page.locator('.op-evidence__domain').filter({ hasText: 'DATA' }).getByRole('button', { name: 'Open evidence' });
+    await expect(networkEvidence).toBeVisible();
+    await networkEvidence.click();
+    await expect(page.locator('#network-panel')).toBeVisible({ timeout: 5000 });
   });
 
   test('offline ASIC shows measured loss and CTA only navigates to Fleet', async ({ page }) => {
@@ -63,6 +77,22 @@ test.describe('Operational Overview — real data and critical states', () => {
           cost_model_configured: true,
           cost_per_day_usd: 8.5,
           cost_label: '$0.1000/kWh power (3500W)',
+        },
+        operations_overview: {
+          schema_version: 1,
+          status: 'partial',
+          domains: [
+            { id: 'mining', label: 'MINING', status: 'observed', source: 'test pool worker', signals: [{ name: 'worker_hashrate', value: 4e12, unit: 'H/s', source: 'test.worker.hashrate', age_seconds: 20, window: 'point sample' }], missing_signals: [], evidence_target: 'hero-worker' },
+            { id: 'fleet', label: 'FLEET', status: 'partial', source: 'test fleet', signals: [{ name: 'device_status_counts', value: { ONLINE: 1, OFFLINE: 1 }, source: 'test fleet status', age_seconds: 20, window: 'point-in-time' }], missing_signals: [], evidence_target: 'axe-fleet-panel' },
+            { id: 'pool', label: 'POOL', status: 'observed', source: 'test pool', signals: [{ name: 'pool_hashrate', value: 4e12, unit: 'H/s', source: 'test.pool.hashrate', age_seconds: 20, window: 'point sample' }], missing_signals: [], evidence_target: 'pool-overview' },
+            { id: 'data', label: 'DATA', status: 'partial', source: 'test data', signals: [], missing_signals: ['network data'], evidence_target: 'network-panel' },
+            { id: 'economics', label: 'ECONOMICS', status: 'observed', source: 'test cost model', signals: [{ name: 'cost_model_configured', value: true, source: 'test.profitability', age_seconds: 20, window: 'configuration' }, { name: 'configured_cost_per_day', value: 8.5, unit: 'USD/day', source: 'test.profitability.cost_per_day_usd', age_seconds: 20, window: 'per-day estimate' }], missing_signals: [], evidence_target: 'profit-panel' },
+          ],
+          change_comparison: { status: 'not_available', reason: 'No comparable prior-window evidence supplied' },
+          anomalies: [{ id: 'fleet_status_offline', status: 'OFFLINE', count: 1, age_seconds: 20 }],
+          explanations: [],
+          economic_impact: null,
+          economic_impact_status: 'not_established',
         },
         command_center: [{
           title: 'Commercial offer', target: 'market', panel: 'market-panel',
@@ -104,6 +134,12 @@ test.describe('Operational Overview — real data and critical states', () => {
     await expect(page.locator('#op-action-title')).toContainText('ASIC EXCEPTION');
     await expect(page.locator('#op-state')).toContainText('require operator diagnosis');
     await expect(page.locator('#op-state')).not.toContainText('Loading');
+    await expect(page.locator('#op-evidence-limits')).toContainText('1 OFFLINE device exception');
+    await expect(page.locator('.op-evidence__domain').filter({ hasText: 'FLEET' })).toContainText('ONLINE');
+    await expect(page.locator('.op-evidence__domain').filter({ hasText: 'FLEET' })).toContainText('OFFLINE');
+    await expect(page.locator('.op-evidence__domain').filter({ hasText: 'ECONOMICS' })).toContainText('OBSERVED');
+    await expect(page.locator('.op-evidence__domain').filter({ hasText: 'ECONOMICS' })).toContainText('cost model configured');
+    await expect(page.locator('#op-evidence-limits')).toContainText('No cause inferred');
 
     await page.locator('#op-action').click();
     await expect(page.locator('#axe-fleet-panel')).toBeVisible({ timeout: 5000 });
@@ -120,10 +156,12 @@ test.describe('Operational Overview — real data and critical states', () => {
     await expect(overview).toHaveAttribute('aria-busy', 'false', { timeout: 15000 });
     await expect(page.locator('#op-overall-status')).toHaveText('UNAVAILABLE');
     await expect(page.locator('#op-health')).toHaveText('UNAVAILABLE');
-    await expect(page.locator('#op-attention')).toHaveText('—');
+    await expect(page.locator('#op-attention')).toHaveText('INDISPONÍVEL');
     await expect(page.locator('#op-lost-hashrate')).toHaveText('—');
     await expect(page.locator('#op-freshness')).toContainText('PARTIAL');
     await expect(page.locator('#op-state')).toContainText('could not be loaded');
     await expect(page.locator('#op-action')).toBeEnabled();
+    await expect(page.locator('.op-evidence__domain').filter({ hasText: 'FLEET' })).toContainText('MISSING');
+    await expect(page.locator('#op-evidence-limits')).toContainText('Economic impact not established');
   });
 });
