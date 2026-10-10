@@ -414,7 +414,9 @@ def compute_proximity(worker, current_difficulty, net_hashrate, ts):
         share_calc_history=share_history,
         user_hashrate=(worker or {}).get("hashrate"),
         network_hashrate=net_hashrate,
-        age_seconds=(max(0, ts - last_submit_ts) if last_submit_ts is not None else None),
+        age_seconds=(
+            max(0, ts - last_submit_ts) if last_submit_ts is not None else None
+        ),
         observed_now=ts,
     )
     out["session_evidence"]["session_shares"] = session_shares
