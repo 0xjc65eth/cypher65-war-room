@@ -33,13 +33,13 @@ O modelo usa 144 blocos/dia (600 segundos/bloco), rede de 5 EH/s, fees de pool d
 - **PASS**: Black nos novos testes e demais arquivos alterados; testes matemáticos preexistentes preservados exatamente (sem gate Black desse arquivo). Flake8 `E9,F63,F7,F82` e `git diff --check` passaram.
 - **PASS**: validação composta focada de todos os testes próprios e três arquivos adicionais de fixtures: **311 testes, 31,89 s**, `/tmp/c65-802-final-focused.log`.
 - **PASS final composto**: 4.261 passed, 2 conditional skips, zero failures/errors, 188,32 s; cobertura 85,59% no gate de 80%.
-- **Review**: /devil revisou o patch inicial e executou 192 testes com sucesso. Os três arquivos adicionais foram revisados pelo executor principal; a última repetição independente foi interrompida pelo limite de uso do subagente.
+- **Review**: /devil revisou o patch inicial e executou 192 testes com sucesso. Os três arquivos adicionais foram revisados pelo executor principal e, após a retomada de 2026-10-10, por /devil: **119 testes passaram**, sem CRITICAL/HIGH nem enfraquecimento de assertions/guards. Uma verificação adicional com **13 testes e 13 checks** confirmou restauração dos envs/config, três owners de registry, cache e snapshot após teardown. A interrupção anterior por limite de uso não foi tratada como resultado; essa revisão agora foi concluída.
 
 Logs locais: `/tmp/c65-802-runtime-focused.log`, `/tmp/c65-802-focused.log`. A validação por importação não altera nenhum arquivo de #799 e não substitui a validação composta final. O checkout base sem #799 permanece incapaz de executar os testes que dependem das primitivas de identidade.
 
 ## Limites
 
-Mocks de protocolo são servidores descartáveis em loopback; não houve acesso a mineradores físicos, pools, credenciais, banco operacional ou histórico real. Não houve commit, push, merge ou deploy por este agente. A Issue #777 continua responsável pelo redesenho completo de identidade e migração; estes ajustes mantêm os contratos de segurança existentes.
+Mocks de protocolo são servidores descartáveis em loopback; não houve acesso a mineradores físicos, pools, credenciais, banco operacional ou histórico real. O executor publicou a recuperação no PR #808; esta validação e revisão não executaram merge nem deploy. A Issue #777 continua responsável pelo redesenho completo de identidade e migração; estes ajustes mantêm os contratos de segurança existentes.
 
 ## Evidência final do executor
 
