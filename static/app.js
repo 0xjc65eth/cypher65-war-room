@@ -3841,6 +3841,10 @@ dom.walletSave?.addEventListener('click', async () => {
     put('console-network-height', height === null ? '—' : '#' + height.toLocaleString());
     put('console-network-diff', difficulty === null ? '—' : fmt.diff(difficulty));
     put('console-network-scope', height === null ? 'rede não informada' : net.stale || net._stale ? 'rede · dados em cache' : 'última altura informada');
+    document.querySelectorAll('[data-console-mirror]').forEach(function(mirror) {
+      const source = document.getElementById(mirror.getAttribute('data-console-mirror'));
+      if (source) mirror.textContent = source.textContent;
+    });
   }
 
   function renderOperationConsole(snap, fleetData, fleetError) {
@@ -4590,6 +4594,7 @@ function renderPool(pool, luck) {
   // renderCharts refresh keeps the user's toolbar choice instead of silently
   // resetting every chart back to 1h (audit: range chips were being ignored).
   const _chartRange = {};
+  const _chartRequest = {};
   function _fmtChartLabel(t, cfg, id) {
     if (cfg.chart === 'share_dist') return String(t); // histogram bucket labels
     const d = new Date(t);
@@ -4641,13 +4646,33 @@ function renderPool(pool, luck) {
   async function loadChartData(id) {
     const cfg = CHART_METRICS[id];
     if (!cfg) return;
+    const chart = _ensureDashboardChart(id);
+    if (!chart) return;
+    const range = _chartRange[id] || '1h';
+    const request = (_chartRequest[id] || 0) + 1;
+    _chartRequest[id] = request;
+    const isCurrent = () => _chartRequest[id] === request && charts[id] === chart &&
+      chart.canvas === document.getElementById(id) && Chart.getChart(chart.canvas) === chart &&
+      (_chartRange[id] || '1h') === range;
     try {
-      const r = await fetch(`/api/chart-data?chart=${cfg.chart}&range=${_chartRange[id] || '1h'}`);
-      if (r.status === 402) { await handleLicenseRequired(r); _chartRange[id] = '1h'; const _tb = document.getElementById('share-dist-target-badge'); if (_tb) _tb.textContent = 'target —'; return; }
+      const r = await fetch(`/api/chart-data?chart=${cfg.chart}&range=${range}`);
+      if (!isCurrent()) return;
+      if (r.status === 402) {
+        // Consume the async body before surfacing the lock; a newer range may
+        // have been selected while either fetch or JSON was in flight.
+        let locked = {};
+        try { locked = await r.json(); } catch (e) { /* status still proves a lock */ }
+        if (!isCurrent()) return;
+        await handleLicenseRequired({ json: async () => locked });
+        if (!isCurrent()) return;
+        _chartRange[id] = '1h';
+        const target = document.getElementById('share-dist-target-badge');
+        if (target) target.textContent = 'target —';
+        return;
+      }
       if (!r.ok) return;
       const data = await r.json();
-      const chart = charts[id];
-      if (!chart) return;
+      if (!isCurrent()) return;
       const rawLabels = (data.labels || []);
       const values = (data.datasets?.[0]?.data || data.datasets?.[0]?.values || []);
       chart.data.labels = rawLabels.map(t => _fmtChartLabel(t, cfg, id));
@@ -4665,7 +4690,9 @@ function renderPool(pool, luck) {
       chart._annotations = buildChartAnnotations(data.events || [], rawLabels);
       _applyShareDistTarget(cfg, data, chart);
       chart.update('none');
-    } catch (e) { /* chart load silently */ }
+    } catch (e) {
+      if (isCurrent()) logMessage('CHART', 'Falha ao carregar ' + cfg.label, 'WARN');
+    }
   }
   // R1: gated chart-data ranges (30d/all) return 402 when the gate is live
   // and no key is present — reset the range to 1h and surface the CTA so the
@@ -4680,18 +4707,13 @@ function renderPool(pool, luck) {
     if (!inModuleMode && !chartsTab.classList.contains('active')) return;
     Object.keys(CHART_METRICS).forEach(id => {
       const canvas = document.getElementById(id);
-      if (!canvas) return;
-      // Pula canvases dentro de painéis ocultos (outro módulo) —
-      // Chart.js não consegue medir display:none
-      if (inModuleMode && canvas.offsetParent === null) return;
-      // init chart if not yet created
-      if (!charts[id]) {
-        const cfg = CHART_METRICS[id];
-        charts[id] = makeChart(id, cfg.label, cfg.color);
-      }
+      // Release removed/replaced canvases even while their module is hidden.
+      if (charts[id] && charts[id].canvas !== canvas) _releaseDashboardChart(id);
+      if (!canvas || (inModuleMode && canvas.offsetParent === null)) return;
       loadChartData(id);
     });
   }
+
   // ── Main render ──
   let prevSnapshot = null;
   function render(snap) {
@@ -4861,6 +4883,9 @@ function renderPool(pool, luck) {
   function _attachChartZoom(chart) {
     const canvas = chart.canvas;
     if (!canvas) return;
+    const controller = new AbortController();
+    chart._zoomController = controller;
+    const on = (event, handler, options = {}) => canvas.addEventListener(event, handler, { ...options, signal: controller.signal });
     const MIN_POINTS = 5;
     const maxPoints = () => Math.max(MIN_POINTS, (chart.data.labels || []).length);
     const resetZoom = () => {
@@ -4868,7 +4893,7 @@ function renderPool(pool, luck) {
       delete chart.options.scales.x.max;
       chart.update('none');
     };
-    canvas.addEventListener('wheel', e => {
+    on('wheel', e => {
       e.preventDefault();
       const xs = chart.scales.x;
       if (!xs) return;
@@ -4884,7 +4909,7 @@ function renderPool(pool, luck) {
       chart.update('none');
     }, { passive: false });
     let drag = null;
-    canvas.addEventListener('pointerdown', e => {
+    on('pointerdown', e => {
       if (e.button !== 0) return;
       const xs = chart.scales.x;
       if (!xs) return;
@@ -4892,7 +4917,7 @@ function renderPool(pool, luck) {
       try { canvas.setPointerCapture(e.pointerId); } catch (err) { /* ignore */ }
       canvas.style.cursor = 'grabbing';
     });
-    canvas.addEventListener('pointermove', e => {
+    on('pointermove', e => {
       if (!drag) return;
       const xs = chart.scales.x;
       if (!xs || !(xs.max - xs.min)) return;
@@ -4902,15 +4927,15 @@ function renderPool(pool, luck) {
       chart.options.scales.x.max = newMin + (xs.max - xs.min);
       chart.update('none');
     });
-    canvas.addEventListener('pointerup', () => {
+    on('pointerup', () => {
       drag = null;
       canvas.style.cursor = '';
     });
-    canvas.addEventListener('pointercancel', () => {
+    on('pointercancel', () => {
       drag = null;
       canvas.style.cursor = '';
     });
-    canvas.addEventListener('dblclick', resetZoom);
+    on('dblclick', resetZoom);
     canvas.title = 'scroll to zoom · drag to pan · double-click to reset';
   }
 
@@ -4973,49 +4998,45 @@ function renderPool(pool, luck) {
           },
         },
       },
-      plugins: [chartEventAnnotationsPlugin],
+      plugins: [chartEventAnnotationsPlugin, {
+        id: 'dashboardZoomCleanup',
+        afterDestroy(chart) {
+          if (chart._zoomController) chart._zoomController.abort();
+        },
+      }],
     });
     if (!isHistogram) _attachChartZoom(chart);
     return chart;
   }
 
+  function _releaseDashboardChart(id) {
+    const chart = charts[id];
+    delete charts[id];
+    _chartRequest[id] = (_chartRequest[id] || 0) + 1;
+    if (chart && chart.canvas) chart.destroy();
+  }
+
+  function _ensureDashboardChart(id) {
+    const canvas = document.getElementById(id);
+    if (charts[id] && (charts[id].canvas !== canvas ||
+        (typeof Chart !== 'undefined' && Chart.getChart(canvas) !== charts[id]))) {
+      _releaseDashboardChart(id);
+    }
+    if (!canvas || typeof Chart === 'undefined') return null;
+    if (!charts[id]) {
+      const cfg = CHART_METRICS[id];
+      charts[id] = Chart.getChart(canvas) || makeChart(id, cfg.label, cfg.color);
+    }
+    return charts[id];
+  }
+
   async function loadChart(id, metric, range) {
-    try {
-      _chartRange[id] = range || '1h'; // persist the toolbar choice across refreshes
-      const r = await fetch(`/api/chart-data?chart=${metric}&range=${range}`);
-      if (r.status === 402) { await handleLicenseRequired(r); _chartRange[id] = '1h'; const _tb = document.getElementById('share-dist-target-badge'); if (_tb) _tb.textContent = 'target —'; return; }
-      if (!r.ok) return;
-      const data = await r.json();
-      const chart = charts[id];
-      if (!chart) return;
-      const cfg = CHART_METRICS[id] || {};
-      const rawLabels = (data.labels || []);
-      const values = (data.datasets?.[0]?.data || data.datasets?.[0]?.values || []);
-      chart.data.labels = rawLabels.map(t => _fmtChartLabel(t, cfg, id));
-      chart.data.datasets[0].data = values;
-      _updateShareDistBadge(cfg, data, values);
-      _updateShareDistSummary(data);
-      // Fase 2.1: SMA overlay + shares bar + event annotations
-      if (chart.data.datasets[1] && cfg.chart !== 'share_dist') {
-        chart.data.datasets[1].data = computeSMA(values, Math.max(3, Math.round(values.length / 10)));
-      }
-      if (chart.data.datasets[2] && Array.isArray(data.shares)) {
-        chart.data.datasets[2].data = data.shares;
-        chart.options.scales.y1.display = data.shares.some(s => s > 0);
-      }
-      chart._annotations = buildChartAnnotations(data.events || [], rawLabels);
-      _applyShareDistTarget(cfg, data, chart);
-      chart.update('none');
-    } catch (e) { /* chart load silently */ }
+    _chartRange[id] = range || '1h';
+    return loadChartData(id);
   }
 
   function initCharts() {
-    charts['chart-hashrate'] = makeChart('chart-hashrate', 'Hashrate', 'rgb(247,147,26)');
-    charts['chart-pool'] = makeChart('chart-pool', 'Pool HR', 'rgb(6,214,240)');
-    charts['chart-bestdiff'] = makeChart('chart-bestdiff', 'Best Diff', 'rgb(16,185,129)');
-    charts['chart-net'] = makeChart('chart-net', 'Net Diff', 'rgb(139,92,246)');
-    charts['chart-cumulative-p'] = makeChart('chart-cumulative-p', 'Cum P(Block)', 'rgb(139,92,246)');
-    charts['chart-share-dist'] = makeChart('chart-share-dist', 'Share Dist', 'rgb(16,185,129)');
+    Object.keys(CHART_METRICS).forEach(_ensureDashboardChart);
   }
 
   // Fase 2.1: clear any manual zoom/pan state so the chart renders the full
