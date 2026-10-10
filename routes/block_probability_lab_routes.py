@@ -46,15 +46,14 @@ dashboard_bp = Blueprint(
     "block_probability_lab", __name__, url_prefix="/api/block-probability-lab"
 )
 
-QUERY_WINDOW = (
-    "10m", "30m", "1h", "2h", "4h", "6h", "12h", "24h", "7d", "30d"
-)
+QUERY_WINDOW = ("10m", "30m", "1h", "2h", "4h", "6h", "12h", "24h", "7d", "30d")
 
 
 def _default_snapshot():
     """Best-effort snapshot for the lab when the dashboard is not connected
     to a live wallet. Never fabricates a hashrate: returns UNKNOWN/0."""
     import services.state as _state
+
     snap = getattr(_state, "latest_snapshot", None) or {}
     # Only try to read a timestamp attribute if it actually exists.
     ts = None
@@ -66,7 +65,9 @@ def _default_snapshot():
     return {
         "user_hashrate": float((snap.get("worker") or {}).get("hashrate", 0) or 0),
         "network_hashrate": float((snap.get("network") or {}).get("hashrate", 0) or 0),
-        "network_difficulty": float((snap.get("network") or {}).get("difficulty", 0) or 0),
+        "network_difficulty": float(
+            (snap.get("network") or {}).get("difficulty", 0) or 0
+        ),
         "source": "snapshot",
         "observed_at": request.args.get("observed_at") or ts,
         "age_seconds": 0,
@@ -101,7 +102,9 @@ def api_model_inputs():
         src = snap.get("source", "UNKNOWN")
         observed_at = snap.get("observed_at")
         age = snap.get("age_seconds", 0)
-        state = _state_source_label(user_hr, net_hr, snap.get("network_hashrate_source"))
+        state = _state_source_label(
+            user_hr, net_hr, snap.get("network_hashrate_source")
+        )
 
     # Metric Provenance Contract normalization
     valid = {"LIVE", "DERIVED", "FALLBACK", "MANUAL", "STALE", "UNKNOWN"}
@@ -180,9 +183,10 @@ def api_horizon():
         user_hr = float(user_hr) if user_hr not in (None, "") else None
         net_hr = float(net_hr) if net_hr not in (None, "") else None
     except (TypeError, ValueError):
-        return jsonify({
-            "error": "user_hashrate and network_hashrate must be numbers"
-        }), 400
+        return (
+            jsonify({"error": "user_hashrate and network_hashrate must be numbers"}),
+            400,
+        )
 
     return jsonify(
         probability_horizons(
@@ -236,9 +240,10 @@ def api_best_share():
         bd = float(bd) if bd not in (None, "") else None
         nd = float(nd) if nd not in (None, "") else None
     except (TypeError, ValueError):
-        return jsonify({
-            "error": "best_diff and network_difficulty must be numbers"
-        }), 400
+        return (
+            jsonify({"error": "best_diff and network_difficulty must be numbers"}),
+            400,
+        )
     return jsonify(historical_best_share(best_diff_raw=bd, network_difficulty=nd))
 
 
@@ -256,9 +261,14 @@ def api_solo():
             net_hr = float(net_hr) if net_hr not in (None, "") else None
             window = float(window)
         except (TypeError, ValueError):
-            return jsonify({
-                "error": "user_hashrate, network_hashrate and window_seconds must be numbers"
-            }), 400
+            return (
+                jsonify(
+                    {
+                        "error": "user_hashrate, network_hashrate and window_seconds must be numbers"
+                    }
+                ),
+                400,
+            )
     except Exception as e:
         log.warning("api/solo error: %s", e)
         return jsonify({"error": str(e)}), 400
@@ -284,12 +294,17 @@ def api_share_statistics():
     share_calc_history = body.get("share_calc_history")
     window = body.get("window_seconds", 3600.0)
     try:
-        session_share_count = int(session_share_count) if session_share_count not in (None, "") else None
+        session_share_count = (
+            int(session_share_count) if session_share_count not in (None, "") else None
+        )
         window = float(window)
     except (TypeError, ValueError):
-        return jsonify({
-            "error": "session_share_count and window_seconds must be numbers"
-        }), 400
+        return (
+            jsonify(
+                {"error": "session_share_count and window_seconds must be numbers"}
+            ),
+            400,
+        )
 
     if isinstance(share_calc_history, str):
         # Accept a comma-separated numeric string too
@@ -297,9 +312,7 @@ def api_share_statistics():
         try:
             share_calc_history = [{"share_diff_raw": float(x)} for x in raw]
         except ValueError:
-            return jsonify({
-                "error": "share_calc_history values must be numbers"
-            }), 400
+            return jsonify({"error": "share_calc_history values must be numbers"}), 400
 
     return jsonify(
         share_statistics(
@@ -328,11 +341,24 @@ def api_evidence_state():
         history = list(timeline.get("share_calc_history") or [])
     if isinstance(history, str):
         try:
-            history = [{"share_diff_raw": float(value.strip())} for value in history.split(",") if value.strip()]
+            history = [
+                {"share_diff_raw": float(value.strip())}
+                for value in history.split(",")
+                if value.strip()
+            ]
         except ValueError:
             return jsonify({"error": "share history values must be numbers"}), 400
-    if not isinstance(history, list) or any(not isinstance(item, dict) for item in history):
-        return jsonify({"error": "share_calc_history must be a list of objects or comma-separated numbers"}), 400
+    if not isinstance(history, list) or any(
+        not isinstance(item, dict) for item in history
+    ):
+        return (
+            jsonify(
+                {
+                    "error": "share_calc_history must be a list of objects or comma-separated numbers"
+                }
+            ),
+            400,
+        )
 
     def _value(name, fallback):
         raw = body.get(name, request.args.get(name, fallback))
@@ -352,7 +378,14 @@ def api_evidence_state():
             age = max(0.0, time.time() - float(last_submit))
         window = float(_value("window_seconds", 3600.0))
     except (TypeError, ValueError):
-        return jsonify({"error": "hashrates, session_share_count, age_seconds and window_seconds must be numbers"}), 400
+        return (
+            jsonify(
+                {
+                    "error": "hashrates, session_share_count, age_seconds and window_seconds must be numbers"
+                }
+            ),
+            400,
+        )
     numeric_values = (user_hr, net_hr, age, window)
     if any(value is not None and not math.isfinite(value) for value in numeric_values):
         return jsonify({"error": "numeric inputs must be finite"}), 400
@@ -363,8 +396,13 @@ def api_evidence_state():
 
     now = time.time()
     stats = share_statistics(
-        shares, history, window, user_hashrate=user_hr,
-        network_hashrate=net_hr, age_seconds=age, observed_now=now,
+        shares,
+        history,
+        window,
+        user_hashrate=user_hr,
+        network_hashrate=net_hr,
+        age_seconds=age,
+        observed_now=now,
     )
     evidence = stats.get("evidence_state", "NO DATA")
     stats["evidence_state"] = evidence
@@ -377,7 +415,9 @@ def api_evidence_state():
         "last_share_age_seconds": stats["last_share_age_seconds"],
         "data_gaps": stats["data_gaps"],
         "avg_share_difficulty": stats["avg_share_difficulty"],
-        "share_difficulty_trend": stats.get("share_diff_trend", stats.get("share_difficulty_trend")),
+        "share_difficulty_trend": stats.get(
+            "share_diff_trend", stats.get("share_difficulty_trend")
+        ),
         "sample_count": stats["sample_count"],
         "evidence_state": evidence,
     }

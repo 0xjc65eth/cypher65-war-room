@@ -53,7 +53,9 @@ def _poisson(user_hr: float, net_hr: float, seconds: float) -> Dict[str, Any]:
             "expected_blocks": 0.0,
             "expected_time_to_block_seconds": None,
         }
-    if not (math.isfinite(user_hr) and math.isfinite(net_hr) and math.isfinite(seconds)):
+    if not (
+        math.isfinite(user_hr) and math.isfinite(net_hr) and math.isfinite(seconds)
+    ):
         return {
             "lambda": 0.0,
             "probability_at_least_one": 0.0,
@@ -117,7 +119,11 @@ def model_inputs(
         state = src
     elif state not in valid:
         state = "UNKNOWN"
-    now = int(observed_at) if observed_at is not None else int(datetime.now(timezone.utc).timestamp())
+    now = (
+        int(observed_at)
+        if observed_at is not None
+        else int(datetime.now(timezone.utc).timestamp())
+    )
     age = 0 if age_seconds is None else max(0, int(age_seconds))
     return {
         "user_hashrate": _finite_or_default(user_hashrate),
@@ -181,6 +187,7 @@ def target_probability_solver(
         if window_for_rate <= 0:
             raise ValueError("window_for_rate <= 0")
         import math as _math
+
         lambda_for_target = -_math.log(1.0 - target_p)
         share_of_network_required = lambda_for_target / window_for_rate
         required_user_hashrate = share_of_network_required * net_hr
@@ -189,8 +196,14 @@ def target_probability_solver(
             "status": "SOLVED",
             "share_of_network_required": share_of_network_required,
             "required_user_hashrate": required_user_hashrate,
-            "share_of_network_required_str": _format_hr(share_of_network_required) if share_of_network_required else None,
-            "required_user_hashrate_str": _format_hr(required_user_hashrate) if required_user_hashrate else None,
+            "share_of_network_required_str": (
+                _format_hr(share_of_network_required)
+                if share_of_network_required
+                else None
+            ),
+            "required_user_hashrate_str": (
+                _format_hr(required_user_hashrate) if required_user_hashrate else None
+            ),
         }
     except (OverflowError, ValueError, ZeroDivisionError, ZeroDivisionError):
         return {
@@ -211,7 +224,14 @@ def probability_horizons(
     user_hr = _finite_or_default(user_hr)
     network_hr = _finite_or_default(network_hr)
     seconds = _finite_or_default(duration_seconds, 86400.0)
-    if user_hr <= 0 or network_hr <= 0 or not math.isfinite(user_hr) or not math.isfinite(network_hr) or not math.isfinite(seconds) or seconds <= 0:
+    if (
+        user_hr <= 0
+        or network_hr <= 0
+        or not math.isfinite(user_hr)
+        or not math.isfinite(network_hr)
+        or not math.isfinite(seconds)
+        or seconds <= 0
+    ):
         return {
             "lambda": 0.0,
             "probability_at_least_one": 0.0,
@@ -254,15 +274,17 @@ def hashpower_network_what_if(
     for s in scenarios or []:
         nr = _finite_or_default(s.get("network_hashrate"), base_network_hr)
         p = _poisson(base_user_hr, nr, window)
-        out["scenarios"].append({
-            "network_hashrate": nr,
-            "network_hashrate_str": _format_hr(nr),
-            "multiplier": nr / base_network_hr if base_network_hr else None,
-            "probability_at_least_one": p["probability_at_least_one"],
-            "probability_at_least_one_pct": p["probability_at_least_one"] * 100.0,
-            "expected_time_to_block_seconds": p["expected_time_to_block_seconds"],
-            "status": "SOLVED",
-        })
+        out["scenarios"].append(
+            {
+                "network_hashrate": nr,
+                "network_hashrate_str": _format_hr(nr),
+                "multiplier": nr / base_network_hr if base_network_hr else None,
+                "probability_at_least_one": p["probability_at_least_one"],
+                "probability_at_least_one_pct": p["probability_at_least_one"] * 100.0,
+                "expected_time_to_block_seconds": p["expected_time_to_block_seconds"],
+                "status": "SOLVED",
+            }
+        )
     return out
 
 
@@ -384,9 +406,14 @@ def share_statistics(
         trend = "STABLE"
     out["share_diff_trend"] = trend
     out["share_diff_summary"] = {
-        "p50": out["p50"], "p75": out["p75"], "p90": out["p90"],
-        "p95": out["p95"], "p99": out["p99"], "max": out["max"],
-        "sample_count": count, "window_seconds": window_seconds,
+        "p50": out["p50"],
+        "p75": out["p75"],
+        "p90": out["p90"],
+        "p95": out["p95"],
+        "p99": out["p99"],
+        "max": out["max"],
+        "sample_count": count,
+        "window_seconds": window_seconds,
         "trend": trend,
     }
 
@@ -408,23 +435,35 @@ def share_statistics(
     observed_window = (
         max(0, int(ts_values[-1] - ts_values[0])) if len(ts_values) >= 2 else None
     )
-    out.update({
-        "valid_modeled_shares": count,
-        "avg_share_difficulty": sum(chronological_diffs) / count if count else None,
-        "data_gaps": None,
-        "last_share_age_seconds": last_age,
-        "last_share_age": (
-            f"{last_age}s" if last_age < 3600 else f"{last_age // 60}m"
-        ) if last_age is not None else None,
-        "observed_window_seconds": observed_window,
-        "observed_window": (
-            f"{observed_window}s" if observed_window < 3600 else f"{observed_window // 60}m"
-        ) if observed_window is not None else None,
-        "evidence_state": evidence_state_from_inputs(
-            user_hashrate, network_hashrate, session_share_count,
-            age_seconds if age_seconds is not None else last_age,
-        ),
-    })
+    out.update(
+        {
+            "valid_modeled_shares": count,
+            "avg_share_difficulty": sum(chronological_diffs) / count if count else None,
+            "data_gaps": None,
+            "last_share_age_seconds": last_age,
+            "last_share_age": (
+                (f"{last_age}s" if last_age < 3600 else f"{last_age // 60}m")
+                if last_age is not None
+                else None
+            ),
+            "observed_window_seconds": observed_window,
+            "observed_window": (
+                (
+                    f"{observed_window}s"
+                    if observed_window < 3600
+                    else f"{observed_window // 60}m"
+                )
+                if observed_window is not None
+                else None
+            ),
+            "evidence_state": evidence_state_from_inputs(
+                user_hashrate,
+                network_hashrate,
+                session_share_count,
+                age_seconds if age_seconds is not None else last_age,
+            ),
+        }
+    )
     out["evidence_state_label"] = out["evidence_state"]
     return out
 
