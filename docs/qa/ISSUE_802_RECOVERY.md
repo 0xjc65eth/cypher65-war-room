@@ -39,3 +39,7 @@ Logs locais: `/tmp/c65-802-runtime-focused.log`, `/tmp/c65-802-focused.log`. A v
 ## Limites
 
 Mocks de protocolo são servidores descartáveis em loopback; não houve acesso a mineradores físicos, pools, credenciais, banco operacional ou histórico real. Não houve commit, push, merge ou deploy por este agente. A Issue #777 continua responsável pelo redesenho completo de identidade e migração; estes ajustes mantêm os contratos de segurança existentes.
+
+## Evidência final do executor
+
+Suite completa: `/tmp/c65-recovery-combined-final.log`; JUnit `/tmp/c65-recovery-final-tests.xml` (4.263 casos, zero erros/falhas); cobertura `/tmp/c65-recovery-final-coverage.xml`. Skips: integração privada de Gist sem credenciais explícitas e Sentry SDK ausente no Python local. `pip-audit -r requirements.txt`: PASS, nenhuma vulnerabilidade conhecida. Os skips não provam integração externa/Sentry; a dependência de produção permanece declarada em requirements. CI do PR isolado ainda depende dos reparos #799/#803; o resultado composto não significa CI remoto verde.
