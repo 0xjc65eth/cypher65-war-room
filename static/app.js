@@ -11129,8 +11129,13 @@ function renderAccount(acct) {
       _rentalEvidenceMetric(summary, 'Última observação (UTC)', _rentalEvidenceUtc(evaluation.last_observed_at));
       _rentalEvidenceMetric(summary, 'Trecho de leituras baixas (UTC)', _rentalEvidenceUtc(evaluation.window_start) + ' → ' + _rentalEvidenceUtc(evaluation.window_end));
       _rentalEvidenceMetric(summary, 'Amostras baixas consecutivas', _rentalEvidenceNumber(evaluation.samples, ''));
+      const coverage = data.coverage || {};
+      _rentalEvidenceMetric(summary, 'Cobertura das amostras retidas', coverage.status === 'AVAILABLE'
+        ? _rentalEvidenceNumber(coverage.observed_pct, '%') + ' · ' + _rentalEvidenceNumber(coverage.observed_count, '') + '/' + _rentalEvidenceNumber(coverage.observation_count, '') + ' válidas'
+        : 'Sem observações');
       _rentalEvidenceMetric(summary, 'Hashrate observado', _rentalEvidenceNumber(evaluation.observed_th, ' TH/s'));
       _rentalEvidenceMetric(summary, 'Entrega amostrada', _rentalEvidenceNumber(evaluation.delivery_pct, '%'));
+      if (!binding) _rentalEvidenceMetric(summary, 'Contrato declarado', 'Não configurado');
       if (binding) _rentalEvidenceMetric(summary, 'Regra declarada', _rentalEvidenceNumber(binding.threshold_pct, '%') + ' · ' + _rentalEvidenceNumber(binding.duration_s, ' s') + ' · lacuna ≤ ' + _rentalEvidenceNumber(binding.max_gap_s, ' s'));
     }
     const select = document.getElementById('rentals-evidence-source');
@@ -11554,7 +11559,7 @@ function renderAccount(acct) {
         const cells = [
           { l: 'PERFORMANCE', v: verdict, c: cls },
           { l: 'AVG / ADVERTISED', v: avgThFinal ? fmt.hashrate(avgThFinal * 1e12) + ' / ' + fmt.hashrate((advTh || 0) * 1e12) : '—', c: '' },
-          { l: 'COST', v: costFinal != null ? costFinal.toFixed(2) + ' sats/TH/h' : '—', c: '' },
+          { l: 'COST (PROVIDER AVG)', v: costFinal != null ? costFinal.toFixed(2) + ' sats/TH/h' : '—', c: '', t: 'Unit cost uses provider-reported average hashrate and duration; destination-pool observations are separate sampled evidence and may have an unknown averaging window.' },
           { l: 'YIELD (exp)', v: yieldVal, c: '', t: 'expected GROSS yield of 1 TH·h at the current network hashrate (before pool fee)' },
           { l: 'DELIVERED', v: deliveredFinal != null ? deliveredFinal.toFixed(0) + ' TH·h' : '—', c: '' },
           { l: 'P/L', v: plVal, c: plCls, t: plTitle },

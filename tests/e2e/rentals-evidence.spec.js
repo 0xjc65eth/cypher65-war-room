@@ -34,6 +34,9 @@ function evidence(status = 'under_delivery') {
       window_end: healthy || !available ? null : NOW, samples: healthy || !available ? 0 : 3,
       observed_th: available ? (healthy ? 100 : 0) : null, delivery_pct: available ? (healthy ? 100 : 0) : null,
       alert: status === 'under_delivery' ? { threshold_pct: 90, duration_s: 60, max_gap_s: 30, observed_at: NOW } : null },
+    coverage: available ? { status: 'AVAILABLE', observation_count: 4, observed_count: 3, missing_count: 1, observed_pct: 75,
+      window_start: NOW - 90, window_end: NOW } : { status: 'NO DATA', observation_count: 0, observed_count: 0, missing_count: 0,
+      observed_pct: null, window_start: null, window_end: null },
     points: available ? [{ ...POINT, hashrate_th: healthy ? 100 : 0, delivery_pct: healthy ? 100 : 0 }] : [], limitations: [],
   };
 }
@@ -68,7 +71,7 @@ async function openRental(page, id = '101') {
   if (await toggle.isVisible() && !(await page.locator('#sidebar').evaluate(el => el.classList.contains('open')))) {
     await toggle.click();
   }
-  await page.locator('.sidebar__link[data-module="rentals"]').click();
+  await page.locator('.sidebar__link[data-module="rentals"]').evaluate(el => el.click());
   await page.locator('#rentals-list .rentals-item[data-rental-id="' + id + '"]').click();
   await expect(page.locator('#rentals-evidence')).toBeVisible();
   await expect(page.locator('#rentals-evidence-summary')).toHaveAttribute('aria-busy', 'false');
@@ -132,6 +135,7 @@ test('observação zero mantém fonte, UTC e intervalo de coleta sem inventar m�
   await expect(observed.locator('strong')).toHaveText('0 TH/s');
   await expect(summary).toContainText('2027-01-15 08:00:00 UTC');
   await expect(summary).toContainText('id: rental-worker');
+  await expect(summary).toContainText('Cobertura das amostras retidas75% · 3/4 válidas');
   await expect(summary).toContainText('Janela média do poolNão informada');
   await expect(page.locator('#rentals-evidence-limitations')).toContainText('amostragem não comprova entrega contínua');
   await expect(page.locator('#rentals-evidence-observations')).toContainText('Coleta:');
@@ -176,6 +180,8 @@ test('desativação preserva export CSV das revisões retidas', async ({ page })
   await openRental(page);
   await page.click('#rentals-evidence-remove');
   await expect(page.locator('#rentals-evidence-summary')).toContainText('Sem vínculo configurado');
+  await expect(page.locator('#rentals-evidence-summary')).toContainText('Contrato declaradoNão configurado');
+  await expect(page.locator('#rentals-evidence-summary')).toContainText('Cobertura das amostras retidasSem observações');
   await expect(page.locator('#rentals-evidence-remove')).toBeHidden();
   const downloadPromise = page.waitForEvent('download');
   await page.click('#rentals-evidence-export');
@@ -216,7 +222,7 @@ test('resposta atrasada do aluguel anterior não sobrescreve evidência atual', 
   await page.waitForSelector('#sidebar', { timeout: 25000 });
   const toggle = page.locator('#sidebar-mobile-toggle');
   if (await toggle.isVisible()) await toggle.click();
-  await page.locator('.sidebar__link[data-module="rentals"]').click();
+  await page.locator('.sidebar__link[data-module="rentals"]').evaluate(el => el.click());
   await page.locator('#rentals-list .rentals-item[data-rental-id="101"]').click();
   await expect.poll(() => started).toBe(true);
   await page.locator('#rentals-list .rentals-item[data-rental-id="102"]').click();
