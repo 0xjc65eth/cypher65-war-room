@@ -4143,6 +4143,59 @@ dom.walletSave?.addEventListener('click', async () => {
     put('op-action-title', model.actionTitle);
     put('op-action-detail', model.actionEnabled ? 'Opens diagnostic only · no command is executed' : 'Advisory only · no command is executed');
     put('op-state', model.stateText);
+    const evidence = snap && snap.operations_overview;
+    const evidenceRoot = document.getElementById('op-evidence-domains');
+    if (evidenceRoot && evidence && Array.isArray(evidence.domains)) {
+      const domains = evidence.domains;
+      const byId = {};
+      domains.forEach(function(domain) { if (domain && domain.id) byId[domain.id] = domain; });
+      const expected = ['mining', 'fleet', 'pool', 'data', 'economics'];
+      const complete = expected.filter(function(id) { return byId[id] && byId[id].status === 'observed'; }).length;
+      put('op-evidence-coverage', complete + '/' + expected.length + ' domains fully observed · ' + String(evidence.status || 'missing').toUpperCase());
+      const valueText = function(value, unit) {
+        if (value === null || value === undefined || value === '') return '—';
+        const n = Number(value);
+        const shown = value && typeof value === 'object'
+          ? JSON.stringify(value)
+          : (isFinite(n)
+            ? (Math.abs(n) >= 1000 ? n.toLocaleString(undefined, { maximumFractionDigits: 2 }) : String(n))
+            : String(value));
+        return shown + (unit ? ' ' + unit : '');
+      };
+      const ageText = function(age) {
+        if (age === null || age === undefined || !isFinite(Number(age))) return 'age unavailable';
+        return fmt.secsToHuman(Number(age)) + ' old';
+      };
+      const html = expected.map(function(id) {
+        const domain = byId[id] || { id: id, label: id.toUpperCase(), status: 'missing', source: 'unavailable', signals: [], missing_signals: [], evidence_target: '' };
+        const status = ['observed', 'partial', 'stale', 'missing'].indexOf(domain.status) !== -1 ? domain.status : 'missing';
+        const signals = Array.isArray(domain.signals) ? domain.signals : [];
+        const signalHtml = signals.map(function(item) {
+          const title = String(item.name || 'signal').replace(/_/g, ' ');
+          const provenance = String(item.source || domain.source || 'source unavailable') + ' · ' + ageText(item.age_seconds) + ' · ' + String(item.window || 'window unavailable');
+          return '<p class="op-evidence__signal">' + escapeHtml(title) + ': <strong>' + escapeHtml(valueText(item.value, item.unit)) + '</strong><small class="op-evidence__provenance">' + escapeHtml(provenance) + '</small></p>';
+        }).join('');
+        const missing = Array.isArray(domain.missing_signals) ? domain.missing_signals : [];
+        const missingHtml = (!signals.length ? '<p class="op-evidence__missing">No signals observed</p>' : '') + (missing.length ? '<p class="op-evidence__missing">Missing: ' + escapeHtml(missing.join(', ').replace(/_/g, ' ')) + '</p>' : '');
+        const target = String(domain.evidence_target || '');
+        const link = target && document.getElementById(target) ? '<button class="op-evidence__open" type="button" data-evidence-target="' + escapeHtml(target) + '">Open evidence</button>' : '';
+        return '<article class="op-evidence__domain" data-status="' + status + '"><div class="op-evidence__domain-head"><strong>' + escapeHtml(domain.label || id.toUpperCase()) + '</strong><span class="op-evidence__status">' + status.toUpperCase() + '</span></div>' + signalHtml + missingHtml + link + '</article>';
+      }).join('');
+      if (typeof setHtmlIfChanged === 'function') setHtmlIfChanged(evidenceRoot, html);
+      else if (evidenceRoot.innerHTML !== html) evidenceRoot.innerHTML = html;
+      const limits = [];
+      if (Array.isArray(evidence.change_comparison) && evidence.change_comparison.length) limits.push(evidence.change_comparison.join('; '));
+      else limits.push((evidence.change_comparison && evidence.change_comparison.reason) || 'Change over time not established');
+      if (Array.isArray(evidence.anomalies) && evidence.anomalies.length) limits.push(evidence.anomalies.map(function(anomaly) { return String(anomaly.count || 1) + ' ' + String(anomaly.status || 'observed').toUpperCase() + ' device exception(s)'; }).join(' · '));
+      else limits.push('No anomaly asserted');
+      if (Array.isArray(evidence.explanations) && evidence.explanations.length) limits.push(evidence.explanations.length + ' supported explanation(s)');
+      else limits.push('No cause inferred');
+      limits.push(evidence.economic_impact_status === 'established' ? 'Economic impact has evidence' : 'Economic impact not established');
+      put('op-evidence-limits', limits.join(' · '));
+    } else {
+      put('op-evidence-coverage', 'Evidence summary unavailable');
+      if (evidenceRoot) evidenceRoot.innerHTML = '<div class="op-evidence__domain" data-status="missing"><div class="op-evidence__domain-head"><strong>OPERATIONS EVIDENCE</strong><span class="op-evidence__status">MISSING</span></div><p class="op-evidence__missing">Backend evidence summary unavailable.</p></div>';
+    }
     const action = document.getElementById('op-action');
     if (action) {
       action.disabled = !model.actionEnabled;
@@ -4155,6 +4208,20 @@ dom.walletSave?.addEventListener('click', async () => {
     initOperationConsoleControls();
     const action = document.getElementById('op-action');
     if (!action) return;
+    const evidenceDomains = document.getElementById('op-evidence-domains');
+    if (evidenceDomains) evidenceDomains.addEventListener('click', function(event) {
+      const button = event.target.closest('[data-evidence-target]');
+      if (!button) return;
+      const targetId = button.dataset.evidenceTarget || '';
+      const panel = document.getElementById(targetId);
+      if (!panel) return;
+      const module = panel.getAttribute('data-module') || 'analysis';
+      activateModule(module.split(/\s+/)[0]);
+      setTimeout(function() {
+        const reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+        panel.scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth', block: 'start' });
+      }, 140);
+    });
     action.addEventListener('click', function() {
       if (action.disabled) return;
       const target = action.dataset.target || '';

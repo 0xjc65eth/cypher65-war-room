@@ -741,6 +741,30 @@ h1.module-header__title {
   margin-top: auto;
   min-height: 32px;
 }
+.op-evidence {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-subtle);
+}
+.op-evidence__header { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px 12px; }
+.op-evidence__header h3 { margin: 0; color: var(--text-tertiary); font-size: 8px; letter-spacing: 0.1em; }
+.op-evidence__header > span, .op-evidence__limits { color: var(--text-secondary); font-size: 9px; line-height: 1.45; }
+.op-evidence__domains { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 6px; margin-top: 6px; }
+.op-evidence__domain { min-width: 0; padding: 7px; border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); background: var(--bg-surface); }
+.op-evidence__domain-head { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 3px; }
+.op-evidence__domain-head strong { color: var(--text-primary); font-size: 8px; letter-spacing: 0.06em; }
+.op-evidence__status { color: var(--text-tertiary); font: 8px var(--font-mono); }
+.op-evidence__domain[data-status="stale"] .op-evidence__status, .op-evidence__domain[data-status="partial"] .op-evidence__status { color: var(--amber); }
+.op-evidence__domain[data-status="observed"] .op-evidence__status { color: var(--green); }
+.op-evidence__domain[data-status="missing"] .op-evidence__status { color: var(--text-tertiary); }
+.op-evidence__signal, .op-evidence__missing { margin: 5px 0 0; color: var(--text-secondary); font-size: 8px; line-height: 1.4; overflow-wrap: anywhere; }
+.op-evidence__provenance { display: block; margin-top: 2px; color: var(--text-tertiary); font-size: 7px; }
+.op-evidence__open { margin-top: 6px; padding: 0; border: 0; color: var(--green-dim); background: transparent; font-size: 8px; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
+.op-evidence__limits { margin-top: 6px; }
+.op-evidence__loading { grid-column: 1 / -1; padding: 8px; }
+@media (max-width: 900px) { .op-evidence__domains { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 480px) { .op-evidence__domains { grid-template-columns: 1fr; } }
+@media (prefers-reduced-motion: reduce) { .op-evidence *, .op-evidence *::before, .op-evidence *::after { scroll-behavior: auto !important; animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; } }
 .operational-overview__state {
   margin: 8px 0 0;
   color: var(--text-secondary);
