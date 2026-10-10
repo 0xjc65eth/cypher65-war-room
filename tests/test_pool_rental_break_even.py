@@ -403,3 +403,65 @@ class TestInsufficientDataNoEstimates:
         )
         _check(p)
         json.dumps(p, allow_nan=False)
+
+
+@pytest.mark.covers("MF-005")
+class TestEnergyRewardCadence:
+    """Declared model: 144 blocks/day (600 s), power W and price USD/kWh.
+
+    Independent expected numbers use the input vector rather than the output,
+    preserving the distinction between absent quotes and known zero cost.
+    """
+
+    @pytest.mark.parametrize(
+        "hashrate,reward,watts,kwh",
+        [
+            (100e12, 3.125, 3000, 0.10),
+            (50e12, 1.5625, 1500, 0.20),
+            (200e12, 6.25, 0, 0.10),
+        ],
+    )
+    def test_energy_cost_and_reward_cadence(self, hashrate, reward, watts, kwh):
+        expected_gross = hashrate / 5e18 * 144 * (reward + 0.05)
+        expected_pool = expected_gross * 0.985 * 0.995
+        expected_cost = watts / 1000 * 24 * kwh
+        result, current, network = compute_profitability(
+            {"hashrate": hashrate},
+            5e18,
+            _prices(),
+            {},
+            1e-8,
+            {"ts": 0, "data": None},
+            _settings(
+                cost_mode="power",
+                btc_block_reward=reward,
+                power_watts=watts,
+                power_kwh_usd=kwh,
+            ),
+        )
+        assert current == hashrate and network == 5e18
+        assert result["gross_btc_per_day"] == round(expected_gross, 8)
+        assert result["net_btc_per_day_pool"] == round(expected_pool, 8)
+        assert result["cost_per_day_usd"] == pytest.approx(expected_cost)
+        assert result["pool_net_usd_per_day"] == round(
+            expected_pool * 1e5 - expected_cost, 4
+        )
+        assert result["breakeven_cost_per_th_day"] == round(
+            expected_pool * 1e5 / (hashrate / 1e12), 4
+        )
+        assert result["break_even_rental_usd_per_th_day"] is None
+
+    def test_energy_cost_remains_known_when_quote_is_unavailable(self):
+        result, _, _ = compute_profitability(
+            {"hashrate": 100e12},
+            5e18,
+            _prices(usd=None),
+            {},
+            1e-8,
+            {"ts": 0, "data": None},
+            _settings(cost_mode="power", power_watts=3000, power_kwh_usd=0.10),
+        )
+        assert result["cost_per_day_usd"] == pytest.approx(7.2)
+        assert result["net_btc_per_day_pool"] > 0
+        assert result["pool_net_usd_per_day"] is None
+        assert result["breakeven_cost_per_th_day"] is None
