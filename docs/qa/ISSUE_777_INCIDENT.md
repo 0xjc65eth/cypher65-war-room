@@ -147,8 +147,23 @@ Suíte composta com esta unidade: **1 failed, 4.269 passed, 2 skipped, 85,59%**,
 236,20 s, `/tmp/c65-recovery-777-full.log`. Falha:
 `test_actual_registry_auth_summary_and_store_invariants[mixed]`, transporte
 interceptado pelo guard. A suíte anterior sem esta unidade havia passado;
-interferência entre testes é hipótese em investigação, não causa confirmada.
-Não chamar essa rodada de PASS nem usar cobertura suficiente para apagar a falha.
+essa rodada permanece FAIL, sem usar cobertura suficiente para apagar a falha.
+
+Retomada: o trace capturou `detect_firmware` em uma thread de um teste anterior
+de inclusão manual que não mockava os probes. /devil confirmou o método original
+com HTTP/TCP negados: a thread continuava após o teste terminar. O reparo da
+fixture conserva registry/auth/201 reais, verifica ID/MAC persistidos e registra
+zero tentativas sob os mesmos guards. Como #808 foi integrado externamente antes
+de receber esse reparo, ele segue na **Issue #811**, em PR separada.
+
+Revalidação composta final, sem instrumentação: **4.270 passed, 2 skipped,
+zero failures/errors, 85,58%, 230,23 s**. JUnit: 4.272 casos;
+`/tmp/c65-recovery-777-final-tests.xml`, cobertura
+`/tmp/c65-recovery-777-final-coverage.xml`, log
+`/tmp/c65-recovery-777-final.log`. Isso inclui o patch Agent desta PR e a fixture
+#811, além da recuperação Fleet #805 ainda separada. Não equivale a CI do SHA
+isolado nem fecha os HIGH da #777. Skips continuam Gist privado sem credenciais
+explícitas e Sentry SDK ausente no Python local.
 
 Aceite restante para servidor: ausência/invalid MAC, MAC divergente, alias órfão,
 legado ambíguo, isolamento tenant, DHCP e IP reuse; corrida remove/restore/update
