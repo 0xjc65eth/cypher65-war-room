@@ -51,7 +51,7 @@
   // "NOT AVAILABLE" for missing fields, so a plain != null check would
   // crash .toFixed(). Returns null for absent / non-numeric values.
   function _numOrNull(v) {
-    if (v == null || v === '') return null;
+    if (v == null || v === '' || typeof v === 'boolean') return null;
     const n = Number(v);
     return isFinite(n) ? n : null;
   }
@@ -68,10 +68,11 @@
     // Shares/temp/power/eff = APENAS ONLINE — os contadores cumulativos do
     // firmware persistem depois que o miner morre e congelariam um
     // EFFICIENCY histórico se OFFLINE contribuísse.
-    let totalHr = 0, acc = 0, rej = 0, stale = 0;
+    let totalHr = 0, hrN = 0, acc = 0, rej = 0, stale = 0;
     let tempSum = 0, tempN = 0, powerSum = 0, powerN = 0, effSum = 0, effN = 0;
     fleet.forEach(d => {
-      totalHr += Number((d && d._telemetry && d._telemetry.hashrate_hs) || 0);
+      const hr = _numOrNull(d && d._telemetry && d._telemetry.hashrate_hs);
+      if (hr != null && hr >= 0) { totalHr += hr; hrN++; }
     });
     live.forEach(d => {
       const t = (d && d._telemetry) || {};
@@ -88,10 +89,10 @@
     const lats = live.map(d => Number(d && d.latency_ms)).filter(v => v > 0 && isFinite(v));
     const shareTotal = acc + rej;
     return {
-      totalHr: totalHr,
+      totalHr: hrN ? totalHr : null,
       effPct: shareTotal > 0 ? (acc / shareTotal) * 100 : null,
       avgTemp: tempN ? tempSum / tempN : null,
-      totalPowerW: powerSum || null,
+      totalPowerW: powerN ? powerSum : null,
       avgEff: effN ? effSum / effN : null,
       avgLatency: lats.length ? Math.round(lats.reduce((a, b) => a + b, 0) / lats.length) : null,
       acc: acc, rej: rej, stale: stale,
@@ -283,16 +284,65 @@
     if (buf.length > _LM_FLOW_MAX) buf.shift();
   }
 
-  // FLEET COMMAND CENTER — fetch /summary and render. Non-fatal: on
-  // failure the panel simply keeps the last good data.
+  let _ccFetchGeneration = 0;
+  let _ccEvidenceState = 'loading';
+  let _ccHasSnapshot = false;
+  let _ccEvidenceAt = null;
+
+  function _ccSourceStatus() {
+    if (!dom.lmStatusBadge) return;
+    const labels = { loading: 'LOADING', error: 'ERROR', cached: 'CACHED', restricted: 'ACCESS REQUIRED', ready: _ccLastFleet.length ? 'LIVE' : 'EMPTY' };
+    dom.lmStatusBadge.textContent = labels[_ccEvidenceState] || 'UNKNOWN';
+    dom.lmStatusBadge.title = _ccHasSnapshot
+      ? 'Fleet summary received at ' + new Date(_ccEvidenceAt).toLocaleTimeString() + (_ccEvidenceState === 'cached' ? '; refresh failed — last successful response' : '')
+      : 'Fleet summary has not been received for this session';
+    dom.lmStatusBadge.classList.toggle('badge--green', _ccEvidenceState === 'ready');
+    dom.lmStatusBadge.classList.toggle('badge--mute', _ccEvidenceState !== 'ready');
+  }
+
+  function resetFleetSummaryEvidence() {
+    _ccFetchGeneration++;
+    _ccLastFleet = [];
+    _ccHasSnapshot = false;
+    _ccEvidenceAt = null;
+    _ccEvidenceState = 'loading';
+    _ccHrSeries.length = 0;
+    [_ccHrHist, _lmFlow, _lmLastCounters].forEach(buffer => Object.keys(buffer).forEach(key => delete buffer[key]));
+    if (typeof _ccShareSeen !== 'undefined') Object.keys(_ccShareSeen).forEach(key => delete _ccShareSeen[key]);
+    if (dom.fccSummaryEarnings) dom.fccSummaryEarnings.textContent = '—';
+    _ccRenderFleet();
+  }
+
+  // Source availability is separate from the registered devices' health.
   async function fetchFleetCommandCenter() {
+    const generation = ++_ccFetchGeneration;
+    if (!_ccHasSnapshot) { _ccEvidenceState = 'loading'; _ccRenderFleet(); }
     try {
       const r = await authFetch('/api/axe-fleet/summary');
-      if (!r.ok) return;
+      if (generation !== _ccFetchGeneration) return;
+      if (!r.ok) {
+        if (r.status === 401 || r.status === 403) {
+          resetFleetSummaryEvidence();
+          _ccEvidenceState = 'restricted';
+          _ccRenderFleet();
+          return;
+        }
+        throw new Error('HTTP ' + r.status);
+      }
       const data = await r.json();
-      _ccLastFleet = (data && data.devices) || [];
+      if (generation !== _ccFetchGeneration) return;
+      if (!data || !Array.isArray(data.devices) || data.devices.some(device => !device || typeof device !== 'object' || Array.isArray(device) || typeof device.id !== 'string' || !device.id)) throw new Error('Invalid fleet summary');
+      _ccLastFleet = data.devices;
+      _ccHasSnapshot = true;
+      _ccEvidenceAt = Date.now();
+      _ccEvidenceState = 'ready';
       _ccRenderFleet();
-    } catch (e) { /* non-fatal */ }
+    } catch (e) {
+      if (generation !== _ccFetchGeneration) return;
+      _ccEvidenceState = _ccHasSnapshot ? 'cached' : 'error';
+      if (!_ccHasSnapshot) _ccRenderFleet();
+      _ccSourceStatus();
+    }
   }
 
   // View toggle (grid cards / dense table) — persisted per browser.
@@ -318,13 +368,21 @@
     const rows = buildCommandCenterRows(fleet);
     if (dom.lmWorkersCount) dom.lmWorkersCount.textContent = rows.length + (rows.length === 1 ? ' worker' : ' workers');
     if (dom.lmWorkersBadge) dom.lmWorkersBadge.textContent = rows.length + (rows.length === 1 ? ' worker' : ' workers');
-    if (dom.lmStatusBadge) dom.lmStatusBadge.textContent = rows.length ? 'LIVE' : 'IDLE';
+    _ccSourceStatus();
     if (dom.lmWorkers) dom.lmWorkers.style.display = rows.length ? 'block' : 'none';
     if (dom.lmFlow) dom.lmFlow.style.display = rows.length ? 'block' : 'none';
     if (!rows.length) {
-      if (dom.lmWorkersGrid) dom.lmWorkersGrid.innerHTML = '<div class="lm-workers__empty">no fleet workers registered — add miners in AXE FLEET (⚙) to see live per-worker telemetry here</div>';
+      if (dom.lmWorkersGrid) dom.lmWorkersGrid.innerHTML = '<div class="lm-workers__empty">' + (_ccHasSnapshot ? 'no fleet workers registered — add miners in AXE FLEET (⚙)' : _ccEvidenceState === 'loading' ? 'loading fleet summary…' : _ccEvidenceState === 'restricted' ? 'fleet summary requires access' : 'fleet summary unavailable — retry on the next refresh') + '</div>';
+      [dom.fccSummaryHr, dom.fccSummaryOnline, dom.fccSummaryWarn, dom.fccSummaryOffline, dom.fccSummaryTemp, dom.fccSummaryPower, dom.fccSummaryEff, dom.fccSummaryPing].forEach(el => { if (el) el.textContent = _ccHasSnapshot ? '0' : '—'; });
+      if (dom.fccSummaryTemp) dom.fccSummaryTemp.textContent = '—';
+      if (dom.fccSummaryEff) dom.fccSummaryEff.textContent = '—';
+      if (dom.fccSummaryPing) dom.fccSummaryPing.textContent = '—';
+      if (dom.fccSummaryHr && _ccHasSnapshot) dom.fccSummaryHr.textContent = fmt.hashrate(0);
+      if (dom.fccSummaryPower && _ccHasSnapshot) dom.fccSummaryPower.textContent = '0.00 kW';
+      if (dom.fccSummaryHrSpark) dom.fccSummaryHrSpark.innerHTML = '';
       if (dom.fccExceptions) { dom.fccExceptions.style.display = 'none'; dom.fccExceptions.innerHTML = ''; }
       if (dom.fccThermalGrid) dom.fccThermalGrid.innerHTML = '';
+      if (dom.lmFlowRaster) dom.lmFlowRaster.innerHTML = '';
       // Fleet emptied — drop lingering buffers/counters so a re-added device
       // with reset counters never produces a bogus first delta.
       Object.keys(_lmFlow).forEach(k => delete _lmFlow[k]);
@@ -334,8 +392,9 @@
 
     // KPI strip (fleet-fed).
     const k = _ccKpiAgg(fleet);
-    if (dom.fccSummaryHr) dom.fccSummaryHr.textContent = k.totalHr ? fmt.hashrate(k.totalHr) : '—';
-    _ccHrSeries.push(k.totalHr); if (_ccHrSeries.length > 40) _ccHrSeries.shift();
+    if (dom.fccSummaryHr) dom.fccSummaryHr.textContent = k.totalHr != null ? fmt.hashrate(k.totalHr) : '—';
+    if (k.totalHr != null) _ccHrSeries.push(k.totalHr);
+    if (_ccHrSeries.length > 40) _ccHrSeries.shift();
     if (dom.fccSummaryHrSpark) dom.fccSummaryHrSpark.innerHTML = _ccSvgSparkline(_ccHrSeries, cssVar('--brand'));
     const onlineN = fleet.filter(d => d.status === 'ONLINE' || d.status === 'HASHING').length;
     const warnN = fleet.filter(d => d.status === 'WARNING').length;
@@ -344,7 +403,7 @@
     if (dom.fccSummaryWarn) dom.fccSummaryWarn.textContent = String(warnN);
     if (dom.fccSummaryOffline) dom.fccSummaryOffline.textContent = String(offlineN);
     if (dom.fccSummaryTemp) dom.fccSummaryTemp.textContent = k.avgTemp != null ? k.avgTemp.toFixed(1) + '°C' : '—';
-    if (dom.fccSummaryPower) dom.fccSummaryPower.textContent = k.totalPowerW ? (k.totalPowerW / 1000).toFixed(2) + ' kW' : '—';
+    if (dom.fccSummaryPower) dom.fccSummaryPower.textContent = k.totalPowerW != null ? (k.totalPowerW / 1000).toFixed(2) + ' kW' : '—';
     if (dom.fccSummaryEff) dom.fccSummaryEff.textContent = k.avgEff != null ? k.avgEff.toFixed(1) + ' J/TH' : '—';
     if (dom.fccSummaryPing) {
       if (k.avgLatency != null) {
