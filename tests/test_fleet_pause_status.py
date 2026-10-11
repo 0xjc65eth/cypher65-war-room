@@ -150,6 +150,7 @@ class TestRegistryPollPaused:
 
             def extract_telemetry(self):
                 tel = new_telemetry(dev["id"])
+                tel["mac"] = dev["mac_address"]
                 tel["hashrate_hs"] = 0
                 tel["mining_paused"] = True
                 return tel
@@ -181,6 +182,7 @@ class TestRegistryPollPaused:
 
             def extract_telemetry(self):
                 tel = new_telemetry(dev["id"])
+                tel["mac"] = dev["mac_address"]
                 tel["hashrate_hs"] = 1.4e12  # stale reading
                 tel["mining_paused"] = True
                 return tel
@@ -393,7 +395,7 @@ class TestPauseResumeRoutes:
 class TestAgentTelemetryPaused:
     def test_agent_telemetry_response_reports_paused(self, client):
         reg = _mock_registry()
-        reg.get_device_by_ip.return_value = {
+        reg.find_device_for_identity.return_value = {
             "id": "dev-pause-1",
             "name": "T",
             "ip_address": "192.168.1.55",

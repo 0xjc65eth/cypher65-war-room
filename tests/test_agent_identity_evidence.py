@@ -89,6 +89,9 @@ def test_poll_loop_transports_the_discovered_mac_without_inventing_one(
     )
     with pytest.raises(StopLoop):
         agent._run_main()
+    if not reported_mac:
+        assert pushed == []  # Missing identity now blocks registration/polling (#813).
+        return
     assert len(pushed) == 1
     assert pushed[0]["ip"] == device["ip"]
     assert pushed[0]["mac"] == expected_mac

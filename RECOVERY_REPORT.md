@@ -1,18 +1,20 @@
 # CYPHER65 — MASTER ENGINEERING RECOVERY REPORT
 
-Data: 2026-10-10, Europe/Brussels. Relatório iniciado na Issue #807 e atualizado no follow-up #811. Snapshot inicial de master: `155dcc7a0ce9e725a54e06bba291932a5b8793a4`. As atualizações externas são atribuídas explicitamente abaixo. Evidência local não substitui CI do SHA exato, approval no GitHub ou prova física.
+Data do checkpoint: 2026-10-11, Europe/Brussels. Relatório iniciado na Issue #807 e atualizado nos follow-ups #811 e #813. Snapshot inicial de master: `155dcc7a0ce9e725a54e06bba291932a5b8793a4`. As atualizações externas são atribuídas explicitamente abaixo. Evidência local não substitui CI do SHA exato, approval no GitHub ou prova física.
 
 ## 1. Recovery status
 
 **Concluído:** checkpoint FreeBuff reconstruído; originais, sete stashes e WIPs preservados; série PR1–PR7 reconstruída sem duplicar implementação; frontend recuperado e publicado; reparos de Fleet, restore e integridade, dependências mobile, fixtures de QA e gate Black separados por Issue, branch e PR; revisões independentes de /devil e /advisor executadas.
 
-**Validação composta na retomada:** 4.270 testes passaram, 2 skips condicionais, zero falhas/erros e cobertura de 85,58%, em 230,23 s. Inclui a nova unidade Agent #777/#810 e o follow-up hermético #811. Os checks remotos ainda dependem da recuperação Fleet #805, separada da master. **Não concluído:** binding completo e migração histórica de #777, unificação completa dos 14 módulos de #757 e critérios externos de hardware, produção, dados e SLO. Nenhum desses itens é apresentado como terminado pela existência de mocks ou de um PR aberto.
+**Checkpoint atual #813:** binding de registro/ingestão/polling implementado sobre master `b2a4c22`, preservando os primitivos integrados de #805. Suíte completa: **4.310 PASS, 2 skips, zero falhas/erros e 85,57%**, 219,69 s; E2E afetado: 8 PASS. A evidência anterior de composição (4.270 PASS) permanece histórica abaixo. A revisão e publicação atual são descritas no [contrato #813](docs/qa/ISSUE_813_IDENTITY_ATOMICITY.md). **Ainda pendentes:** CI do SHA publicado/approval independente, reconciliação de legado sem dados reais disponíveis, unificação completa dos 14 módulos de #757 e critérios externos de hardware, produção, dados e SLO. Nenhum desses itens é apresentado como terminado por mocks ou PR aberto.
 
 O worktree inicial desta conversa estava limpo e em detached HEAD. O checkpoint interrompido estava no checkout `/Users/juliocesar/cypher65-war-room`, branch `fix/798-console-ids-chart-init`, base `ec3bdf6`, com seis arquivos alterados e o mapa PR1–PR7 não rastreado. Foram preservados o backup `/tmp/c65-original-798.patch` e o mapa `/tmp/c65-original-series.md`. O diff original foi comparado novamente byte a byte após a recuperação e continua idêntico; os sete stashes foram preservados. Os WIPs de #777 em `/private/tmp/cypher65-777-clean` e `/Users/juliocesar/cypher65-777-device-identity` não foram incorporados integralmente.
 
 O acesso ao GitHub no sandbox apresentou um falso aviso de autenticação; consultas com rede autorizada verificaram o estado real. Não houve reset, force push, fechamento manual de Issue, operação sobre secrets ou comandos físicos. Este agente não executou merge nem deploy.
 
 ## 2. GitHub status e rastreabilidade
+
+O quadro abaixo conserva os checkpoints publicados da recuperação. Estado atual: #801/#804/#805/#806/#808/#809/#810/#812 integrados externamente; #813 é a continuação implementada no [PR #815](https://github.com/0xjc65eth/cypher65-war-room/pull/815). A atualização ao fim deste relatório identifica os SHAs mais recentes.
 
 A matriz detalhada permanece em [PR1–PR7](docs/PR1-PR7-SERIES.md). Os sete ordinais já estavam integrados: #784, #785, #786, #794, #795, #796 e #797; #793 complementa PR3. PR2 não declara uma Issue no corpo. #797 foi encontrado como MERGED, com checks FAILURE e reviews vazios; não foi recriado nem apresentado como CI verde.
 
@@ -104,7 +106,7 @@ Revisão por subagente independente; não equivale a approval no GitHub.
 
 A revisão independente concluída não encontrou novos CRITICAL/HIGH nos patches de frontend, mobile, QA, add/restore ou no transporte parcial do Agent. Na retomada, /devil concluiu a revisão dos três arquivos adicionais de fixtures: 119 testes e 13 testes/checks adicionais de restauração de estado passaram. O limite de uso anterior não foi contado como resultado. O autor principal e /advisor revisaram GC/hard delete, cujo autor era /devil.
 
-**HIGH ainda abertos em #777:** cadastro sem MAC pode alterar metadata de row identificada por IP; telemetria atrasada pode criar outra row ou atingir novo ocupante do locator; polling aceita MAC observada divergente. MEDIUM: conflito de register sobe HTTP 500 em vez de JSON explícito. Foram reproduzidos com SQLite temporário, Flask/JWT e mocks. O protocolo parcial #810 transporta evidência, mas não resolve esses achados. Duplicatas reais e estado de produção permanecem UNKNOWN.
+**Reproduções históricas de #777, corrigidas no patch #813:** cadastro sem MAC pode alterar metadata de row identificada por IP; telemetria atrasada pode criar outra row ou atingir novo ocupante do locator; polling aceita MAC observada divergente. MEDIUM: conflito de register sobe HTTP 500 em vez de JSON explícito. Foram reproduzidos com SQLite temporário, Flask/JWT e mocks. O protocolo parcial #810 apenas transportava evidência; #813 implementa resolver estrito, ingestão atômica e guards de polling. Duplicatas reais e estado de produção permanecem UNKNOWN.
 
 ## 6. /advisor recommendations
 
@@ -126,7 +128,7 @@ Os corpos e comentários das 13 Issues iniciais foram consultados novamente via 
 | Issue | Estado / causa | Próxima ação exata |
 |---|---|---|
 | #798 | Reparo recuperado; integração externa de #801. | Validar a release de produção se o operador autorizar; nenhuma Issue foi fechada manualmente. |
-| #777 | Transporte Agent recuperado parcialmente em #810; três HIGH de associação demonstrados; produção UNKNOWN. | Resolver sem fallback por IP/MAC ausente, conflito explícito e MAC/locator revalidados dentro da transação de persistência; polling verifica evidência atual. Histórico/reconciliação separados. |
+| #777 / #813 | Transporte #810 e binding completo no patch #813; três HIGH corrigidos, suíte completa PASS; #777 encerrada externamente; produção UNKNOWN. | Revisar/integrar #813 somente com CI do SHA exato e approval; reconciliação histórica separada, sem reassociação automática. |
 | #787 | #793 e testes focados entregam parte de Session Evidence. | Conferir todos os critérios de UI, live e malformed; fechar somente pelo fluxo autorizado. |
 | #757 | Os 14 módulos, estados e unificação são um trabalho mais amplo. | Continuar em PR próprio; #798 corrige boot/chart, sem completar toda a UX. |
 | #659 | PR #715 entrega reconhecimento de host; schema da API não fornecido, segundo comentário. | Obter contrato versionado, com redação de dados sensíveis e unidades; manter fallback e não inventar normalizer. |
@@ -145,14 +147,14 @@ Os corpos e comentários das 13 Issues iniciais foram consultados novamente via 
 
 ## 8. Merge readiness
 
-A recuperação local não autoriza integração. #801/#804/#806/#808/#809 foram integrados externamente; isso não comprova CI global verde nem approval independente. #805, #810 e #812 exigem checks do SHA exato e approval após atualização das dependências. Snapshot: #805 `5b9128e` FAIL nos gates globais; #810 `c24f5bc` Python FAIL e outros jobs em andamento; #812 `598adf5` checks iniciados. Nenhum deles tinha approval observado. A atualização documental seguinte requer seus próprios checks; não se herda resultado de SHA anterior. #777 permanece incompleta pelos HIGH documentados. Subagentes não substituem approval no GitHub. Este agente não executou merge/deploy e não alega produção verde.
+Os PRs de recuperação anteriores foram integrados externamente; os snapshots históricos não equivalem a aprovação independente ou CI global verde. O [PR #815](https://github.com/0xjc65eth/cypher65-war-room/pull/815), código `67c86f28b7aa58173563eb53b6488d0a7fd6ddfe`, está validado localmente e passou pelas revisões independentes /devil e /advisor, sem HIGH restante demonstrado nos caminhos corrigidos. Exige CI do SHA publicado e approval no GitHub antes de integração. Um MEDIUM distinto de cache após comando está rastreado na [#814](https://github.com/0xjc65eth/cypher65-war-room/issues/814); não houve troca de identidade ou corrupção de histórico nessa reprodução. Não se afirma consistência global de todos os writers de cache. Este agente não realizou merge/deploy e não alega produção validada.
 
 ## 9. Next actions
 
-1. Revisar #805 (Fleet), #810 (protocolo parcial) e o follow-up #811; composição 4270 PASS com cobertura acima de 80% não substitui seus checks.
-2. Integrar normalmente as unidades restantes somente com autorização do mantenedor, approval e checks verdes; revalidar cada head após mudança de base. Preservar os merges externos já observados.
-3. Reexecutar o CI da master consolidada; não inferir CI verde a partir de patches locais.
-4. Manter #777, #757 e os critérios externos em trilhas próprias conforme a tabela; preservar WIPs e histórico.
+1. Conferir CI do SHA publicado da #813 e corrigir falhas que forem demonstradas; obter review/approval GitHub. Revisões por subagente não substituem approval.
+2. Integrar somente com autorização adicional, checks verdes e aprovação; preservar merges externos e revalidar cada head após mudança de base.
+3. Resolver a #814 em unidade própria: status de comandos e publisher devem compartilhar ordem de publicação, mantendo ACK/auditoria e limites explícitos.
+4. Manter reconciliação histórica, #757 e os critérios externos de hardware/produção/dados/SLO nas trilhas descritas na matriz; preservar WIPs e histórico.
 
 ## Evidência durável e limites de integração
 
@@ -161,3 +163,20 @@ Os resultados locais são vinculados aos commits publicados e à composição de
 Retomada: `/tmp/c65-recovery-777-final.log`, JUnit `/tmp/c65-recovery-777-final-tests.xml` e cobertura `/tmp/c65-recovery-777-final-coverage.xml` confirmam 4270 PASS/2 SKIP/85,58%. A rodada FAIL anterior permanece em `/tmp/c65-recovery-777-full.log`; o trace sem argumentos fica em `/tmp/c65-scale-guard-traces.jsonl`. A prova independente do método original e da fixture corrigida negou HTTP/TCP: demonstrou worker após timeout e zero tentativas após o reparo. Esses arquivos locais não são artefatos remotos de CI. O código recuperado do Agent não participa da cobertura dos módulos de backend declarados no gate; seus nove testes próprios comprovam o transporte, sem atestar hardware ou associação no servidor.
 
 A revisão automática rejeitou uma cópia direta de testes entre worktrees por risco de sobrescrever WIP. Nenhum arquivo foi sobrescrito por essa tentativa. A composição foi feita posteriormente em checkout descartável, com patches verificados; o trabalho original permaneceu intacto.
+
+
+## Atualização de implementação #813 — 2026-10-11
+
+#812 foi integrado externamente no squash `c23e2f94b03faf3afca52c15bbba3f1f92424dbb`; #805 foi atualizado externamente para `0ad915b5591ee76902c43f98f0bfc24caf8bfa8f` e integrado no squash `b2a4c223e0f7c1dd9c9d0d2026e63ff45964f44d`. #777 foi encerrada externamente. A implementação restante é rastreada pela [#813](https://github.com/0xjc65eth/cypher65-war-room/issues/813), criada antes do código; branch `fix/813-atomic-device-identity` partiu de master atualizada. Os snapshots anteriores deste relatório não são o estado atual desses PRs.
+
+Três HIGH originais corrigidos: MACless não pode capturar row por IP; telemetria exige identidade/locator registrados e não autocadastra; polling rejeita MAC ausente/contraditória. Amostra, idempotência, estado e quarentena usam uma transação. /devil encontrou e reproduziu corrida HIGH de cache após commit e MEDIUM de enrichment depois de DHCP; ambas corrigidas. /advisor encontrou o segundo cache no loop real de polling; removido com regressão concorrente. Publisher relê o estado atual sob lock por instância, sem alegar outbox ou ordenação global.
+
+**PASS atual:** suíte completa 4310/2 skips, 85,57%, 219,69 s; focused 93 testes/1,89 s; E2E Fleet manual desktop/mobile 8/14,9 s; gates estáticos e guard monkeypatch. JUnit registra 4312 casos e zero failures/errors. A execução inicial restrita teve 83 bloqueios de socket e uma fixture corrigida, sem ser contabilizada como aprovação.
+
+O [documento #813](docs/qa/ISSUE_813_IDENTITY_ATOMICITY.md) registra contratos, compatibilidade MACless/CGminer, regressões, revisões, limites e logs. Chamadas internas por ID não representam evidência física. Não há mescla de legado, dados reais, comando físico, merge ou deploy executados por este agente. Próxima ação: CI do SHA publicado e review GitHub; produção e hardware dependem de evidência externa.
+
+/Advisor final confirmou a correção mínima do cache duplicado e recomendou provar explicitamente a publicação A antes da amostra B; a regressão recebeu esse assert. /Devil reexecutou 51 testes focados (1,90 s) após a correção e não demonstrou HIGH na delta final. A revisão interna não é approval GitHub.
+
+Finding adicional /devil: [#814](https://github.com/0xjc65eth/cypher65-war-room/issues/814), MEDIUM/P2, callback antigo pode sobrescrever o cache PAUSED de um comando que já confirmou no banco. Separado do binding da #813; não há garantia global de coerência de todos os writers de cache. A regressão final fortalecida passou em 51 testes/1,64 s, sem mudança de produção após a suíte completa.
+
+Publicação: [PR #815](https://github.com/0xjc65eth/cypher65-war-room/pull/815), código `67c86f28b7aa58173563eb53b6488d0a7fd6ddfe`. Snapshot na abertura: OPEN/draft, REVIEW_REQUIRED; checks em andamento. Este registro é um checkpoint da publicação; o estado atualizado do CI/approval permanece no PR, por SHA. O commit documental seguinte conserva o código validado e exige seus próprios checks.

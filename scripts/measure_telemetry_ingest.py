@@ -169,6 +169,7 @@ def _make_operations(
     for sequence in range(workload.unique_per_device):
         original = {
             "ip": ip,
+            "mac": f"02:00:00:01:00:{device_index:02X}",
             "idempotency_key": f"{prefix}-e{sequence:03d}",
             "telemetry": {
                 "ts": _sample_ts(base_ts, sequence, workload.late_arrival_sequence),
@@ -274,8 +275,12 @@ def _run_once(
     device_rows: list[dict[str, str]] = []
     for device_index in range(workload.device_count):
         ip = f"192.0.2.{device_index + 1}"
-        alpha = registry.upsert_agent_device(ip, tenant_id=TENANT_A)
-        beta = registry.upsert_agent_device(ip, tenant_id=TENANT_B)
+        alpha = registry.upsert_agent_device(
+            ip, tenant_id=TENANT_A, info={"mac": f"02:00:00:01:00:{device_index:02X}"}
+        )
+        beta = registry.upsert_agent_device(
+            ip, tenant_id=TENANT_B, info={"mac": f"02:00:00:01:00:{device_index:02X}"}
+        )
         if not alpha or not beta:
             raise AssertionError(f"could not create synthetic tenant-scoped pair {ip}")
         device_rows.append({"ip": ip, "alpha_id": alpha["id"], "beta_id": beta["id"]})

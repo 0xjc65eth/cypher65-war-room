@@ -279,7 +279,9 @@ class TestTelemetry:
             lambda ip, command: {"SUMMARY": [{"GHS av": float("inf")}]},
         )
 
-        tel = agent._poll_telemetry({"ip": "127.0.0.1", "type": "cgminer"})
+        tel = agent._poll_telemetry(
+            {"ip": "127.0.0.1", "type": "cgminer", "mac": "02:00:00:00:02:01"}
+        )
 
         assert tel == {"_invalid_fields": ["hashrate_hs"]}
 
@@ -288,7 +290,12 @@ class TestTelemetry:
     ):
         monkeypatch.setattr(agent, "CGMINER_PORT", cgminer_mock)
         tel = agent._poll_telemetry(
-            {"ip": "127.0.0.1", "type": "cgminer", "model": "Antminer S19j Pro"}
+            {
+                "ip": "127.0.0.1",
+                "type": "cgminer",
+                "model": "Antminer S19j Pro",
+                "mac": "02:00:00:00:02:01",
+            }
         )
         assert tel["hashrate_hs"] == 91_200_000_000  # GHS 5s 91.2 × 1e9
         assert tel["temperature"] == 62.5  # from stats temp2_0
@@ -344,7 +351,9 @@ class TestTelemetry:
     def test_unreachable_cgminer_returns_empty_not_crash(self, monkeypatch):
         # No server on this port → poll must return {} (agent pushes {}).
         monkeypatch.setattr(agent, "CGMINER_PORT", 1)
-        tel = agent._poll_telemetry({"ip": "127.0.0.1", "type": "cgminer"})
+        tel = agent._poll_telemetry(
+            {"ip": "127.0.0.1", "type": "cgminer", "mac": "02:00:00:00:02:01"}
+        )
         assert tel == {}
 
 

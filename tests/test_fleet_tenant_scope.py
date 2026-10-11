@@ -80,15 +80,28 @@ def client():
 
 @pytest.fixture
 def no_connect(monkeypatch):
-    """Make AxeOSConnector fail instantly (hermetic: no network, no 5s waits)."""
+    """Return explicit fixture identity without network or polling waits."""
     import axe_fleet.registry as _reg
-    from axe_fleet.connector import AxeOSConnectorError
 
-    class _NoConn:
-        def __init__(self, *a, **k):
-            raise AxeOSConnectorError("no network in tests")
+    class _KnownFixtureConn:
+        """A protocol fixture supplies identity without opening a socket."""
 
-    monkeypatch.setattr(_reg, "AxeOSConnector", _NoConn)
+        def __init__(self, ip):
+            self.ip = ip
+
+        def fetch_info(self):
+            return {
+                "ASICModel": "Synthetic",
+                "macAddr": {
+                    "10.0.0.1": "02:00:00:00:10:01",
+                    "10.0.0.2": "02:00:00:00:10:02",
+                }[self.ip],
+            }
+
+        def detect_capabilities(self):
+            return {"telemetry": True}
+
+    monkeypatch.setattr(_reg, "AxeOSConnector", _KnownFixtureConn)
 
 
 def _bearer(tenant_id: str) -> dict:
