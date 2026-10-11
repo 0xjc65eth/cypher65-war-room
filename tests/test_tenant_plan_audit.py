@@ -15,6 +15,7 @@ Strategy (mirrors test_tenant_auth.py):
   - Flask test_client for endpoint tests
   - Real DeviceRegistry backed by the same tmp DB with AxeOSConnector patched
 """
+
 import json
 import sqlite3
 from unittest.mock import patch
@@ -43,6 +44,7 @@ app = _app_module.app
 # ══════════════════════════════════════════════════════════════════════
 #  Fixtures
 # ══════════════════════════════════════════════════════════════════════
+
 
 @pytest.fixture
 def client():
@@ -149,6 +151,7 @@ def _seed_axe_device(db_path, device_id, name, ip, tenant_id):
 
 def _make_hermetic_registry(db_path):
     """Real DeviceRegistry on the scratch DB with a patched connector."""
+
     def get_db():
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
@@ -173,10 +176,14 @@ def _make_hermetic_registry(db_path):
 #  get_tenant_plan / can_add_worker — service layer
 # ══════════════════════════════════════════════════════════════════════
 
+
 class TestTenantPlan:
     def test_defaults_when_row_missing(self, tenant_db):
         """A tenant with no row is bounded by the FREE-plan defaults."""
-        assert get_tenant_plan("ghost") == {"plan": DEFAULT_PLAN, "max_workers": DEFAULT_MAX_WORKERS}
+        assert get_tenant_plan("ghost") == {
+            "plan": DEFAULT_PLAN,
+            "max_workers": DEFAULT_MAX_WORKERS,
+        }
 
     def test_reads_custom_row(self, tenant_db):
         _seed_tenant(tenant_db, "acme", plan="free", max_workers=2)
@@ -186,8 +193,14 @@ class TestTenantPlan:
         """The operator's own 'default' tenant gets the generous self-host cap,
         not the strict free-tier limit — a regression guard for the silent-403
         bug the reviewer flagged (no UI to raise max_workers)."""
-        assert get_tenant_plan("default") == {"plan": DEFAULT_PLAN, "max_workers": SELF_HOST_MAX_WORKERS}
-        assert get_tenant_plan("") == {"plan": DEFAULT_PLAN, "max_workers": SELF_HOST_MAX_WORKERS}
+        assert get_tenant_plan("default") == {
+            "plan": DEFAULT_PLAN,
+            "max_workers": SELF_HOST_MAX_WORKERS,
+        }
+        assert get_tenant_plan("") == {
+            "plan": DEFAULT_PLAN,
+            "max_workers": SELF_HOST_MAX_WORKERS,
+        }
         # A seeded row for 'default' is honored over the fallback.
         _seed_tenant(tenant_db, "default", max_workers=10)
         assert get_tenant_plan("default") == {"plan": DEFAULT_PLAN, "max_workers": 10}
@@ -219,6 +232,7 @@ class TestTenantPlan:
 # ══════════════════════════════════════════════════════════════════════
 #  log_audit / recent_audit_logs — service layer
 # ══════════════════════════════════════════════════════════════════════
+
 
 class TestAuditLog:
     def test_log_audit_writes_row(self, tenant_db):
@@ -264,6 +278,7 @@ class TestAuditLog:
 #  GET /api/tenant/status — endpoint
 # ══════════════════════════════════════════════════════════════════════
 
+
 class TestTenantStatusEndpoint:
     def test_returns_plan_usage(self, client, tenant_db, monkeypatch):
         monkeypatch.setenv("SECRET_KEY", "tenant-plan-test-secret-0123456789abcdef")
@@ -271,7 +286,9 @@ class TestTenantStatusEndpoint:
         _seed_axe_device(tenant_db, "d1", "A", "10.0.0.1", "acme")
         token = create_token(subject="acme")
 
-        res = client.get("/api/tenant/status", headers={"Authorization": f"Bearer {token}"})
+        res = client.get(
+            "/api/tenant/status", headers={"Authorization": f"Bearer {token}"}
+        )
         assert res.status_code == 200
         data = res.get_json()
         assert data["tenant_id"] == "acme"
@@ -284,7 +301,9 @@ class TestTenantStatusEndpoint:
         monkeypatch.setenv("SECRET_KEY", "tenant-plan-test-secret-0123456789abcdef")
         token = create_token(subject="ghost")
 
-        res = client.get("/api/tenant/status", headers={"Authorization": f"Bearer {token}"})
+        res = client.get(
+            "/api/tenant/status", headers={"Authorization": f"Bearer {token}"}
+        )
         assert res.status_code == 200
         data = res.get_json()
         assert data["plan"] == DEFAULT_PLAN
@@ -329,6 +348,7 @@ class TestAuditLogsEndpoint:
 #  POST /api/axe-fleet/devices — plan enforcement
 # ══════════════════════════════════════════════════════════════════════
 
+
 class TestAddDeviceEnforcement:
     def test_add_blocked_at_limit(self, client, tenant_db, monkeypatch):
         monkeypatch.setenv("SECRET_KEY", "tenant-plan-test-secret-0123456789abcdef")
@@ -357,7 +377,22 @@ class TestAddDeviceEnforcement:
         registry = _make_hermetic_registry(tenant_db)
         token = create_token(subject="brave")
 
-        with patch("axe_fleet.routes._registry", registry):
+        from axe_fleet.axeos_contract import official_esp_miner_info
+
+        with (
+            patch("axe_fleet.routes._registry", registry),
+            patch("axe_fleet.registry.AxeOSConnector") as connector,
+            patch(
+                "core.registry.detector.detect_firmware",
+                return_value={"reachable": False},
+            ),
+        ):
+            connector.return_value.fetch_info.return_value = official_esp_miner_info(
+                macAddr="02:00:00:00:00:05"
+            )
+            connector.return_value.detect_capabilities.return_value = {
+                "telemetry": True
+            }
             res = client.post(
                 "/api/axe-fleet/devices",
                 json={"ip_address": "10.0.0.5", "name": "New Miner"},
@@ -365,7 +400,9 @@ class TestAddDeviceEnforcement:
             )
         assert res.status_code == 201
         assert res.get_json()["success"] is True
-        assert len(registry.list_devices(tenant_id="brave")) == 1
+        devices = registry.list_devices(tenant_id="brave")
+        assert len(devices) == 1
+        assert devices[0]["mac_address"] == "02:00:00:00:00:05"
 
     def test_audit_written_on_blocked_attempt(self, client, tenant_db, monkeypatch):
         monkeypatch.setenv("SECRET_KEY", "tenant-plan-test-secret-0123456789abcdef")

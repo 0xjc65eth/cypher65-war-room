@@ -118,7 +118,9 @@ def test_status_events_are_edge_triggered_for_repeated_offline_heartbeats(
 ):
     """Repeated identical status updates emit one offline event per transition."""
     caplog.set_level(logging.INFO, logger="cypher65")
-    device = registry.upsert_agent_device("192.0.2.10", tenant_id="tenant-a")
+    device = registry.upsert_agent_device(
+        "192.0.2.10", tenant_id="tenant-a", info={"mac": "02:00:00:00:03:0A"}
+    )
     registry.update_device(device["id"], {"status": "ONLINE"}, tenant_id="tenant-a")
     caplog.clear()
 
@@ -140,7 +142,9 @@ def test_status_events_are_edge_triggered_for_repeated_offline_heartbeats(
 def test_status_events_report_stale_and_recovery_transitions(registry, caplog):
     """Stale and recovered status are each emitted only at their edge."""
     caplog.set_level(logging.INFO, logger="cypher65")
-    device = registry.upsert_agent_device("192.0.2.11", tenant_id="tenant-b")
+    device = registry.upsert_agent_device(
+        "192.0.2.11", tenant_id="tenant-b", info={"mac": "02:00:00:00:03:0B"}
+    )
     old_sample = {
         "ts": int(time.time()) - 3600,
         "hashrate_hs": 4_000_000_000,
@@ -176,7 +180,9 @@ def test_status_events_report_stale_and_recovery_transitions(registry, caplog):
 def test_concurrent_same_status_updates_emit_one_offline_edge(registry, caplog):
     """SQLite row serialization prevents concurrent duplicate transition logs."""
     caplog.set_level(logging.INFO, logger="cypher65")
-    device = registry.upsert_agent_device("192.0.2.12", tenant_id="tenant-c")
+    device = registry.upsert_agent_device(
+        "192.0.2.12", tenant_id="tenant-c", info={"mac": "02:00:00:00:03:0C"}
+    )
     registry.update_device(device["id"], {"status": "ONLINE"}, tenant_id="tenant-c")
     caplog.clear()
 
@@ -199,7 +205,9 @@ def test_concurrent_same_status_updates_emit_one_offline_edge(registry, caplog):
 def test_concurrent_same_share_snapshot_emits_one_update(registry, caplog):
     """Concurrent equal share snapshots serialize against persisted telemetry."""
     caplog.set_level(logging.INFO, logger="cypher65")
-    device = registry.upsert_agent_device("192.0.2.13", tenant_id="tenant-share")
+    device = registry.upsert_agent_device(
+        "192.0.2.13", tenant_id="tenant-share", info={"mac": "02:00:00:00:03:0D"}
+    )
     registry.save_agent_telemetry(
         device["id"],
         {
@@ -236,7 +244,9 @@ def test_concurrent_same_share_snapshot_emits_one_update(registry, caplog):
 def test_share_update_dedup_does_not_require_hashrate(registry, caplog):
     """Share telemetry can be valid even when a device omits hashrate."""
     caplog.set_level(logging.INFO, logger="cypher65")
-    device = registry.upsert_agent_device("192.0.2.14", tenant_id="tenant-share-nohr")
+    device = registry.upsert_agent_device(
+        "192.0.2.14", tenant_id="tenant-share-nohr", info={"mac": "02:00:00:00:03:0E"}
+    )
     caplog.clear()
 
     for offset in range(3):
@@ -257,7 +267,9 @@ def test_share_update_dedup_does_not_require_hashrate(registry, caplog):
 def test_stale_share_sample_does_not_replace_fresh_event_baseline(registry, caplog):
     """An old replay cannot make a previously reported share count look new."""
     caplog.set_level(logging.INFO, logger="cypher65")
-    device = registry.upsert_agent_device("192.0.2.15", tenant_id="tenant-share-stale")
+    device = registry.upsert_agent_device(
+        "192.0.2.15", tenant_id="tenant-share-stale", info={"mac": "02:00:00:00:03:0F"}
+    )
     now = int(time.time())
     registry.save_telemetry(
         device["id"],
@@ -408,7 +420,11 @@ def test_manual_add_route_emits_success_without_address_or_probe_data(
             return_value={"reachable": True, "adapter_type": "bitaxe"},
         ),
     ):
-        connector.return_value.fetch_info.return_value = {}
+        connector.return_value.fetch_info.return_value = {
+            "ASICModel": "Fixture",
+            "macAddr": "02:00:00:00:03:44",
+        }
+        connector.return_value.detect_capabilities.return_value = {"telemetry": True}
         response = client.post(
             "/api/axe-fleet/devices",
             headers={"Authorization": f"Bearer {user_token}"},
@@ -455,7 +471,11 @@ def test_manual_add_route_reports_safe_probe_failure_reason(
             return_value={"reachable": False, "failure_reason": reason},
         ),
     ):
-        connector.return_value.fetch_info.return_value = {}
+        connector.return_value.fetch_info.return_value = {
+            "ASICModel": "Fixture",
+            "macAddr": "02:00:00:00:03:44",
+        }
+        connector.return_value.detect_capabilities.return_value = {"telemetry": True}
         response = client.post(
             "/api/axe-fleet/devices",
             headers={"Authorization": f"Bearer {user_token}"},
@@ -550,7 +570,9 @@ def test_detected_pool_cache_path_emits_safe_provider_event(
     monkeypatch.setattr(pool_detection, "_REPORT_CACHE", {})
     monkeypatch.setattr(pool_detection, "_STATS_CACHE", {})
     monkeypatch.setattr(pool_detection, "_LAST_DETECTED_PROVIDER", {})
-    device = registry.upsert_agent_device("192.0.2.20", tenant_id="tenant-pool-path")
+    device = registry.upsert_agent_device(
+        "192.0.2.20", tenant_id="tenant-pool-path", info={"mac": "02:00:00:00:03:14"}
+    )
     registry.save_telemetry(
         device["id"],
         {

@@ -95,7 +95,16 @@ def test_scan_report_has_no_device_ips():
 
 
 def test_explicit_offline_stays_unknown_until_cgminer(monkeypatch):
-    probes = [None, None, {"ip": "10.0.0.8", "type": "cgminer", "model": "S19"}]
+    probes = [
+        None,
+        None,
+        {
+            "ip": "10.0.0.8",
+            "type": "cgminer",
+            "model": "S19",
+            "mac": "02:00:00:00:02:08",
+        },
+    ]
     polls = []
     registrations = []
     sleeps = []
@@ -116,7 +125,14 @@ def test_explicit_offline_stays_unknown_until_cgminer(monkeypatch):
 
     def probe(ip):
         return (
-            probes.pop(0) if probes else {"ip": ip, "type": "cgminer", "model": "S19"}
+            probes.pop(0)
+            if probes
+            else {
+                "ip": ip,
+                "type": "cgminer",
+                "model": "S19",
+                "mac": "02:00:00:00:02:08",
+            }
         )
 
     def poll(device):
@@ -141,12 +157,21 @@ def test_explicit_offline_stays_unknown_until_cgminer(monkeypatch):
     with pytest.raises(StopLoop):
         agent.main()
 
-    assert registrations == [[{"ip": "10.0.0.8", "type": "cgminer", "model": "S19"}]]
+    assert registrations == [
+        [
+            {
+                "ip": "10.0.0.8",
+                "type": "cgminer",
+                "model": "S19",
+                "mac": "02:00:00:00:02:08",
+            }
+        ]
+    ]
     assert polls and polls[0]["type"] == "cgminer"
 
 
 def test_blocked_ips_are_not_reintroduced(monkeypatch):
-    devices = [{"ip": "192.168.1.50", "type": "bitaxe"}]
+    devices = [{"ip": "192.168.1.50", "type": "bitaxe", "mac": "02:00:00:00:01:50"}]
     registrations = []
     sleeps = []
 

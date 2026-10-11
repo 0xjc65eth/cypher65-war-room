@@ -1312,6 +1312,7 @@ class TestCloudDeployGuards:
     def mock_registry(self):
         r = MagicMock()
         r.get_device_by_ip.return_value = None
+        r.get_removed_by_ip.return_value = {}
         r.add_device.return_value = {"id": "d1", "name": "Miner", "status": "OFFLINE"}
         return r
 

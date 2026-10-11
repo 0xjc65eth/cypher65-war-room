@@ -94,7 +94,7 @@ def test_scan_register_telemetry_and_fleet_listing(fleet_pipeline, monkeypatch, 
         pushed = client.post(
             "/api/agent/telemetry",
             headers=agent_headers,
-            json={"ip": host, "telemetry": telemetry},
+            json={"ip": host, "mac": discovered[0]["mac"], "telemetry": telemetry},
         )
         assert pushed.status_code == 200
         assert pushed.get_json()["status"] in ("ONLINE", "HASHING")
@@ -138,7 +138,7 @@ def test_scan_register_telemetry_and_fleet_listing(fleet_pipeline, monkeypatch, 
         outage_push = client.post(
             "/api/agent/telemetry",
             headers=agent_headers,
-            json={"ip": host, "telemetry": outage_sample},
+            json={"ip": host, "mac": discovered[0]["mac"], "telemetry": outage_sample},
         )
         assert outage_push.status_code == 200
         during_outage = client.get("/api/axe-fleet/devices", headers=viewer_headers)
@@ -151,7 +151,7 @@ def test_scan_register_telemetry_and_fleet_listing(fleet_pipeline, monkeypatch, 
         recovery_push = client.post(
             "/api/agent/telemetry",
             headers=agent_headers,
-            json={"ip": host, "telemetry": recovered},
+            json={"ip": host, "mac": discovered[0]["mac"], "telemetry": recovered},
         )
         assert recovery_push.status_code == 200
         after_recovery = client.get("/api/axe-fleet/devices", headers=viewer_headers)
