@@ -1,12 +1,12 @@
 # CYPHER65 — MASTER ENGINEERING RECOVERY REPORT
 
-Checkpoint de publicação: 2026-10-11 15:08 UTC, Europe/Brussels. Unidade atual #757, base `a121276f00c20feff5a9f06d3854eda911b35dcf`. Histórico completo permanece no Git e nos documentos por Issue. Evidência local, CI do head exato, approval GitHub, deploy e prova física são estados separados.
+Checkpoint de publicação: 2026-10-11 15:12 UTC, Europe/Brussels. Unidade atual #757, base `a121276f00c20feff5a9f06d3854eda911b35dcf`. Histórico completo permanece no Git e nos documentos por Issue. Evidência local, CI do head exato, approval GitHub, deploy e prova física são estados separados.
 
 ## 1. Recovery status
 
 Recuperação FreeBuff reconstruída; PR1–PR7 mapeados sem duplicação; originais, sete stashes e WIPs preservados. Frontend/Chart ownership, Fleet/restore/binding transacional, mobile, QA hermético, Black, cache de comandos e Session Evidence foram entregues em Issues/branches/PRs próprios. #816/#814 e #817/#787 foram integrados externamente pelo mantenedor. Este agente não realizou merge/deploy/fechamento manual de Issue.
 
-#757 concluiu implementação local dos 14 módulos, estados e regressões de consumidores reais. E2E e frontend finais PASS; publicação/CI remoto são os próximos gates. Não há declaração de conclusão universal ou de produção validada. [Contrato, matriz e evidência #757](docs/qa/ISSUE_757_OPERATIONAL_PAGES.md).
+#757 concluiu implementação local dos 14 módulos, estados e regressões de consumidores reais. E2E e frontend finais PASS; [PR #818](https://github.com/0xjc65eth/cypher65-war-room/pull/818) publicada em draft, CI remoto PENDING neste checkpoint. Não há declaração de conclusão universal ou de produção validada. [Contrato, matriz e evidência #757](docs/qa/ISSUE_757_OPERATIONAL_PAGES.md).
 
 ## 2. GitHub status e rastreabilidade
 
@@ -25,7 +25,7 @@ Recuperação FreeBuff reconstruída; PR1–PR7 mapeados sem duplicação; origi
 | #813 | [#815](https://github.com/0xjc65eth/cypher65-war-room/pull/815) | `fd683ecda08d2d867bf9f02d708d7b040e49a725` |
 | #814 | [#816](https://github.com/0xjc65eth/cypher65-war-room/pull/816) | `2c21a39733b900c79ad310b69aa3df9fd28a5bf9`, por `0xjc65eth`, 2026-10-11 09:09:33 UTC |
 | #787 | [#817](https://github.com/0xjc65eth/cypher65-war-room/pull/817) | `9a9f8ae838d2d56e3b7ae649671e2655961af9f9`, por `0xjc65eth`, 2026-10-11 09:19:18 UTC |
-| #757 | `fix/757-operational-evidence-states` | Unidade isolada; publicação e CI pendentes |
+| #757 | [#818](https://github.com/0xjc65eth/cypher65-war-room/pull/818) | Branch `fix/757-operational-evidence-states`; código `755e806594feeabb9d43a44277f584b5604c2e82`; draft, CI PENDING no checkpoint |
 
 #816: oito checks obrigatórios e Codecov SUCCESS no head `11f5a87457585df4f556173db600aeffca55f94d`. #817: oito checks e Codecov SUCCESS no head externo `3a8da5d93166b150ccce24d21218d44997a2ed24`. Ambos retornaram `reviews: []` no snapshot MERGED; merge externo não é comprovação de approval ou deploy. O commit documental local `b1c01da` da #787 foi preservado após rejeição por avanço remoto, sem force push. Seus resultados finais são reconciliados neste relatório.
 
@@ -52,7 +52,7 @@ Master avançou externamente para `a121276` com #781 (Zustand mobile). A unidade
 | #757 | 4470 PASS / 2 SKIP, zero failures/errors, 289,37 s; cobertura nos mesmos targets de produção do CI 85,81% (gate80) |
 | #757 consumers | 55 primários + 57 secundários PASS; JS core1694 PASS; sintaxe/drift17/DOM/a11y/tokens/Black107/Flake8/Bandit/monkeypatch PASS |
 | #757 browser/frontend | 94 E2E PASS, 4,9 min; pipeline frontend PASS; axe100/100 desktop/mobile, zero button-name; capturas inspecionadas; rounds anteriores falhos preservados |
-| #757 CI / produção | CI NOT RUN antes de publicar; produção/hardware NOT RUN |
+| #757 CI / produção | CI remoto PENDING na PR818; produção/hardware NOT RUN |
 
 A coleta Python #757 usou tracing amplo; o relatório de 85,81% restringe os targets a `app`, `helpers`, `axe_fleet`, `services`, `core`, `routes.admin_routes`, como o CI. O valor amplo91,46% inclui arquivos adicionais e não é comparado ao gate de produção. JUnit4472 casos, dois skips condicionais (Gist privado sem credencial explícita e SDK Sentry ausente). Não houve enfraquecimento de gate.
 
@@ -77,7 +77,7 @@ Recomendação para #757: `Closes` somente após regressões secundárias, E2E f
 | Issue / gate | Estado / requisito externo |
 |---|---|
 | #777/#813 | Binding entregue; reconciliação histórica segue separada, sem fusão automática; produção UNKNOWN |
-| #757 | Implementação/gates locais PASS; publicação e CI remoto em curso; revisão independente final concluída |
+| #757 | Implementação/gates locais PASS; PR818 publicada e CI remoto em curso; revisão independente final concluída |
 | #659 / PR715 | Reconhecimento do host entregue; API versionada/schema/unidades não fornecidos |
 | #598 | Contrato de saldo payout com origem e trilho confiável ausente; não reutilizar marketplace balance |
 | #600 | Dataset/endpoint consumível de floor/ceiling ausente |
@@ -93,12 +93,12 @@ Render não alcança LAN RFC1918 diretamente: requer agente outbound/VPN; `/api/
 
 Ruleset20918386 ativo revalidado: squash, uma approval independente, dismiss stale reviews, resolve threads e oito checks estritos (Unit Tests, build-image, e2e: playwright chromium, frontend: audit visual + guards, integration, mobile: lint + typecheck + jest + build, pytest + JS core, validate). Base/head devem ser atuais. Codecov é acompanhado separadamente.
 
-#816/#817 foram integrados externamente, com CI final verificado e reviews vazios no snapshot. #757 não tem CI publicado nem approval neste checkpoint. Este agente não executará merge/deploy; checks e revisão técnica não são autorização para operação final.
+#816/#817 foram integrados externamente, com CI final verificado e reviews vazios no snapshot. #757/PR818 tem CI em execução e nenhum approval neste checkpoint. O status atual dos checks do head está na PR; este relatório registra o checkpoint de publicação. Este agente não executará merge/deploy; checks e revisão técnica não são autorização para operação final.
 
 ## 9. Next actions
 
-1. Publicar a unidade #757 com gates locais e revisão independente concluídos, sem inferir approval GitHub.
-2. Anexar a PR e conferir oito gates e Codecov no SHA exato, corrigindo qualquer falha demonstrada; manter approval GitHub separado.
+1. Conferir o CI de #818 no head exato e corrigir qualquer falha demonstrada; gates locais e revisão independente concluídos.
+2. Após CI verde, disponibilizar #818 para review, mantendo approval GitHub como gate externo independente. PR já anexada ao chat.
 3. Prosseguir apenas em dívidas com contrato/evidência disponível; requisitos externos da matriz permanecem BLOCKED_EXTERNAL/NOT RUN. Sem hardware/pagamentos/secrets/merge/deploy.
 
 Preservação: `/tmp/c65-original-798.patch` e mapa PR1–PR7 conservam o trabalho interrompido. Sete stashes e WIPs777 em seus checkouts originais permanecem intactos. Nenhum reset, force push ou importação cega foi usado.

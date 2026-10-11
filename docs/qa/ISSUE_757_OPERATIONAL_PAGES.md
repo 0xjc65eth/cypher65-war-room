@@ -1,6 +1,6 @@
 # Issue #757 — operational pages and source evidence
 
-Publication checkpoint: 2026-10-11 15:08 UTC. Base: `a121276f00c20feff5a9f06d3854eda911b35dcf`. Scope: the 14 existing modules, source context, real section navigation and the audited source consumers. Stack, destinations, hardware command endpoints and operational confirmation remain in place. No new infrastructure or paid dependency.
+Publication checkpoint: 2026-10-11 15:12 UTC. [PR #818](https://github.com/0xjc65eth/cypher65-war-room/pull/818), code commit `755e806594feeabb9d43a44277f584b5604c2e82`. Base: `a121276f00c20feff5a9f06d3854eda911b35dcf`. Scope: the 14 existing modules, source context, real section navigation and the audited source consumers. Stack, destinations, hardware command endpoints and operational confirmation remain in place. No new infrastructure or paid dependency.
 
 ## Module/source/function map
 
@@ -35,7 +35,7 @@ Section links are derived from real, visible sections owned by the active module
 - Browser final validation: **94 PASS**, 4.9 min, desktop + mobile across Admin, conversion, operational evidence/overview, agent revoke and terminal console. The new spec contributes 18 browser cases, including all 14 modules × dark/light × reduced/full motion, real section/focus/disclosure behavior, failure/recovery and rapid navigation. Captures inspected for light desktop/mobile; synthetic Fleet unknown counts remain explicit.
 - Combined frontend pipeline: **PASS** (exit 0). Desktop 1440 px and mobile 375 px have no measured page overflow/errors/stuck skeletons; axe scores **100/100** for both with zero button-name violations. Existing mobile-XSS, fetcher units and 3/3 historical mutation detections pass. Earlier failed boot/template/navigation runs remain recorded and are not reported as green.
 - The 112 focused regressions are wired into the frontend CI gate; the new operational E2E spec is included in the existing required Chromium job. No gate is removed or weakened.
-- Remote CI for the new PR: **NOT RUN** before publication. Production, authenticated customer tenants, ASIC hardware, real provider credentials, payments and deployment: **NOT RUN**.
+- Remote CI: **PENDING** on PR #818 at this publication checkpoint; consult its current exact-head checks for the later result. GitHub independent approval remains a separate gate. Production, authenticated customer tenants, ASIC hardware, real provider credentials, payments and deployment: **NOT RUN**.
 
 Test harnesses execute real source fragments/renderers. Their DOM/Chart/network substitutes represent explicit synthetic inputs; they do not substitute implementations under test or prove hardware behavior. Browser fixtures similarly distinguish synthetic observations from live production. The terminal session test now models the real bearer/tenant boundary rather than returning ACME private observations to an anonymous caller after logout; its zero-history assertion remains unchanged.
 
