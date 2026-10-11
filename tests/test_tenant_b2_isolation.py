@@ -228,14 +228,27 @@ class TestAutomationEngineTenant:
 
 @pytest.mark.covers("SEC-001", status="partial")
 class TestApiTenantIsolation:
-    def test_named_tenant_snapshot_excludes_operator_wallet_payload(self, client, monkeypatch):
+    @pytest.mark.parametrize("public_timestamp", [1791732659, 1791732700])
+    def test_named_tenant_snapshot_excludes_operator_wallet_payload(
+        self, client, monkeypatch, public_timestamp
+    ):
         import services.state as state
+        import routes.dashboard_routes as dashboard_routes
+
+        # Reproduce the CI timestamp containing "65" without freezing JWT time.
+        # Keep the real builder; its explicit now argument controls only evidence.
+        real_builder = dashboard_routes.build_operations_overview
+        monkeypatch.setattr(
+            dashboard_routes,
+            "build_operations_overview",
+            lambda snapshot: real_builder(snapshot, now=public_timestamp),
+        )
 
         monkeypatch.setattr(
             state,
             "latest_snapshot",
             {
-                "ts": int(time.time()),
+                "ts": public_timestamp,
                 "btc_address": "bc1q-operator-private",
                 "worker": {"name": "operator-worker", "hashrate": 65},
                 "all_workers": [{"name": "operator-worker"}],
@@ -260,10 +273,30 @@ class TestApiTenantIsolation:
             item for item in overview["domains"] if item["id"] == "economics"
         )
         assert mining["status"] == "missing"
+        assert mining["signals"] == []
         assert economics["status"] == "missing"
         assert economics["signals"] == []
         assert "operator-worker" not in str(overview)
-        assert "65" not in str(overview)
+        assert "bc1q-operator-private" not in str(overview)
+        # Compare numeric leaves, not substrings of public timestamps or labels.
+        pending = [overview]
+        while pending:
+            value = pending.pop()
+            if isinstance(value, dict):
+                pending.extend(value.values())
+            elif isinstance(value, list):
+                pending.extend(value)
+            elif isinstance(value, (int, float)):
+                assert value not in (65, 999)
+
+        assert overview["as_of"] == public_timestamp
+        public_data = next(item for item in overview["domains"] if item["id"] == "data")
+        network_signals = [
+            item for item in public_data["signals"]
+            if item["source"].startswith("snapshot.network.")
+        ]
+        assert network_signals
+        assert all(item["observed_at"] == public_timestamp for item in network_signals)
 
     @pytest.mark.parametrize(
         "path",
