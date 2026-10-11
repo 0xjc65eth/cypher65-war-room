@@ -14,7 +14,7 @@ O acesso ao GitHub no sandbox apresentou um falso aviso de autenticação; consu
 
 ## 2. GitHub status e rastreabilidade
 
-O quadro abaixo conserva os checkpoints publicados da recuperação. Estado atual: #801/#804/#805/#806/#808/#809/#810/#812 integrados externamente; #813 é a continuação nova em validação/publicação. A atualização ao fim deste relatório identifica os SHAs mais recentes.
+O quadro abaixo conserva os checkpoints publicados da recuperação. Estado atual: #801/#804/#805/#806/#808/#809/#810/#812 integrados externamente; #813 é a continuação implementada no [PR #815](https://github.com/0xjc65eth/cypher65-war-room/pull/815). A atualização ao fim deste relatório identifica os SHAs mais recentes.
 
 A matriz detalhada permanece em [PR1–PR7](docs/PR1-PR7-SERIES.md). Os sete ordinais já estavam integrados: #784, #785, #786, #794, #795, #796 e #797; #793 complementa PR3. PR2 não declara uma Issue no corpo. #797 foi encontrado como MERGED, com checks FAILURE e reviews vazios; não foi recriado nem apresentado como CI verde.
 
@@ -147,7 +147,7 @@ Os corpos e comentários das 13 Issues iniciais foram consultados novamente via 
 
 ## 8. Merge readiness
 
-Os PRs de recuperação anteriores foram integrados externamente; os snapshots históricos não equivalem a aprovação independente ou CI global verde. O patch #813 está validado localmente e passou pelas revisões independentes /devil e /advisor, sem HIGH restante demonstrado nos caminhos corrigidos. Exige CI do SHA publicado e approval no GitHub antes de integração. Um MEDIUM distinto de cache após comando está rastreado na [#814](https://github.com/0xjc65eth/cypher65-war-room/issues/814); não houve troca de identidade ou corrupção de histórico nessa reprodução. Não se afirma consistência global de todos os writers de cache. Este agente não realizou merge/deploy e não alega produção validada.
+Os PRs de recuperação anteriores foram integrados externamente; os snapshots históricos não equivalem a aprovação independente ou CI global verde. O [PR #815](https://github.com/0xjc65eth/cypher65-war-room/pull/815), código `67c86f28b7aa58173563eb53b6488d0a7fd6ddfe`, está validado localmente e passou pelas revisões independentes /devil e /advisor, sem HIGH restante demonstrado nos caminhos corrigidos. Exige CI do SHA publicado e approval no GitHub antes de integração. Um MEDIUM distinto de cache após comando está rastreado na [#814](https://github.com/0xjc65eth/cypher65-war-room/issues/814); não houve troca de identidade ou corrupção de histórico nessa reprodução. Não se afirma consistência global de todos os writers de cache. Este agente não realizou merge/deploy e não alega produção validada.
 
 ## 9. Next actions
 
@@ -178,3 +178,5 @@ O [documento #813](docs/qa/ISSUE_813_IDENTITY_ATOMICITY.md) registra contratos, 
 /Advisor final confirmou a correção mínima do cache duplicado e recomendou provar explicitamente a publicação A antes da amostra B; a regressão recebeu esse assert. /Devil reexecutou 51 testes focados (1,90 s) após a correção e não demonstrou HIGH na delta final. A revisão interna não é approval GitHub.
 
 Finding adicional /devil: [#814](https://github.com/0xjc65eth/cypher65-war-room/issues/814), MEDIUM/P2, callback antigo pode sobrescrever o cache PAUSED de um comando que já confirmou no banco. Separado do binding da #813; não há garantia global de coerência de todos os writers de cache. A regressão final fortalecida passou em 51 testes/1,64 s, sem mudança de produção após a suíte completa.
+
+Publicação: [PR #815](https://github.com/0xjc65eth/cypher65-war-room/pull/815), código `67c86f28b7aa58173563eb53b6488d0a7fd6ddfe`. Snapshot na abertura: OPEN/draft, REVIEW_REQUIRED; checks em andamento. Este registro é um checkpoint da publicação; o estado atualizado do CI/approval permanece no PR, por SHA. O commit documental seguinte conserva o código validado e exige seus próprios checks.

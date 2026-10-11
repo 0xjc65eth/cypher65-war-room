@@ -1,6 +1,6 @@
 # Issue #813 — Identidade e ingestão atômica do Fleet
 
-Data do checkpoint: 2026-10-11, Europe/Brussels. Base integrada: `b2a4c223e0f7c1dd9c9d0d2026e63ff45964f44d` (PR #805, merge externo). [Issue #813](https://github.com/0xjc65eth/cypher65-war-room/issues/813) continua a implementação autorizada na [#777](https://github.com/0xjc65eth/cypher65-war-room/issues/777#issuecomment-6027936913), encerrada externamente. Branch: `fix/813-atomic-device-identity`. Sem merge/deploy deste agente.
+Data do checkpoint: 2026-10-11, Europe/Brussels. Base integrada: `b2a4c223e0f7c1dd9c9d0d2026e63ff45964f44d` (PR #805, merge externo). [Issue #813](https://github.com/0xjc65eth/cypher65-war-room/issues/813) continua a implementação autorizada na [#777](https://github.com/0xjc65eth/cypher65-war-room/issues/777#issuecomment-6027936913), encerrada externamente. [PR #815](https://github.com/0xjc65eth/cypher65-war-room/pull/815), código `67c86f28b7aa58173563eb53b6488d0a7fd6ddfe`. Branch: `fix/813-atomic-device-identity`. Sem merge/deploy deste agente.
 
 ## Contrato e compatibilidade
 
@@ -39,7 +39,7 @@ As três falhas HIGH originais de registro sem MAC, associação por IP e pollin
 | PASS | Static gates | Black 107 arquivos, Flake8, Bandit padrão sem MEDIUM/HIGH, guard monkeypatch e diff. |
 | FAIL ambiental inicial | Suíte sob sandbox restrito | 4225 PASS, 72 FAIL, 12 ERROR, 2 SKIP, 85,25%; 83 PermissionErrors de socket local e uma fixture de quota sem MAC, corrigida. Não contado como PASS. |
 | NOT RUN neste checkpoint | Hardware, produção, signing/TestFlight e SLO externo | Fixtures, exports e CI não substituem essas provas. |
-| PENDING | CI do SHA publicado e approval GitHub | Reviews por subagente não equivalem a approval. |
+| PENDING na publicação | [CI/approval do PR #815](https://github.com/0xjc65eth/cypher65-war-room/pull/815) | Consultar estado atualizado por SHA; reviews por subagente não equivalem a approval. |
 
 Os dois skips condicionais são Gist privado sem credencial explícita e SDK Sentry ausente no Python local. Logs: `/tmp/c65-813-full-authorized.log`, `/tmp/c65-813-full-tests.xml`, `/tmp/c65-813-full-coverage.xml`, `/tmp/c65-813-finalfocused.log`, `/tmp/c65-813-fixture-final.log`, `/tmp/c65-813-e2e-authorized.log`. Artefatos /tmp são locais; o CI fornece evidência remota por SHA.
 
