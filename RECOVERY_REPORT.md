@@ -14,7 +14,7 @@ O acesso ao GitHub no sandbox apresentou um falso aviso de autenticação; consu
 
 ## 2. GitHub status e rastreabilidade
 
-O quadro abaixo conserva os checkpoints publicados da recuperação. Estado atual: #801/#804/#805/#806/#808/#809/#810/#812 integrados externamente; #813 é a continuação implementada no [PR #815](https://github.com/0xjc65eth/cypher65-war-room/pull/815). A atualização ao fim deste relatório identifica os SHAs mais recentes.
+O quadro abaixo conserva os checkpoints publicados da recuperação. Estado histórico deste quadro: #801/#804/#805/#806/#808/#809/#810/#812 integrados externamente; #813 foi a continuação implementada no [PR #815](https://github.com/0xjc65eth/cypher65-war-room/pull/815). A atualização ao fim deste relatório identifica os SHAs mais recentes.
 
 A matriz detalhada permanece em [PR1–PR7](docs/PR1-PR7-SERIES.md). Os sete ordinais já estavam integrados: #784, #785, #786, #794, #795, #796 e #797; #793 complementa PR3. PR2 não declara uma Issue no corpo. #797 foi encontrado como MERGED, com checks FAILURE e reviews vazios; não foi recriado nem apresentado como CI verde.
 
