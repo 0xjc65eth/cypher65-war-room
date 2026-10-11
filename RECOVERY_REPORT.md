@@ -1,12 +1,14 @@
 # CYPHER65 — MASTER ENGINEERING RECOVERY REPORT
 
-Checkpoint de publicação: 2026-10-11 15:30 UTC, Europe/Brussels. Unidade atual #757, base `a121276f00c20feff5a9f06d3854eda911b35dcf`. Histórico completo permanece no Git e nos documentos por Issue. Evidência local, CI do head exato, approval GitHub, deploy e prova física são estados separados.
+Checkpoint de reconciliação: 2026-10-11 16:04 UTC (18:04 Europe/Brussels). Unidade documental #825, base integrada externamente `5f6b0e5d98995100bc902f3ec788304ba87c6437`. Histórico completo permanece no Git e nos documentos por Issue. Evidência local, CI do head exato, approval GitHub, deploy e prova física são estados separados.
 
 ## 1. Recovery status
 
 Recuperação FreeBuff reconstruída; PR1–PR7 mapeados sem duplicação; originais, sete stashes e WIPs preservados. Frontend/Chart ownership, Fleet/restore/binding transacional, mobile, QA hermético, Black, cache de comandos e Session Evidence foram entregues em Issues/branches/PRs próprios. #816/#814 e #817/#787 foram integrados externamente pelo mantenedor. Este agente não realizou merge/deploy/fechamento manual de Issue.
 
-#757 concluiu implementação local dos 14 módulos, estados e regressões de consumidores reais. E2E e frontend finais PASS; [PR #818](https://github.com/0xjc65eth/cypher65-war-room/pull/818) publicada em draft. Sete checks obrigatórios e Codecov PASS no head `503520a`; mobile FAIL por dois pins da base, corrigidos separadamente em [PR #820](https://github.com/0xjc65eth/cypher65-war-room/pull/820), CI em execução. Não há declaração de conclusão universal ou de produção validada. [Contrato, matriz e evidência #757](docs/qa/ISSUE_757_OPERATIONAL_PAGES.md).
+#757 concluiu implementação e validação dos14 módulos; PR818 foi integrada externamente por `0xjc65eth` às15:41:46UTC, squash `b28333c`. No head final `3dca133`, sete checks obrigatórios/Codecov PASS e mobile FAIL por pins da base; reviews vazios no snapshot, sem inferir approval. A correção dos pins foi integrada externamente pela PR820 às15:49:54UTC, squash `f5dde52`. No head externo `30f3a80`, oito checks obrigatórios/Codecov PASS; gate iOS adicional e seus checkpoints são distinguidos abaixo. Não houve merge/deploy por este agente. [Contrato #757](docs/qa/ISSUE_757_OPERATIONAL_PAGES.md).
+
+A falha intermitente Unit Tests por timestamp contendo65 foi reproduzida e corrigida em [PR823 / Issue821](https://github.com/0xjc65eth/cypher65-war-room/pull/823). A validação em ordem alternativa identificou uma fixture JWT que poluía export tests; baseline master confirmou a causa, corrigida separadamente em [PR824 / Issue822](https://github.com/0xjc65eth/cypher65-war-room/pull/824). Ambas preservam runtime e assertions privadas. PR823 foi integrada externamente às15:55:59UTC, squash `8aa74cb`; head `82a4a4b` obteve oito gates/Codecov PASS, reviews vazios. PR824 foi integrada externamente por `0xjc65eth` às16:02:40UTC, squash `5f6b0e5`; headexterno `4296178` tem oito checks obrigatórios/Codecov PASS neste checkpoint, reviews vazios. O merge não é tratado como evidência de approval; a conclusão de CI foi confirmada separadamente.
 
 ## 2. GitHub status e rastreabilidade
 
@@ -25,9 +27,10 @@ Recuperação FreeBuff reconstruída; PR1–PR7 mapeados sem duplicação; origi
 | #813 | [#815](https://github.com/0xjc65eth/cypher65-war-room/pull/815) | `fd683ecda08d2d867bf9f02d708d7b040e49a725` |
 | #814 | [#816](https://github.com/0xjc65eth/cypher65-war-room/pull/816) | `2c21a39733b900c79ad310b69aa3df9fd28a5bf9`, por `0xjc65eth`, 2026-10-11 09:09:33 UTC |
 | #787 | [#817](https://github.com/0xjc65eth/cypher65-war-room/pull/817) | `9a9f8ae838d2d56e3b7ae649671e2655961af9f9`, por `0xjc65eth`, 2026-10-11 09:19:18 UTC |
-| #757 | [#818](https://github.com/0xjc65eth/cypher65-war-room/pull/818) | Branch `fix/757-operational-evidence-states`; código `755e806594feeabb9d43a44277f584b5604c2e82`; draft; head documental `503520aef671172676696aecac3214da5b8a2d28`: sete gates PASS, mobile FAIL por base #819 |
-
-| #819 | [#820](https://github.com/0xjc65eth/cypher65-war-room/pull/820) | `fix/819-node-forge-https-pin`, código `a57af26`; gates mobile locais PASS, CI remoto PENDING, sem merge |
+| #757 | [#818](https://github.com/0xjc65eth/cypher65-war-room/pull/818) | MERGED externo `b28333c`, 15:41:46UTC; head3dca133: sete gates PASS, mobile FAIL; nenhum approval inferido |
+| #819 | [#820](https://github.com/0xjc65eth/cypher65-war-room/pull/820) | MERGED externo `f5dde52`, 15:49:54UTC; códigoa57af26, headexterno30f3a80: oito gates/Codecov PASS |
+| #821 | [#823](https://github.com/0xjc65eth/cypher65-war-room/pull/823) | MERGED externo `8aa74cb`, 15:55:59UTC; head82a4a4b: oito gates/Codecov PASS; reviews vazios |
+| #822 | [#824](https://github.com/0xjc65eth/cypher65-war-room/pull/824) | MERGED externo `5f6b0e5`, 16:02:40UTC; head4296178: oito gates/Codecov PASS; reviews vazios |
 
 #816: oito checks obrigatórios e Codecov SUCCESS no head `11f5a87457585df4f556173db600aeffca55f94d`. #817: oito checks e Codecov SUCCESS no head externo `3a8da5d93166b150ccce24d21218d44997a2ed24`. Ambos retornaram `reviews: []` no snapshot MERGED; merge externo não é comprovação de approval ou deploy. O commit documental local `b1c01da` da #787 foi preservado após rejeição por avanço remoto, sem force push. Seus resultados finais são reconciliados neste relatório.
 
@@ -56,8 +59,11 @@ Master avançou externamente para `a121276` com #781 (Zustand mobile). A unidade
 | #757 | 4470 PASS / 2 SKIP, zero failures/errors, 289,37 s; cobertura nos mesmos targets de produção do CI 85,81% (gate80) |
 | #757 consumers | 55 primários + 57 secundários PASS; JS core1694 PASS; sintaxe/drift17/DOM/a11y/tokens/Black107/Flake8/Bandit/monkeypatch PASS |
 | #757 browser/frontend | 94 E2E PASS, 4,9 min; pipeline frontend PASS; axe100/100 desktop/mobile, zero button-name; capturas inspecionadas; rounds anteriores falhos preservados |
-| #757 CI / produção | Head503520a: sete checks obrigatórios + Codecov PASS; mobile FAIL por base, depende PR820; produção/hardware NOT RUN |
-| #819 mobile | Instalação limpa + árvore completa, Forge exploit/RSA, braces10, Doctor21/21, audit high/critical, Biome30, TypeScript, Jest111/16 suites e exports JS iOS/Android/web PASS; CI remoto PENDING |
+| #757 CI / produção | Head3dca133: sete checks/Codecov PASS, mobile FAIL; integração externa818 e reparo de base820 verificados; produção/hardware NOT RUN |
+| #819 mobile | Instalação limpa/árvore/Forge/braces10/Doctor21/21/audit alto/Biome30/types/Jest111/exports PASS; headexterno30f3a80: oito gates/Codecov PASS; 22 advisories moderados permanecem |
+| #821 | Full4471 PASS/2 SKIP, 289,04s, 85,81%; B2file16 PASS; baseline timestamp1 FAIL/1 PASS; quatro mutações × dois timestamps rejeitadas |
+| #822 | Baseline settings→export7 FAIL/20 PASS; corrigido27 PASS; seleção165 PASS; nove combinações fixture/JWT/config restauradas |
+| Composição818/820/823/824 | Patches aplicados sem conflitos em fixture isolada; 166 contratos PASS, JS1694 PASS, drift/sintaxe e guards Forge/braces10 PASS; full Python4471 PASS/2 SKIP, 241,19s, 85,98% nos targets CI (gate80) |
 
 A coleta Python #757 usou tracing amplo; o relatório de 85,81% restringe os targets a `app`, `helpers`, `axe_fleet`, `services`, `core`, `routes.admin_routes`, como o CI. O valor amplo91,46% inclui arquivos adicionais e não é comparado ao gate de produção. JUnit4472 casos, dois skips condicionais (Gist privado sem credencial explícita e SDK Sentry ausente). Não houve enfraquecimento de gate.
 
@@ -65,11 +71,17 @@ Prova negativa: primeiros14 consumers #757 contra master3b9:0PASS/14FAIL; 57 sec
 
 Logs #757 em `/tmp/c65-757-*`, incluindo full/JUnit/coverage, regressões, frontend e E2E. Falhas intermediárias permanecem registradas. Logs temporários não são artifacts remotos.
 
+Logs de composição: `/tmp/c65-composed-full.log`, `/tmp/c65-composed-contracts.log`, `/tmp/c65-composed-js.log`, `/tmp/c65-composed-mobile-guards.log`. A fixture combina patches das quatro unidades sem commits/merge remoto, preservando originais; esta prova local não substitui CI do head publicado.
+
+CI iOS adicional da PR820 no head originala57af26: simulator-build SUCCESS às15:38:13UTC, job114505462137. Artifact11706747476 foi baixado/inspecionado: app nativo, build log, process trace e screenshot real do login. Nome do artifact usa SHA do merge-ref sintético, não substitui o head da PR. Build/install/launch no simulador não estabelecem login autenticado, assinatura/archive/TestFlight/hardware. No headexterno30f3a80, o novo gate iOS também concluiu SUCCESS, job114508285831, 15:57:14UTC. Não implica assinatura/archive/TestFlight/hardware ou login autenticado.
+
 ## 5. /devil findings
 
 #814: race de publicação demonstrada com SQLite/threads/barreiras, tenant incorreto/removido rejeitado, sem criar evento/amostra. #787: 198 casos independentes e sete probes públicos preservaram timeline byte a byte; achados de validade corrigidos.
 
 #757: achados independentes reproduzidos por fragmentos reais e respostas sintéticas: refresh/login tardio restaurando sessão; health primário cruzando tenant; zero/unknown agregados incorretamente; cinco KPIs Admin retidos; token/installer de agente retidos e JSON tardio; ponto zero isolado invisível; ARM/autonomia antigos cruzando sessão; writer advisory sobrescrevendo status canônico. Foram corrigidos e incluídos em regressões. Revisão do delta final de navegação não demonstrou CRITICAL/HIGH/MEDIUM; um MEDIUM adicional de RAF pendente restaurando contagem após UNKNOWN foi reproduzido e corrigido com ownership/cancelamento, incluindo cinco regressões do helper real. Seis casos adicionais demonstraram retenção inválida do cache health; schema rejeitado antes da publicação e testes corrigidos. E2E94/pipeline finais PASS. Após interrupção temporária por limite de uso, /devil validou o último guard com endpoint Flask/registro SQLite reais e cinco probes adicionais de preservação de cache; nenhum CRITICAL/HIGH/MEDIUM residual demonstrado no escopo; nenhum approval GitHub é inferido.
+
+#821:16 PASS independentes e oito mutações rejeitadas pelo GET real, incluindo hash65/account999 em outro domínio/anomalia aninhada. #822:27 PASS independentes e nove combinações da fixture real com rollback integral de config. Nenhum CRITICAL/HIGH/MEDIUM residual demonstrado nesses deltas; cobertura local e review técnico não são approval GitHub.
 
 ## 6. /advisor recommendations
 
@@ -77,13 +89,18 @@ Unidades proporcionais ao contrato: API pública mínima para #814, boundary/obs
 
 Recomendação para #757: `Closes` somente após regressões secundárias, E2E final dos14 módulos e relatório rastreado; até isso, `Refs`. Não exigir estados artificiais em conteúdo estático, não alegar auditoria de todos os charts legados. Revisões técnicas independentes não substituem approval GitHub.
 
+#821: clock control no binding real do builder, JWT intocado e timestamps públicos preservados. #822: teardown padrão monkeypatch após fechamento do cliente, preservando segredo/config anterior ou ausência. Recomendou unidades separadas, sem alteração de runtime/guards.
+
 ## 7. Remaining technical debt e auditoria CYPHER65
 
 | Issue / gate | Estado / requisito externo |
 |---|---|
 | #777/#813 | Binding entregue; reconciliação histórica segue separada, sem fusão automática; produção UNKNOWN |
-| #757 | Implementação/gates locais PASS; PR818 publicada, CI bloqueado pelos pins da base; depende PR820; revisão independente final concluída |
-| #819 / PR820 | Dois pins #782 reparados; CI próprio em execução, integração/approval externos |
+| #757 | PR818 MERGED externamente; regressões/frontend/E2E PASS; nenhum merge/deploy deste agente |
+| #819 / PR820 | Dois pins reparados e PR MERGED externamente; oito gates do head30f3a80 PASS; nenhum approval inferido |
+| #821 / PR823 | MERGED externo8aa74cb; oito gates PASS no head82a4a4b; não infere approval |
+| #822 / PR824 | MERGED externo5f6b0e5; oito gates/Codecov PASS no head4296178; não infere approval |
+| #825 | Relatório93dea873 não incluído no squash823; reconciliação rastreada nesta unidade documental |
 | #659 / PR715 | Reconhecimento do host entregue; API versionada/schema/unidades não fornecidos |
 | #598 | Contrato de saldo payout com origem e trilho confiável ausente; não reutilizar marketplace balance |
 | #600 | Dataset/endpoint consumível de floor/ceiling ausente |
@@ -99,12 +116,14 @@ Render não alcança LAN RFC1918 diretamente: requer agente outbound/VPN; `/api/
 
 Ruleset20918386 ativo revalidado: squash, uma approval independente, dismiss stale reviews, resolve threads e oito checks estritos (Unit Tests, build-image, e2e: playwright chromium, frontend: audit visual + guards, integration, mobile: lint + typecheck + jest + build, pytest + JS core, validate). Base/head devem ser atuais. Codecov é acompanhado separadamente.
 
-#816/#817 foram integrados externamente, com CI final verificado e reviews vazios no snapshot. #757/PR818 tem sete gates e Codecov PASS no head503520a, mobile FAIL e nenhum approval neste checkpoint. A integração da PR820 na base e nova validação do head atual são requisitos; não se infere verde de uma correção em outra branch. O status atual dos checks do head está na PR; este relatório registra o checkpoint de publicação. Este agente não executará merge/deploy; checks e revisão técnica não são autorização para operação final.
+#816/#817/#818/#820/#823/#824 foram integrados externamente; seus snapshots de reviews eram vazios, portanto merge não é tratado como evidência de approval. PR818 foi integrada com mobile FAIL; PR820 posteriormente obteve oito gates PASS no headexterno30f3a80. PR823 obteve oito gates/Codecov PASS no head82a4a4b; PR824 foi integrada com E2E ainda em execução; o head4296178 concluiu posteriormente oito gates/Codecov PASS; ausência de reviews não comprova approval. A documentação825 requer sua própria validação e approval e não modifica runtime. Estado atual está nas PRs; este relatório registra um checkpoint, sem inferir verde por correção em outro head. Nenhum merge/deploy/manual Issue closure foi executado por este agente.
 
 ## 9. Next actions
 
-1. Conferir os oito gates e Codecov da PR820 no head exato; gates mobile locais e revisões independentes concluídos.
-2. Integração de #820 na base depende do mantenedor/approval; depois atualizar e revalidar #818 no head exato antes de disponibilizar para review. Ambas as PRs anexadas ao chat; nenhum merge autorizado nesta tarefa.
-3. Prosseguir apenas em dívidas com contrato/evidência disponível; requisitos externos da matriz permanecem BLOCKED_EXTERNAL/NOT RUN. Sem hardware/pagamentos/secrets/merge/deploy.
+1. Aguardar e inspecionar os oito checks/Codecov da unidade documental825; registrar FAIL/BLOCKED/PENDING sem inventar approval.
+2. Integração da documentação825 depende do mantenedor e das proteções atuais. CI de simulador adicional820 é separado dos oito gates e de assinatura/hardware.
+3. Prosseguir apenas com contrato/evidência disponível; matriz externa permanece BLOCKED_EXTERNAL/NOT RUN. Sem hardware/pagamentos/secrets/merge/deploy deste agente.
 
-Preservação: `/tmp/c65-original-798.patch` e mapa PR1–PR7 conservam o trabalho interrompido. Sete stashes e WIPs777 em seus checkouts originais permanecem intactos. Nenhum reset, force push ou importação cega foi usado.
+A reconciliação publicada na branch821 como93dea873 ocorreu após o merge externo823 e ficou fora do squash8aa74cb. O commit/branch permanecem preservados; esta unidade825 recupera seu relatório e atualiza os checkpoints, sem enviar direto ao master. /devil confirmou que82a→93 altera somente dois documentos, nenhum teste/runtime; corrigiu-se também uma linha vazia que quebrava a tabela de Issues.
+
+Preservação: `/tmp/c65-original-798.patch` e mapa PR1–PR7 conservam o trabalho interrompido. Sete stashes e WIPs777 em seus checkouts originais permanecem intactos. Nenhum reset, force push ou importação cega foi usado. A comparação final do diff original com o patch preservado foi byte a byte PASS; seis entradas WIP e sete stashes permanecem no checkout original.

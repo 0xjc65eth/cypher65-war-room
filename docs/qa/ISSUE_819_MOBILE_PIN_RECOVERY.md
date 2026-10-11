@@ -37,3 +37,9 @@ npm warned that it skips integrity checking for the normalized Git dependency sp
 Logs: `/tmp/c65-819-forge-before.log`, `/tmp/c65-819-doctor.log` (FAIL), `/tmp/c65-819-npm-ci-scoped.log`, `/tmp/c65-819-npm-ls-final.log`, `/tmp/c65-819-forge-final.log`, `/tmp/c65-819-braces-final.log`, `/tmp/c65-819-doctor-final.log`, `/tmp/c65-819-audit-final.log`, `/tmp/c65-819-lint-final.log`, `/tmp/c65-819-typecheck-final.log`, `/tmp/c65-819-jest-final.log`, `/tmp/c65-819-build-final.log`. Temporary local logs are not remote artifacts.
 
 CI evidence for inherited failure: [first Forge job](https://github.com/0xjc65eth/cypher65-war-room/actions/runs/38150517988/job/114502830961), [PR818 current code/doc head Forge job](https://github.com/0xjc65eth/cypher65-war-room/actions/runs/38150592298/job/114503052479).
+
+## Reconciled remote evidence — Issue #825
+
+PR820 was integrated externally by0xjc65eth at2026-10-11T15:49:54Z, squashf5dde52825dbc27891fcd2665a36a263201c4bb3. The external synchronized head30f3a80e7a60bbb6570e350a341441500881c964 passed all eight required checks and Codecov; reviews were empty in the snapshot, so approval/deploy is not inferred. The original a57af26 Unit Tests failure remains recorded and was traced to timestamp-substring comparison, fixed separately in PR823/Issue821.
+
+Additional iOS gate: native generation/CocoaPods/build/install/launch/evidence upload SUCCESS on both originala57af26 (job114505462137,15:38:13UTC) and synchronized30f3a80 (job114508285831,15:57:14UTC). Original artifact11706747476 was downloaded and the login screenshot/app/build evidence inspected. Artifact names use the runner's synthetic merge-ref SHA; the associated workflow head was independently checked. This supplies native simulator evidence only; signing/archive/TestFlight/authenticated session/physical hardware/production remain NOT RUN. The earlier NOT RUN entry above describes local publication validation.

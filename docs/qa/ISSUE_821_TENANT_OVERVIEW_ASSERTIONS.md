@@ -23,4 +23,8 @@ A deliberately reordered related 11-file selection returned **7 FAIL / 159 PASS*
 
 Logs: `/tmp/c65-820-unit-fail.log`, `/tmp/c65-821-before.log`, `/tmp/c65-821-focused.log`, `/tmp/c65-821-full.log`, `/tmp/c65-821-contracts.log`, `/tmp/c65-821-baseline-settings-order.log`. Temporary logs are not remote artifacts.
 
-Remote exact-head CI remains authoritative after publication. This branch still inherits the mobile dependency blocker corrected separately in #819/PR820. No merge, deploy, manual Issue closure, production secrets or physical operations were performed.
+Remote exact-head CI remains authoritative after publication. At original publication this branch inherited the mobile blocker; PR820 was subsequently integrated externally as f5dde52 and the branch reconciled with that base. No merge, deploy, manual Issue closure, production secrets or physical operations were performed.
+
+## Reconciled publication — Issue #825
+
+PR823 was integrated externally by0xjc65eth at2026-10-11T15:55:59Z, squash8aa74cb18968f33f5a93c8cbdcde6f0cd496ea9d. Exact external head82a4a4b7e037ad0c6911c17bf3690dcc7dfe87be passed all eight required checks and Codecov; reviews were empty in the snapshot. The documentation-only93dea873 commit published afterwards was outside that squash and is preserved/reconciled through Issue825. No agent merge/deploy or GitHub approval is inferred.
