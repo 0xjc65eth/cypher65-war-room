@@ -1,12 +1,12 @@
 # CYPHER65 — MASTER ENGINEERING RECOVERY REPORT
 
-Data do checkpoint: 2026-10-11, Europe/Brussels. Relatório iniciado na Issue #807 e atualizado nos follow-ups #811 e #813. Snapshot inicial de master: `155dcc7a0ce9e725a54e06bba291932a5b8793a4`. As atualizações externas são atribuídas explicitamente abaixo. Evidência local não substitui CI do SHA exato, approval no GitHub ou prova física.
+Data do checkpoint: 2026-10-11, Europe/Brussels. Relatório iniciado na Issue #807 e atualizado nos follow-ups #811, #813 e #814. Snapshot inicial de master: `155dcc7a0ce9e725a54e06bba291932a5b8793a4`. As atualizações externas são atribuídas explicitamente abaixo. Evidência local não substitui CI do SHA exato, approval no GitHub ou prova física.
 
 ## 1. Recovery status
 
 **Concluído:** checkpoint FreeBuff reconstruído; originais, sete stashes e WIPs preservados; série PR1–PR7 reconstruída sem duplicar implementação; frontend recuperado e publicado; reparos de Fleet, restore e integridade, dependências mobile, fixtures de QA e gate Black separados por Issue, branch e PR; revisões independentes de /devil e /advisor executadas.
 
-**Checkpoint atual #813:** binding de registro/ingestão/polling implementado sobre master `b2a4c22`, preservando os primitivos integrados de #805. Suíte completa: **4.310 PASS, 2 skips, zero falhas/erros e 85,57%**, 219,69 s; E2E afetado: 8 PASS. A evidência anterior de composição (4.270 PASS) permanece histórica abaixo. A revisão e publicação atual são descritas no [contrato #813](docs/qa/ISSUE_813_IDENTITY_ATOMICITY.md). **Ainda pendentes:** CI do SHA publicado/approval independente, reconciliação de legado sem dados reais disponíveis, unificação completa dos 14 módulos de #757 e critérios externos de hardware, produção, dados e SLO. Nenhum desses itens é apresentado como terminado por mocks ou PR aberto.
+**Checkpoint atual #814:** #815 foi integrado externamente por `0xjc65eth` em 2026-10-11 às 08:27:47 UTC, squash `fd683ecda08d2d867bf9f02d708d7b040e49a725`. Seu head `2b484ee27f41c877bdc20e9428728f4f1bf47fb8` passou pelos checks remotos Python/JS, Unit, validate, mobile, frontend, E2E, imagem, integração e Codecov. A #814 parte dessa master e corrige o MEDIUM de status de comandos versus callback atrasado em unidade própria. Contrato e evidência: [#814](docs/qa/ISSUE_814_COMMAND_CACHE.md). **Ainda pendentes:** publicação/CI/review da #814, reconciliação de legado, unificação dos 14 módulos de #757 e critérios externos de hardware, produção, dados e SLO. Nenhum desses critérios externos é comprovado por fixtures.
 
 O worktree inicial desta conversa estava limpo e em detached HEAD. O checkpoint interrompido estava no checkout `/Users/juliocesar/cypher65-war-room`, branch `fix/798-console-ids-chart-init`, base `ec3bdf6`, com seis arquivos alterados e o mapa PR1–PR7 não rastreado. Foram preservados o backup `/tmp/c65-original-798.patch` e o mapa `/tmp/c65-original-series.md`. O diff original foi comparado novamente byte a byte após a recuperação e continua idêntico; os sete stashes foram preservados. Os WIPs de #777 em `/private/tmp/cypher65-777-clean` e `/Users/juliocesar/cypher65-777-device-identity` não foram incorporados integralmente.
 
@@ -121,14 +121,14 @@ Problema → alternativas → risco → recomendação → justificativa → ace
 
 Houve concordância final, sem aprovação automática. A estratégia não foi usada como substituto de teste.
 
-## 7. Auditoria das Issues e CYPHER65
+## 7. Remaining technical debt e auditoria CYPHER65
 
 Os corpos e comentários das 13 Issues iniciais foram consultados novamente via GitHub; evidência em `/tmp/c65-final-issue-audit.json`. A classificação abaixo distingue requisitos da Issue, evidência histórica e execução atual.
 
 | Issue | Estado / causa | Próxima ação exata |
 |---|---|---|
 | #798 | Reparo recuperado; integração externa de #801. | Validar a release de produção se o operador autorizar; nenhuma Issue foi fechada manualmente. |
-| #777 / #813 | Transporte #810 e binding completo no patch #813; três HIGH corrigidos, suíte completa PASS; #777 encerrada externamente; produção UNKNOWN. | Revisar/integrar #813 somente com CI do SHA exato e approval; reconciliação histórica separada, sem reassociação automática. |
+| #777 / #813 | Transporte #810 e binding completo #815 integrados externamente; três HIGH corrigidos, suíte completa e CI do head final PASS; produção UNKNOWN. | Reconciliação histórica separada, sem reassociação automática; observar produção somente no escopo autorizado. |
 | #787 | #793 e testes focados entregam parte de Session Evidence. | Conferir todos os critérios de UI, live e malformed; fechar somente pelo fluxo autorizado. |
 | #757 | Os 14 módulos, estados e unificação são um trabalho mais amplo. | Continuar em PR próprio; #798 corrige boot/chart, sem completar toda a UX. |
 | #659 | PR #715 entrega reconhecimento de host; schema da API não fornecido, segundo comentário. | Obter contrato versionado, com redação de dados sensíveis e unidades; manter fallback e não inventar normalizer. |
@@ -147,14 +147,19 @@ Os corpos e comentários das 13 Issues iniciais foram consultados novamente via 
 
 ## 8. Merge readiness
 
-Os PRs de recuperação anteriores foram integrados externamente; os snapshots históricos não equivalem a aprovação independente ou CI global verde. O [PR #815](https://github.com/0xjc65eth/cypher65-war-room/pull/815), código `67c86f28b7aa58173563eb53b6488d0a7fd6ddfe`, está validado localmente e passou pelas revisões independentes /devil e /advisor, sem HIGH restante demonstrado nos caminhos corrigidos. Exige CI do SHA publicado e approval no GitHub antes de integração. Um MEDIUM distinto de cache após comando está rastreado na [#814](https://github.com/0xjc65eth/cypher65-war-room/issues/814); não houve troca de identidade ou corrupção de histórico nessa reprodução. Não se afirma consistência global de todos os writers de cache. Este agente não realizou merge/deploy e não alega produção validada.
+Os PRs de recuperação anteriores e a [#815](https://github.com/0xjc65eth/cypher65-war-room/pull/815) foram integrados externamente; merge por si só não comprova aprovação independente ou produção. CI do head final da #815 foi verificado verde. A #814 tem implementação e revisão internas em unidade própria, com 110 testes focados e oito E2E Fleet PASS; a suíte completa passou com **4325 testes, 2 skips, zero falhas/erros, 85,59% de cobertura e 184,93 s**. JUnit registra 4327 casos. Publicação, CI do novo SHA e approval GitHub permanecem gates separados. Revisões por subagentes não substituem approval. Este agente não realizou merge/deploy e não alega produção validada.
 
 ## 9. Next actions
 
-1. Conferir CI do SHA publicado da #813 e corrigir falhas que forem demonstradas; obter review/approval GitHub. Revisões por subagente não substituem approval.
+1. Publicar a #814, conferir CI do SHA exato e corrigir falhas demonstradas; obter review/approval GitHub.
 2. Integrar somente com autorização adicional, checks verdes e aprovação; preservar merges externos e revalidar cada head após mudança de base.
-3. Resolver a #814 em unidade própria: status de comandos e publisher devem compartilhar ordem de publicação, mantendo ACK/auditoria e limites explícitos.
-4. Manter reconciliação histórica, #757 e os critérios externos de hardware/produção/dados/SLO nas trilhas descritas na matriz; preservar WIPs e histórico.
+3. Manter reconciliação histórica, #757 e os critérios externos de hardware/produção/dados/SLO nas trilhas da matriz; preservar WIPs e histórico.
+
+**Validação #814:** 4325 PASS/2 SKIP/85,59%/184,93 s; 110 focused PASS/2,14 s; 8 E2E Fleet PASS/10,3 s; Black/Flake8/Bandit/monkeypatch/diff PASS. Logs `/tmp/c65-814-full.log`, JUnit `/tmp/c65-814-full-tests.xml`, coverage `/tmp/c65-814-full-coverage.xml`. Skips condicionais Gist/Sentry mantidos; nenhum gate enfraquecido. O diff original de #798 foi comparado byte a byte com seu backup e os sete stashes permanecem.
+
+**Implementação #814:** pause direto/enfileirado e resume direto publicam o estado comprometido via API pública do registry, após update bem-sucedido. A rota deixou de escrever o cache diretamente. Não são criadas medições nem eventos de ingestão. ACK, confirmação e ledger mantêm os contratos anteriores.
+
+**/devil #814:** reprodução independente com SQLite, threads/barreiras e callback real terminou com banco/cache PAUSED. Tenant incorreto e removido não foram publicados; publicação não alterou row/histórico/eventos. Nenhum HIGH demonstrado. **/advisor:** recomendou wrapper público mínimo sobre o publisher existente; evita outro lock/outbox e não transmite status capturado anteriormente. Limites por instância/processo e escrita tardia do próprio repoll de resume permanecem explícitos.
 
 ## Evidência durável e limites de integração
 

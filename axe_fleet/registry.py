@@ -1214,6 +1214,16 @@ class DeviceRegistry:
         )
         return status
 
+    def publish_device_state(self, device_id: str, tenant_id: str) -> None:
+        """Refresh the cache from committed state without creating telemetry.
+
+        Command status publication shares the telemetry callback lock. Read after
+        acquiring it, so a delayed command never republishes an obsolete status.
+        This orders callbacks on this instance only; it does not confirm hardware
+        execution or synchronize caches in other processes.
+        """
+        self._notify_telemetry_committed(device_id, tenant_id)
+
     def _notify_telemetry_committed(
         self,
         device_id,
