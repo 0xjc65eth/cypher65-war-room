@@ -40,9 +40,12 @@ def _clean_state():
 
 
 @pytest.fixture
-def rclient():
-    _app_module.app.config["TESTING"] = True
-    _app_module.app.config["JWT_SECRET_KEY"] = "cypher65-test-secret-key-0123456789"
+def rclient(monkeypatch):
+    # Undo both keys after the client closes, restoring absence or prior values.
+    monkeypatch.setitem(_app_module.app.config, "TESTING", True)
+    monkeypatch.setitem(
+        _app_module.app.config, "JWT_SECRET_KEY", "cypher65-test-secret-key-0123456789"
+    )
     with _app_module.app.test_client() as c:
         yield c
 
