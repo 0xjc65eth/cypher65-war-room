@@ -23,4 +23,4 @@ A deliberately reordered related 11-file selection returned **7 FAIL / 159 PASS*
 
 Logs: `/tmp/c65-820-unit-fail.log`, `/tmp/c65-821-before.log`, `/tmp/c65-821-focused.log`, `/tmp/c65-821-full.log`, `/tmp/c65-821-contracts.log`, `/tmp/c65-821-baseline-settings-order.log`. Temporary logs are not remote artifacts.
 
-Remote exact-head CI remains authoritative after publication. This branch still inherits the mobile dependency blocker corrected separately in #819/PR820. No merge, deploy, manual Issue closure, production secrets or physical operations were performed.
+Remote exact-head CI remains authoritative after publication. At original publication this branch inherited the mobile blocker; PR820 was subsequently integrated externally as f5dde52 and the branch reconciled with that base. No merge, deploy, manual Issue closure, production secrets or physical operations were performed.
