@@ -123,19 +123,53 @@
     } catch (e) { /* best-effort: the static checklist stays pending */ }
   }
 
+  let _axeFleetRequestGeneration = 0;
+  let _axeAgentSessionGeneration = 0;
+  var _resetAxeAgentPanel; // init runs in boot before this fragment is evaluated.
+
+  function resetAxeFleetEvidence() {
+    _axeFleetRequestGeneration++;
+    _operationalFleetData = null;
+    _operationalFleetReadAt = null;
+    _operationalFleetError = false;
+    if (dom.axeGrid) dom.axeGrid.textContent = 'Fleet source not loaded for this session';
+    ['axeFleetStatusBadge', 'axeFleetCountBadge', 'axeSummaryHr', 'axeSummaryOnline', 'axeSummaryWarning', 'axeSummaryOffline', 'axeSummaryHealth', 'axeSummaryTemp', 'axeSummaryPower', 'axeSummaryEff', 'axeSummaryBest'].forEach(key => {
+      if (dom[key]) countUpValue(dom[key], '—');
+    });
+    if (dom.axeFleetStatusBadge) dom.axeFleetStatusBadge.className = 'badge badge--mute';
+    if (typeof renderOperationalOverview === 'function') renderOperationalOverview(_lastSnapshot || {}, null, false);
+  }
+
   async function fetchAxeFleet() {
+    const generation = ++_axeFleetRequestGeneration;
     try {
       const r = await authFetch('/api/axe-fleet/health');
+      if (generation !== _axeFleetRequestGeneration) return;
+      if (r.status === 401 || r.status === 403) {
+        resetAxeFleetEvidence();
+        _operationalFleetError = true;
+        if (dom.axeFleetStatusBadge) dom.axeFleetStatusBadge.textContent = 'ACCESS REQUIRED';
+        if (dom.axeGrid) dom.axeGrid.textContent = 'Access required to read Fleet health';
+        renderOperationalOverview(_lastSnapshot || {}, null, true);
+        fetchFleetCommandCenter();
+        return;
+      }
       if (!r.ok) throw new Error('fleet health failed (' + r.status + ')');
       const data = await r.json();
+      if (generation !== _axeFleetRequestGeneration) return;
+      if (!data || !data.fleet_stats || typeof data.fleet_stats !== 'object' || Array.isArray(data.fleet_stats) ||
+          !Array.isArray(data.device_health) || data.device_health.some(device => !device || typeof device !== 'object' || Array.isArray(device) || typeof device.id !== 'string' || !device.id.trim())) {
+        throw new Error('fleet health schema unavailable');
+      }
       _operationalFleetData = data;
       _operationalFleetReadAt = Date.now() / 1000;
       _operationalFleetError = false;
       renderAxeFleet(data);
       renderOperationalOverview(_lastSnapshot || {}, data, false);
     } catch (e) {
+      if (generation !== _axeFleetRequestGeneration) return;
       _operationalFleetError = true;
-      if (dom.axeFleetStatusBadge) dom.axeFleetStatusBadge.textContent = 'ERROR';
+      if (dom.axeFleetStatusBadge) dom.axeFleetStatusBadge.textContent = _operationalFleetData ? 'CACHED · ERROR' : 'ERROR';
       renderOperationalOverview(_lastSnapshot || {}, _operationalFleetData, true);
     }
     // FLEET COMMAND CENTER rides the same poll/SSE cadence.
@@ -414,31 +448,39 @@
     const fleet = data.fleet_stats || {};
     const devices = data.device_health || [];
 
+    const count = value => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null;
+    const total = count(fleet.total_devices);
+    const online = count(fleet.online);
+    const warning = count(fleet.warning);
+    const offline = count(fleet.offline);
+    const countsKnown = [total, online, warning, offline].every(value => value !== null);
+
     // Summary stats
     if (dom.axeSummaryHr) dom.axeSummaryHr.textContent = fleet.total_hashrate_str || '—';
-    if (dom.axeSummaryOnline) countUpValue(dom.axeSummaryOnline, String(fleet.online || 0));
-    if (dom.axeSummaryWarning) countUpValue(dom.axeSummaryWarning, String(fleet.warning || 0));
-    if (dom.axeSummaryOffline) countUpValue(dom.axeSummaryOffline, String(fleet.offline || 0));
+    if (dom.axeSummaryOnline) countUpValue(dom.axeSummaryOnline, online === null ? '—' : String(online));
+    if (dom.axeSummaryWarning) countUpValue(dom.axeSummaryWarning, warning === null ? '—' : String(warning));
+    if (dom.axeSummaryOffline) countUpValue(dom.axeSummaryOffline, offline === null ? '—' : String(offline));
     if (dom.axeSummaryHealth) dom.axeSummaryHealth.textContent = fleet.avg_health_score != null ? Math.round(fleet.avg_health_score) + '/100' : '—';
     if (dom.axeSummaryTemp) dom.axeSummaryTemp.textContent = fleet.avg_temperature_c != null ? fleet.avg_temperature_c.toFixed(1) + '°C' : '—';
-    if (dom.axeSummaryPower) dom.axeSummaryPower.textContent = fleet.total_power_w ? fleet.total_power_w.toFixed(0) + 'W' : '—';
+    if (dom.axeSummaryPower) dom.axeSummaryPower.textContent = fleet.total_power_w != null ? fleet.total_power_w.toFixed(0) + 'W' : '—';
     if (dom.axeSummaryEff) dom.axeSummaryEff.textContent = fleet.efficiency_jth != null ? fleet.efficiency_jth.toFixed(1) + ' J/TH' : '—';
     if (dom.axeSummaryBest) dom.axeSummaryBest.textContent = fleet.best_diff ? fmt.diff(fleet.best_diff) : '—';
 
     // Count badge
-    const total = fleet.total_devices || 0;
-    if (dom.axeFleetCountBadge) dom.axeFleetCountBadge.textContent = total + ' device' + (total === 1 ? '' : 's');
+    if (dom.axeFleetCountBadge) dom.axeFleetCountBadge.textContent = total === null ? '— devices' : total + ' device' + (total === 1 ? '' : 's');
 
     // Status badge
     if (dom.axeFleetStatusBadge) {
-      if (total === 0) dom.axeFleetStatusBadge.textContent = 'NO DEVICES';
+      if (!countsKnown) dom.axeFleetStatusBadge.textContent = 'UNKNOWN';
+      else if (total === 0) dom.axeFleetStatusBadge.textContent = 'NO DEVICES';
       else if (fleet.offline === total) dom.axeFleetStatusBadge.textContent = 'ALL OFFLINE';
       else if (fleet.warning > 0) dom.axeFleetStatusBadge.textContent = fleet.warning + ' WARNING';
       else if (fleet.online === total) dom.axeFleetStatusBadge.textContent = 'ALL ONLINE';
       else dom.axeFleetStatusBadge.textContent = fleet.online + '/' + total + ' ONLINE';
       dom.axeFleetStatusBadge.className = 'badge';
-      if (fleet.offline === total) dom.axeFleetStatusBadge.classList.add('badge--red');
-      else if (fleet.warning > 0) dom.axeFleetStatusBadge.classList.add('badge--amber');
+      if (!countsKnown || total === 0) dom.axeFleetStatusBadge.classList.add('badge--mute');
+      else if (offline === total) dom.axeFleetStatusBadge.classList.add('badge--red');
+      else if (warning > 0) dom.axeFleetStatusBadge.classList.add('badge--amber');
       else dom.axeFleetStatusBadge.classList.add('badge--green');
     }
 
@@ -768,41 +810,90 @@
     '</div>';
   }
 
-  function openAxeDetail(deviceId) {
+  let _axeDetailChart = null;
+  let _axeDetailRequestGeneration = 0;
+  let _axeHistoryRequestGeneration = 0;
+  let _operationalEvidenceSession = null;
+
+  function _clearAxeHistory() {
+    _axeHistoryRequestGeneration++;
+    if (_axeDetailChart) { _axeDetailChart.destroy(); _axeDetailChart = null; }
+    const wrap = document.getElementById('axe-detail-chart-wrap');
+    const canvas = document.getElementById('axe-detail-chart');
+    const status = document.getElementById('axe-detail-chart-status');
+    const count = document.getElementById('axe-detail-chart-count');
+    if (wrap) { wrap.style.display = 'none'; wrap.setAttribute('aria-busy', 'false'); }
+    if (canvas) canvas.hidden = true;
+    if (status) status.textContent = '';
+    if (count) count.textContent = '—';
+  }
+
+  function resetAxeDetail() {
+    _axeDetailRequestGeneration++;
+    _clearAxeHistory();
+    if (dom.axeDetail) dom.axeDetail.style.display = 'none';
+    if (dom.axeDetailTitle) dom.axeDetailTitle.textContent = '';
+    if (dom.axeDetailBody) { dom.axeDetailBody.innerHTML = ''; dom.axeDetailBody.setAttribute('aria-busy', 'false'); }
+  }
+
+  function syncOperationalEvidenceSession(tenant, connected, force) {
+    const key = JSON.stringify([tenant || 'default', !!connected]);
+    if (_operationalEvidenceSession === key && !force) return;
+    _operationalEvidenceSession = key;
+    resetAxeDetail();
+    resetAxeFleetEvidence();
+    _axeAgentSessionGeneration++;
+    if (typeof _resetAxeAgentPanel === 'function') _resetAxeAgentPanel();
+    if (typeof resetFleetSummaryEvidence === 'function') resetFleetSummaryEvidence();
+    if (typeof resetAdminEvidence === 'function') resetAdminEvidence();
+    if (typeof resetWalletHistoryEvidence === 'function') resetWalletHistoryEvidence();
+    if (typeof resetAutomationEvidence === 'function') resetAutomationEvidence();
+  }
+
+  async function openAxeDetail(deviceId) {
     if (!dom.axeDetail || !dom.axeDetailTitle || !dom.axeDetailBody) return;
+    const generation = ++_axeDetailRequestGeneration;
+    _clearAxeHistory();
     dom.axeDetail.style.display = 'block';
     dom.axeDetailTitle.textContent = 'Loading device...';
-    dom.axeDetailBody.innerHTML = '<div class="axe-detail__loading">loading telemetry…</div>';
-
-    authFetch('/api/axe-fleet/devices/' + encodeURIComponent(deviceId))
-      .then(r => r.json())
-      .then(data => {
-        const dev = data.device || {};
-        const tel = data.latest_telemetry || {};
-        dom.axeDetailTitle.textContent = dev.name || 'Device';
-
+    dom.axeDetailBody.setAttribute('aria-busy', 'true');
+    dom.axeDetailBody.innerHTML = '<div class="axe-detail__loading operational-loading" role="status">loading telemetry…</div>';
+    try {
+      const response = await authFetch('/api/axe-fleet/devices/' + encodeURIComponent(deviceId));
+      if (generation !== _axeDetailRequestGeneration) return;
+      if (!response.ok) {
+        dom.axeDetailTitle.textContent = response.status === 401 || response.status === 403 ? 'Access required' : 'Device unavailable';
+        dom.axeDetailBody.textContent = (response.status === 401 || response.status === 403 ? 'Access required. ' : '') + 'Device telemetry request failed (HTTP ' + response.status + '). Reopen the device to retry.';
+        return;
+      }
+      const data = await response.json();
+      if (generation !== _axeDetailRequestGeneration) return;
+      if (!data || !data.device || typeof data.device !== 'object' || Array.isArray(data.device)) throw new Error('Invalid device response');
+      const dev = data.device;
+      const tel = data.latest_telemetry || {};
+      dom.axeDetailTitle.textContent = dev.name || 'Device';
         const items = [
           { lbl: 'Model', val: dev.model || 'unknown' },
           { lbl: 'Firmware', val: (dev.firmware || '') + ' ' + (dev.firmware_version || '') },
           { lbl: 'IP Address', val: dev.ip_address || '—' },
-          { lbl: 'Status', val: dev.status || 'OFFLINE', cls: dev.status === 'ONLINE' ? 'green' : 'red' },
-          { lbl: 'Hashrate', val: fmt.hashrate(tel.hashrate_hs || 0) },
+          { lbl: 'Status', val: dev.status || 'UNKNOWN', cls: dev.status === 'ONLINE' ? 'green' : 'red' },
+          { lbl: 'Hashrate', val: fmt.num(tel.hashrate_hs) ? fmt.hashrate(tel.hashrate_hs) : '—' },
           { lbl: 'Hashrate 1m', val: fmt.num(tel.hashrate_1m) ? fmt.hashrate(tel.hashrate_1m) : 'NOT AVAILABLE' },
           { lbl: 'Hashrate 10m', val: fmt.num(tel.hashrate_10m) ? fmt.hashrate(tel.hashrate_10m) : 'NOT AVAILABLE' },
           { lbl: 'Hashrate 1h', val: fmt.num(tel.hashrate_1h) ? fmt.hashrate(tel.hashrate_1h) : 'NOT AVAILABLE' },
           { lbl: 'Chip Temp', val: fmt.num(tel.chip_temp) ? tel.chip_temp + '°C' : (fmt.num(tel.temp_asic) ? tel.temp_asic + '°C' : 'NOT AVAILABLE'), cls: fmt.num(tel.chip_temp) && tel.chip_temp > 70 ? 'red' : 'green' },
           { lbl: 'VR Temp', val: fmt.num(tel.vr_temp) ? tel.vr_temp + '°C' : (fmt.num(tel.temp_vreg) ? tel.temp_vreg + '°C' : 'NOT AVAILABLE') },
           { lbl: 'Temperature', val: fmt.num(tel.temperature) ? tel.temperature + '°C' : '—', cls: fmt.num(tel.temperature) && tel.temperature > 70 ? 'red' : 'green' },
-          { lbl: 'Power', val: tel.power_watts ? tel.power_watts + ' W' : '—' },
-          { lbl: 'Frequency', val: tel.frequency_mhz ? tel.frequency_mhz + ' MHz' : '—' },
-          { lbl: 'Voltage', val: tel.voltage_mv ? tel.voltage_mv + ' mV' : '—' },
-          { lbl: 'Best Diff', val: tel.best_diff ? fmt.diff(tel.best_diff) : '—', cls: 'gold' },
+          { lbl: 'Power', val: fmt.num(tel.power_watts) ? tel.power_watts + ' W' : '—' },
+          { lbl: 'Frequency', val: fmt.num(tel.frequency_mhz) ? tel.frequency_mhz + ' MHz' : '—' },
+          { lbl: 'Voltage', val: fmt.num(tel.voltage_mv) ? tel.voltage_mv + ' mV' : '—' },
+          { lbl: 'Best Diff', val: fmt.num(tel.best_diff) ? fmt.diff(tel.best_diff) : '—', cls: 'gold' },
           { lbl: 'Shares Accepted', val: tel.shares_accepted != null ? tel.shares_accepted.toLocaleString() : '—' },
           { lbl: 'Shares Rejected', val: tel.shares_rejected != null ? tel.shares_rejected.toLocaleString() : '—' },
           { lbl: 'HW Error %', val: fmt.num(tel.hw_error_pct) ? tel.hw_error_pct.toFixed(2) + '%' : '—', cls: fmt.num(tel.hw_error_pct) && tel.hw_error_pct > 1 ? 'red' : 'green' },
           { lbl: 'Efficiency', val: fmt.num(tel.efficiency_jth) ? tel.efficiency_jth.toFixed(1) + ' J/TH' : '—' },
           { lbl: 'Uptime', val: tel.uptime_str || '—' },
-          { lbl: 'Free Heap', val: tel.free_heap ? tel.free_heap.toLocaleString() + ' B' : '—' },
+          { lbl: 'Free Heap', val: fmt.num(tel.free_heap) ? tel.free_heap.toLocaleString() + ' B' : '—' },
           { lbl: 'WiFi RSSI', val: tel.wifi_rssi != null ? tel.wifi_rssi + ' dBm' : '—' },
           { lbl: 'Last Seen', val: dev.last_seen ? fmt.age(dev.last_seen) : '—' },
         ];
@@ -811,71 +902,93 @@
           '<div class="axe-detail__item"><div class="lbl">' + escapeHtml(it.lbl) + '</div><div class="val' + (it.cls ? ' ' + escapeHtml(it.cls) : '') + '">' + escapeHtml(String(it.val)) + '</div></div>'
         ).join('');
 
-        // Phase C: load telemetry history chart
-        loadDeviceHistoryChart(deviceId);
-      })
-      .catch(() => {
-        dom.axeDetailBody.innerHTML = '<div class="axe-detail__loading">error loading device telemetry</div>';
-      });
+      await loadDeviceHistoryChart(deviceId, generation);
+    } catch (e) {
+      if (generation !== _axeDetailRequestGeneration) return;
+      dom.axeDetailTitle.textContent = 'Device unavailable';
+      dom.axeDetailBody.textContent = 'Error loading device telemetry. Reopen the device to retry.';
+    } finally {
+      if (generation === _axeDetailRequestGeneration) dom.axeDetailBody.setAttribute('aria-busy', 'false');
+    }
   }
 
-  // ── Phase C: Device History Chart ─────────────────────────────────────
-  let _axeDetailChart = null;
-
-  async function loadDeviceHistoryChart(deviceId) {
+  // One owner for the selected device and its asynchronous history response.
+  async function loadDeviceHistoryChart(deviceId, detailGeneration = _axeDetailRequestGeneration) {
+    _clearAxeHistory();
+    const generation = _axeHistoryRequestGeneration;
+    const current = () => generation === _axeHistoryRequestGeneration && detailGeneration === _axeDetailRequestGeneration;
     const wrap = document.getElementById('axe-detail-chart-wrap');
     const canvas = document.getElementById('axe-detail-chart');
     const countBadge = document.getElementById('axe-detail-chart-count');
-    if (!wrap || !canvas || typeof Chart === 'undefined') return;  // Issue #186: defer-safe
-
-    // Destroy previous chart instance so Chart.js doesn't complain.
-    if (_axeDetailChart) { _axeDetailChart.destroy(); _axeDetailChart = null; }
-
-    try {
-      const r = await authFetch('/api/axe-fleet/devices/' + encodeURIComponent(deviceId) + '/history?limit=120');
-      if (!r.ok) return;
-      const data = await r.json();
-      const rows = data.history || [];
-      if (rows.length < 2) return;  // need at least 2 points for a line
-
+    const status = document.getElementById('axe-detail-chart-status');
+    if (!wrap || !canvas) return;
+    const showState = (label, message) => {
       wrap.style.display = 'block';
-      if (countBadge) countBadge.textContent = rows.length + ' points';
-
-      var labels = rows.map(function(r) {
-        var d = new Date(r.ts * 1000);
-        return d.getHours().toString().padStart(2, '0') + ':' + d.getMinutes().toString().padStart(2, '0');
-      });
-
-      var hrVals = rows.map(function(r) { return r.hashrate ? r.hashrate / 1e12 : null; });
-      var tempVals = rows.map(function(r) { return r.temperature; });
-      var effVals = rows.map(function(r) { return r.efficiency_jth; });
-
+      wrap.setAttribute('aria-busy', label === 'loading' ? 'true' : 'false');
+      if (countBadge) countBadge.textContent = label;
+      if (status) status.textContent = message;
+      canvas.hidden = true;
+    };
+    showState('loading', 'Loading retained telemetry…');
+    if (typeof Chart === 'undefined') { showState('unavailable', 'Chart renderer unavailable.'); return; }
+    try {
+      const response = await authFetch('/api/axe-fleet/devices/' + encodeURIComponent(deviceId) + '/history?limit=120');
+      if (!current()) return;
+      if (!response.ok) {
+        showState(response.status === 401 || response.status === 403 ? 'access required' : 'error', 'Telemetry history unavailable (HTTP ' + response.status + '). Reopen the device to retry.');
+        return;
+      }
+      const data = await response.json();
+      if (!current()) return;
+      if (!data || !Array.isArray(data.history)) throw new Error('Invalid telemetry history');
+      const rows = data.history.filter(row => row && fmt.num(row.ts) && row.ts > 0 && Number.isFinite(new Date(row.ts * 1000).getTime()));
+      if (!rows.length) {
+        showState(data.history.length ? 'unknown' : 'empty', data.history.length ? 'Retained samples have no usable timestamps; observation times are unknown.' : 'No retained telemetry samples for this device.');
+        return;
+      }
+      if (!rows.some(row => fmt.num(row.hashrate) || fmt.num(row.temperature) || fmt.num(row.efficiency_jth))) {
+        showState('unknown', 'Retained samples have no numeric measurements for these series.');
+        return;
+      }
+      const numeric = value => fmt.num(value) ? value : null;
+      const radius = field => {
+        const present = rows.map(row => numeric(row[field]) != null);
+        if (present.filter(Boolean).length === 1) return 3;
+        return present.map((value, i) => value && !present[i - 1] && !present[i + 1] ? 3 : 0);
+      };
+      const reducedMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+      const labels = rows.map(row => new Date(row.ts * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
+      wrap.style.display = 'block';
+      wrap.setAttribute('aria-busy', 'false');
+      canvas.hidden = false;
+      if (countBadge) countBadge.textContent = rows.length + (rows.length === 1 ? ' point' : ' points');
+      if (status) status.textContent = 'Source: retained device telemetry · up to 120 samples · received ' + new Date().toLocaleTimeString();
       _axeDetailChart = new Chart(canvas.getContext('2d'), {
         type: 'line',
         data: {
           labels: labels,
           datasets: [
-            { label: 'Hashrate TH/s', data: hrVals, borderColor: 'rgb(6,214,240)', backgroundColor: 'rgba(6,214,240,0.06)', tension: 0.3, pointRadius: 0, fill: true, yAxisID: 'y' },
-            { label: 'Temp °C', data: tempVals, borderColor: 'rgb(255,160,0)', backgroundColor: 'rgba(255,160,0,0.04)', tension: 0.3, pointRadius: 0, borderDash: [4, 2], yAxisID: 'y1' },
-            { label: 'Eff J/TH', data: effVals, borderColor: 'rgb(186,133,224)', backgroundColor: 'transparent', tension: 0.3, pointRadius: 0, borderDash: [2, 3], yAxisID: 'y1' },
-          ]
+            { label: 'Hashrate TH/s', data: rows.map(row => numeric(row.hashrate) == null ? null : row.hashrate / 1e12), borderColor: 'rgb(6,214,240)', backgroundColor: 'rgba(6,214,240,0.06)', tension: 0.3, pointRadius: radius('hashrate'), fill: true, yAxisID: 'y' },
+            { label: 'Temp °C', data: rows.map(row => numeric(row.temperature)), borderColor: 'rgb(255,160,0)', backgroundColor: 'transparent', tension: 0.3, pointRadius: radius('temperature'), borderDash: [4, 2], yAxisID: 'y1' },
+            { label: 'Eff J/TH', data: rows.map(row => numeric(row.efficiency_jth)), borderColor: 'rgb(186,133,224)', backgroundColor: 'transparent', tension: 0.3, pointRadius: radius('efficiency_jth'), borderDash: [2, 3], yAxisID: 'y2' },
+          ],
         },
         options: {
           responsive: true,
           maintainAspectRatio: false,
+          animation: reducedMotion ? false : { duration: 180 },
           interaction: { mode: 'index', intersect: false },
           scales: {
             x: { ticks: { color: cssVar('--text-tertiary'), maxTicksLimit: 10, font: { size: 9 } }, grid: { color: 'rgba(94,89,82,0.12)' } },
             y: { type: 'linear', position: 'left', title: { display: true, text: 'TH/s', color: 'rgb(6,214,240)' }, ticks: { color: cssVar('--text-tertiary'), font: { size: 9 } }, grid: { color: 'rgba(94,89,82,0.10)' } },
-            y1: { type: 'linear', position: 'right', title: { display: true, text: '°C / J/TH', color: 'rgb(255,160,0)' }, ticks: { color: cssVar('--text-tertiary'), font: { size: 9 } }, grid: { display: false } }
+            y1: { type: 'linear', position: 'right', title: { display: true, text: '°C', color: 'rgb(255,160,0)' }, ticks: { color: cssVar('--text-tertiary'), font: { size: 9 } }, grid: { display: false } },
+            y2: { type: 'linear', position: 'right', title: { display: true, text: 'J/TH', color: 'rgb(186,133,224)' }, ticks: { color: cssVar('--text-tertiary'), font: { size: 9 } }, grid: { display: false } },
           },
-          plugins: {
-            legend: { labels: { color: cssVar('--text-secondary'), font: { size: 9 }, usePointStyle: true, padding: 12 } }
-          }
-        }
+          plugins: { legend: { labels: { color: cssVar('--text-secondary'), font: { size: 9 }, usePointStyle: true, padding: 12 } } },
+        },
       });
     } catch (e) {
-      // Non-fatal: chart is a nice-to-have, detail panel still works.
+      if (current()) showState('error', 'Error loading telemetry history. Reopen the device to retry.');
     }
   }
 
@@ -1268,7 +1381,7 @@
     // Device detail close
     if (dom.axeDetailClose) {
       dom.axeDetailClose.addEventListener('click', () => {
-        if (dom.axeDetail) dom.axeDetail.style.display = 'none';
+        resetAxeDetail();
       });
     }
 
@@ -1597,10 +1710,13 @@
     };
 
     document.getElementById('axe-agent-gen')?.addEventListener('click', async () => {
+      const generation = _axeAgentSessionGeneration;
       setStatus('> minting token...');
       try {
         const r = await authFetch('/api/agent/token', { method: 'POST' });
+        if (generation !== _axeAgentSessionGeneration) return;
         const data = await r.json();
+        if (generation !== _axeAgentSessionGeneration) return;
         if (!r.ok || !data.token) {
           setStatus('✗ ' + (data.error || 'token mint failed (HTTP ' + r.status + ')'), 'var(--accent-red)');
           return;
@@ -1614,6 +1730,7 @@
         setRevokePhase('idle');
         setStatus('✓ token issued · tenant ' + (data.tenant_id || ''), 'var(--accent-green)');
       } catch (e) {
+        if (generation !== _axeAgentSessionGeneration) return;
         setStatus('✗ network error', 'var(--accent-red)');
       }
     });
@@ -1656,12 +1773,24 @@
       renderRevoke();
     };
 
+    _resetAxeAgentPanel = () => {
+      panel.style.display = 'none';
+      if (tokenArea) tokenArea.value = '';
+      if (tokenRow) tokenRow.style.display = 'none';
+      if (dockerPre) dockerPre.textContent = '';
+      if (oneLinerPre) oneLinerPre.textContent = '';
+      if (revokeRoot) revokeRoot.dataset.inflight = '0';
+      setRevokePhase('idle');
+      setStatus('');
+    };
+
     revokeTrigger?.addEventListener('click', () => setRevokePhase('confirm'));
     revokeCancel?.addEventListener('click', () => {
       setRevokePhase('idle');
       setStatus('');
     });
     revokeDo?.addEventListener('click', async () => {
+      const generation = _axeAgentSessionGeneration;
       if (revokeState.phase === 'working') return; // nada de disparo duplo local
       // Caminho DESTRUTIVO: a guarda acima só cobre o estado deste closure. Se o
       // painel for inicializado duas vezes (já aconteceu de verdade — a linha
@@ -1673,7 +1802,9 @@
       setRevokePhase('working');
       try {
         const r = await authFetch('/api/agent/tokens/revoke', { method: 'POST' });
+        if (generation !== _axeAgentSessionGeneration) return;
         const data = await r.json().catch(() => ({}));
+        if (generation !== _axeAgentSessionGeneration) return;
         if (!r.ok || !data.success) {
           setRevokePhase('error', {
             reason: data.detail || data.error || ('HTTP ' + r.status),
@@ -1685,10 +1816,11 @@
         setRevokePhase('done', { from: data.revoked_epoch, to: data.active_epoch });
         setStatus('✓ tokens revogados — gere um token novo', 'var(--accent-green)');
       } catch (e) {
+        if (generation !== _axeAgentSessionGeneration) return;
         setRevokePhase('error', { reason: 'network error' });
         setStatus('✗ network error', 'var(--accent-red)');
       } finally {
-        if (revokeRoot) revokeRoot.dataset.inflight = '0';
+        if (generation === _axeAgentSessionGeneration && revokeRoot) revokeRoot.dataset.inflight = '0';
       }
     });
     document.getElementById('axe-agent-copy-token')?.addEventListener('click', () => {

@@ -632,35 +632,41 @@
 
   // Populate LN address from support config on open
   function _populateLNAddress() {
-    var el = document.getElementById('support-ln-address');
-    if (!el || el.textContent !== '—') return;
-    fetch('/api/support-config').then(function(r) { return r.json(); }).then(function(cfg) {
-      var ln = cfg.methods && cfg.methods.find(function(m) { return m.id === 'lightning'; });
-      if (ln && ln.address) el.textContent = ln.address;
-    }).catch(function() { /* support config not available */ });
+    return renderSupportMethods(); // One owner/epoch for config and its recipient address.
   }
 
   // ── Render donation methods into the compact bar + full modal grid ──
   // Fixes the orphaned containers (#support-bar-methods / #support-modal-grid)
   // which had CSS + a copy handler but were never populated by JS. The copy
   // button reads the previous sibling's data-copy attribute (see FASE 3).
+  var _supportMethodsGeneration = 0;
   function renderSupportMethods() {
-    fetch('/api/support-config').then(function(r) { return r.json(); }).then(function(cfg) {
-      var methods = (cfg && cfg.methods) || [];
+    const generation = ++_supportMethodsGeneration;
+    ['support-bar-methods', 'support-modal-grid'].forEach(id => { const el = document.getElementById(id); if (el) el.textContent = 'Loading support configuration…'; });
+    return fetch('/api/support-config').then(function(r) { if (!r.ok) throw new Error((r.status === 401 || r.status === 403 ? 'Access required' : 'Support configuration unavailable') + ' (HTTP ' + r.status + ')'); return r.json(); }).then(function(cfg) {
+      if (generation !== _supportMethodsGeneration) return;
+      if (!cfg || !Array.isArray(cfg.methods) || cfg.methods.some(method => !method || typeof method.address !== 'string' || typeof method.label !== 'string')) throw new Error('Invalid support configuration');
+      var methods = cfg.methods;
       var manifesto = cfg && cfg.manifesto ? cfg.manifesto : '';
 
       // Manifesto (authored, cypherpunk) into the dedicated modal block.
       // Injected BEFORE the methods guard so it renders even if the config
       // ever ships with an empty methods list.
       var maniEl = document.getElementById('support-modal-manifesto');
+      if (maniEl) maniEl.textContent = '';
       if (maniEl && manifesto) {
         maniEl.innerHTML = manifesto.split('\n').map(function(line) {
           if (!line.trim()) return '<br>';
-          return line.replace(/^— (.*)$/, '<span class="support-modal__sign">— $1</span>');
+          return escapeHtml(line).replace(/^— (.*)$/,  '<span class="support-modal__sign">— $1</span>');
         }).join(' ');
       }
 
-      if (!methods.length) return;
+      const lnAddress = document.getElementById('support-ln-address');
+      if (lnAddress) lnAddress.textContent = '—';
+      if (!methods.length) {
+        ['support-bar-methods', 'support-modal-grid'].forEach(id => { const el = document.getElementById(id); if (el) el.textContent = 'No support methods configured'; });
+        return;
+      }
 
       // Compact chips for the fixed footer bar
       var bar = document.getElementById('support-bar-methods');
@@ -694,7 +700,12 @@
       if (lnEl && ln && ln.address && lnEl.textContent === '—') {
         lnEl.textContent = ln.address;
       }
-    }).catch(function() { /* support config not available */ });
+    }).catch(function(error) {
+      if (generation !== _supportMethodsGeneration) return;
+      ['support-bar-methods', 'support-modal-grid'].forEach(id => { const el = document.getElementById(id); if (el) el.textContent = String(error.message || 'Support configuration unavailable') + '. Reopen Support to retry.'; });
+      const address = document.getElementById('support-ln-address');
+      if (address) address.textContent = '—';
+    });
   }
 
   // ── Recent Donations list (Support modal) ──
@@ -907,30 +918,40 @@
   // Save wallet
 
   // ── FASE 2: Fetch wallet history ──
+  var _walletHistoryGeneration = 0;
+  function resetWalletHistoryEvidence() {
+    _walletHistoryGeneration++;
+    const list = document.getElementById('wallet-history-list');
+    if (list) list.textContent = 'Wallet history not loaded for this session';
+  }
   async function fetchWalletHistory() {
+    const generation = ++_walletHistoryGeneration;
+    const list = document.getElementById('wallet-history-list');
+    if (list) list.textContent = 'Loading saved wallets…';
     try {
-      var resp = await authFetch('/api/wallet/history');
-      var data = await resp.json();
-      if (data.success && data.history) {
-        var list = document.getElementById('wallet-history-list');
-        if (list) {
-          list.innerHTML = '';
-          data.history.forEach(function(entry) {
-            var li = document.createElement('button');
-            li.className = 'wallet-history__item';
-            li.innerHTML = '<span class="mono">' + escapeHtml(entry.address.slice(0, 10)) + '...</span> <span class="mute">' + escapeHtml(entry.worker || '') + '</span>';
-            li.onclick = function() {
-              var input = document.getElementById('wallet-address-input');
-              if (input) input.value = entry.address;
-              var wInput = document.getElementById('wallet-worker-input');
-              if (wInput && entry.worker) wInput.value = entry.worker;
-            };
-            list.appendChild(li);
-          });
-        }
-      }
-    } catch(e) {
-      console.warn('[wallet history]', e);
+      const resp = await authFetch('/api/wallet/history');
+      if (generation !== _walletHistoryGeneration) return;
+      if (!resp.ok) throw new Error((resp.status === 401 || resp.status === 403 ? 'Access required' : 'Wallet history unavailable') + ' (HTTP ' + resp.status + ')');
+      const data = await resp.json();
+      if (generation !== _walletHistoryGeneration) return;
+      if (!data || !data.success || !Array.isArray(data.history) || data.history.some(entry => !entry || typeof entry.address !== 'string')) throw new Error('Invalid wallet history response');
+      if (!list) return;
+      list.textContent = data.history.length ? '' : 'No saved wallets';
+      data.history.forEach(entry => {
+        const button = document.createElement('button');
+        button.className = 'wallet-history__item';
+        button.textContent = entry.address.slice(0, 10) + '... ' + (entry.worker || '');
+        button.onclick = () => {
+          const input = document.getElementById('wallet-address-input');
+          if (input) input.value = entry.address;
+          const worker = document.getElementById('wallet-worker-input');
+          if (worker) worker.value = entry.worker || '';
+        };
+        list.appendChild(button);
+      });
+    } catch (error) {
+      if (generation !== _walletHistoryGeneration) return;
+      if (list) list.textContent = String(error.message || 'Wallet history unavailable') + '. Reopen Wallet to retry.';
     }
   }  // ── Personalized wallet greetings (by address) ───────────────────
   // Wallets in this map are community / early-supporters: they receive a

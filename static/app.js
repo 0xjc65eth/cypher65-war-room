@@ -1176,35 +1176,41 @@
 
   // Populate LN address from support config on open
   function _populateLNAddress() {
-    var el = document.getElementById('support-ln-address');
-    if (!el || el.textContent !== '—') return;
-    fetch('/api/support-config').then(function(r) { return r.json(); }).then(function(cfg) {
-      var ln = cfg.methods && cfg.methods.find(function(m) { return m.id === 'lightning'; });
-      if (ln && ln.address) el.textContent = ln.address;
-    }).catch(function() { /* support config not available */ });
+    return renderSupportMethods(); // One owner/epoch for config and its recipient address.
   }
 
   // ── Render donation methods into the compact bar + full modal grid ──
   // Fixes the orphaned containers (#support-bar-methods / #support-modal-grid)
   // which had CSS + a copy handler but were never populated by JS. The copy
   // button reads the previous sibling's data-copy attribute (see FASE 3).
+  var _supportMethodsGeneration = 0;
   function renderSupportMethods() {
-    fetch('/api/support-config').then(function(r) { return r.json(); }).then(function(cfg) {
-      var methods = (cfg && cfg.methods) || [];
+    const generation = ++_supportMethodsGeneration;
+    ['support-bar-methods', 'support-modal-grid'].forEach(id => { const el = document.getElementById(id); if (el) el.textContent = 'Loading support configuration…'; });
+    return fetch('/api/support-config').then(function(r) { if (!r.ok) throw new Error((r.status === 401 || r.status === 403 ? 'Access required' : 'Support configuration unavailable') + ' (HTTP ' + r.status + ')'); return r.json(); }).then(function(cfg) {
+      if (generation !== _supportMethodsGeneration) return;
+      if (!cfg || !Array.isArray(cfg.methods) || cfg.methods.some(method => !method || typeof method.address !== 'string' || typeof method.label !== 'string')) throw new Error('Invalid support configuration');
+      var methods = cfg.methods;
       var manifesto = cfg && cfg.manifesto ? cfg.manifesto : '';
 
       // Manifesto (authored, cypherpunk) into the dedicated modal block.
       // Injected BEFORE the methods guard so it renders even if the config
       // ever ships with an empty methods list.
       var maniEl = document.getElementById('support-modal-manifesto');
+      if (maniEl) maniEl.textContent = '';
       if (maniEl && manifesto) {
         maniEl.innerHTML = manifesto.split('\n').map(function(line) {
           if (!line.trim()) return '<br>';
-          return line.replace(/^— (.*)$/, '<span class="support-modal__sign">— $1</span>');
+          return escapeHtml(line).replace(/^— (.*)$/,  '<span class="support-modal__sign">— $1</span>');
         }).join(' ');
       }
 
-      if (!methods.length) return;
+      const lnAddress = document.getElementById('support-ln-address');
+      if (lnAddress) lnAddress.textContent = '—';
+      if (!methods.length) {
+        ['support-bar-methods', 'support-modal-grid'].forEach(id => { const el = document.getElementById(id); if (el) el.textContent = 'No support methods configured'; });
+        return;
+      }
 
       // Compact chips for the fixed footer bar
       var bar = document.getElementById('support-bar-methods');
@@ -1238,7 +1244,12 @@
       if (lnEl && ln && ln.address && lnEl.textContent === '—') {
         lnEl.textContent = ln.address;
       }
-    }).catch(function() { /* support config not available */ });
+    }).catch(function(error) {
+      if (generation !== _supportMethodsGeneration) return;
+      ['support-bar-methods', 'support-modal-grid'].forEach(id => { const el = document.getElementById(id); if (el) el.textContent = String(error.message || 'Support configuration unavailable') + '. Reopen Support to retry.'; });
+      const address = document.getElementById('support-ln-address');
+      if (address) address.textContent = '—';
+    });
   }
 
   // ── Recent Donations list (Support modal) ──
@@ -1451,30 +1462,40 @@
   // Save wallet
 
   // ── FASE 2: Fetch wallet history ──
+  var _walletHistoryGeneration = 0;
+  function resetWalletHistoryEvidence() {
+    _walletHistoryGeneration++;
+    const list = document.getElementById('wallet-history-list');
+    if (list) list.textContent = 'Wallet history not loaded for this session';
+  }
   async function fetchWalletHistory() {
+    const generation = ++_walletHistoryGeneration;
+    const list = document.getElementById('wallet-history-list');
+    if (list) list.textContent = 'Loading saved wallets…';
     try {
-      var resp = await authFetch('/api/wallet/history');
-      var data = await resp.json();
-      if (data.success && data.history) {
-        var list = document.getElementById('wallet-history-list');
-        if (list) {
-          list.innerHTML = '';
-          data.history.forEach(function(entry) {
-            var li = document.createElement('button');
-            li.className = 'wallet-history__item';
-            li.innerHTML = '<span class="mono">' + escapeHtml(entry.address.slice(0, 10)) + '...</span> <span class="mute">' + escapeHtml(entry.worker || '') + '</span>';
-            li.onclick = function() {
-              var input = document.getElementById('wallet-address-input');
-              if (input) input.value = entry.address;
-              var wInput = document.getElementById('wallet-worker-input');
-              if (wInput && entry.worker) wInput.value = entry.worker;
-            };
-            list.appendChild(li);
-          });
-        }
-      }
-    } catch(e) {
-      console.warn('[wallet history]', e);
+      const resp = await authFetch('/api/wallet/history');
+      if (generation !== _walletHistoryGeneration) return;
+      if (!resp.ok) throw new Error((resp.status === 401 || resp.status === 403 ? 'Access required' : 'Wallet history unavailable') + ' (HTTP ' + resp.status + ')');
+      const data = await resp.json();
+      if (generation !== _walletHistoryGeneration) return;
+      if (!data || !data.success || !Array.isArray(data.history) || data.history.some(entry => !entry || typeof entry.address !== 'string')) throw new Error('Invalid wallet history response');
+      if (!list) return;
+      list.textContent = data.history.length ? '' : 'No saved wallets';
+      data.history.forEach(entry => {
+        const button = document.createElement('button');
+        button.className = 'wallet-history__item';
+        button.textContent = entry.address.slice(0, 10) + '... ' + (entry.worker || '');
+        button.onclick = () => {
+          const input = document.getElementById('wallet-address-input');
+          if (input) input.value = entry.address;
+          const worker = document.getElementById('wallet-worker-input');
+          if (worker) worker.value = entry.worker || '';
+        };
+        list.appendChild(button);
+      });
+    } catch (error) {
+      if (generation !== _walletHistoryGeneration) return;
+      if (list) list.textContent = String(error.message || 'Wallet history unavailable') + '. Reopen Wallet to retry.';
     }
   }  // ── Personalized wallet greetings (by address) ───────────────────
   // Wallets in this map are community / early-supporters: they receive a
@@ -1660,6 +1681,7 @@ dom.walletSave?.addEventListener('click', async () => {
   // aqui: ele ignorava `licenseKey()`, então o header `X-License-Key` (tier
   // PRO) não era coberto.
   const AUTH_SESSION_KEY = '_cypher65_auth_session';
+  let _authSessionGeneration = 0;
 
   function authLoadSession() {
     try {
@@ -1670,10 +1692,14 @@ dom.walletSave?.addEventListener('click', async () => {
     } catch (e) { return null; }
   }
   function authSaveSession(s) {
+    _authSessionGeneration++;
     try { localStorage.setItem(AUTH_SESSION_KEY, JSON.stringify(s)); } catch (e) {}
+    if (typeof syncOperationalEvidenceSession === 'function') syncOperationalEvidenceSession(s && s.tenant_id, !!(s && s.access_token));
   }
   function authClearSession() {
+    _authSessionGeneration++;
     try { localStorage.removeItem(AUTH_SESSION_KEY); } catch (e) {}
+    if (typeof syncOperationalEvidenceSession === 'function') syncOperationalEvidenceSession('default', false);
   }
 
   // R1 (PRO tier): the operator's license key rides along on every API call
@@ -2374,28 +2400,39 @@ dom.walletSave?.addEventListener('click', async () => {
   // safety margin), so the isolated tenant is never dropped at the refresh
   // boundary. The 401-retry below is a belt-and-suspenders for routes that
   // DO hard-require auth.
+  function authSameSession(before, after) {
+    if (!before || !after) return !before && !after;
+    return (before.tenant_id || 'default') === (after.tenant_id || 'default') &&
+      (before.refresh_token ? before.refresh_token === after.refresh_token : before.access_token === after.access_token);
+  }
+
   async function authFetch(url, opts) {
     opts = opts || {};
     const session = authLoadSession();
     if (session && session.refresh_token && authIsExpired(session.expires_at)) {
       await authRefresh();
     }
+    if (!authSameSession(session, authLoadSession())) throw new Error('Session changed during request');
     const token = authGetToken();
     const headers = Object.assign({}, opts.headers || {}, authBuildHeaders(token));
     let res = await fetch(url, Object.assign({}, opts, { headers }));
+    if (!authSameSession(session, authLoadSession())) throw new Error('Session changed during request');
     if (res.status === 401 && token) {
       const refreshed = await authRefresh();
+      if (!authSameSession(session, authLoadSession())) throw new Error('Session changed during request');
       if (refreshed) {
         const headers2 = Object.assign({}, opts.headers || {}, authBuildHeaders(authGetToken()));
         res = await fetch(url, Object.assign({}, opts, { headers: headers2 }));
       }
     }
+    if (!authSameSession(session, authLoadSession())) throw new Error('Session changed during request');
     return res;
   }
 
   async function authRefresh() {
     const s = authLoadSession();
     if (!s || !s.refresh_token) return false;
+    const generation = _authSessionGeneration;
     try {
       const r = await fetch('/api/auth/refresh', {
         method: 'POST',
@@ -2404,7 +2441,7 @@ dom.walletSave?.addEventListener('click', async () => {
       });
       if (!r.ok) return false;
       const data = await r.json();
-      if (!data.access_token) return false;
+      if (generation !== _authSessionGeneration || !authSameSession(s, authLoadSession()) || !data.access_token) return false;
       authSaveSession({
         access_token: data.access_token,
         refresh_token: s.refresh_token,
@@ -2417,6 +2454,7 @@ dom.walletSave?.addEventListener('click', async () => {
 
   async function authLogin(apiKey) {
     if (!apiKey) return { ok: false, error: 'API key is required' };
+    const generation = ++_authSessionGeneration;
     try {
       const r = await fetch('/api/auth/login', {
         method: 'POST',
@@ -2424,7 +2462,9 @@ dom.walletSave?.addEventListener('click', async () => {
         body: JSON.stringify({ api_key: apiKey }),
       });
       const data = await r.json().catch(() => ({}));
-      if (!r.ok) return { ok: false, error: data.error || ('login failed (' + r.status + ')') };
+      if (generation !== _authSessionGeneration) return { ok: false, error: 'Session changed; retry login' };
+      if (!r.ok || !data.access_token) return { ok: false, error: data.error || ('login failed (' + r.status + ')') };
+      if (typeof syncOperationalEvidenceSession === 'function') syncOperationalEvidenceSession(data.tenant_id || 'default', true, true);
       authSaveSession({
         access_token: data.access_token,
         refresh_token: data.refresh_token,
@@ -2440,6 +2480,8 @@ dom.walletSave?.addEventListener('click', async () => {
 
   async function authLogout() {
     const s = authLoadSession();
+    authClearSession();
+    authUpdateUi();
     if (s && s.access_token) {
       try {
         await fetch('/api/auth/logout', {
@@ -2449,8 +2491,6 @@ dom.walletSave?.addEventListener('click', async () => {
         });
       } catch (e) {}
     }
-    authClearSession();
-    authUpdateUi();
   }
 
   function authUpdateUi() {
@@ -2458,6 +2498,7 @@ dom.walletSave?.addEventListener('click', async () => {
     const connected = authSessionValid(s);
     const tenant = connected ? (s.tenant_id || 'default') : 'default';
     if (typeof syncConsoleHistorySession === 'function') syncConsoleHistorySession(tenant, connected);
+    if (typeof syncOperationalEvidenceSession === 'function') syncOperationalEvidenceSession(tenant, connected);
     const toggle = dom.authToggle;
     if (toggle) {
       toggle.innerHTML = _ic('key', 12, true) + escapeHtml(connected ? tenant.toUpperCase() : 'LOGIN');
@@ -2477,7 +2518,8 @@ dom.walletSave?.addEventListener('click', async () => {
   }
 
   function initAuth() {
-    authUpdateUi();
+    // boot() starts before the later stateful UI fragments are initialized.
+    Promise.resolve().then(authUpdateUi);
     const toggle = dom.authToggle;
     const modal = dom.authModal;
     if (toggle && modal) {
@@ -5249,7 +5291,11 @@ function renderPool(pool, luck) {
   function _parseNum(txt) { if (!txt) return NaN; const m = String(txt).match(/([\d.,]+)/); if (!m) return NaN; return parseFloat(m[1].replace(/,/g, '')); }
   function countUpValue(el, targetText, durationMs) {
     durationMs = durationMs || 420;
-    if (!el || window.matchMedia('(prefers-reduced-motion: reduce)').matches) { if (el) el.textContent = targetText; return; }
+    if (!el) return;
+    const existing = _countUpState.get(el);
+    if (existing && existing.raf != null) cancelAnimationFrame(existing.raf);
+    _countUpState.delete(el);
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) { el.textContent = targetText; return; }
     const num = _parseNum(targetText);
     if (isNaN(num)) { el.textContent = targetText; return; }
     const prefix = String(targetText).replace(/^([^\d]*).*/, '$1');
@@ -5257,17 +5303,18 @@ function renderPool(pool, luck) {
     const decimals = (String(targetText).match(/\.(\d+)/) || ['', ''])[1].length;
     const start = performance.now();
     const from = isNaN(_parseNum(el.textContent)) ? 0 : _parseNum(el.textContent);
-    const existing = _countUpState.get(el);
-    if (existing && existing.raf) cancelAnimationFrame(existing.raf);
+    const state = { raf: null };
+    _countUpState.set(el, state);
     const step = () => {
+      if (_countUpState.get(el) !== state) return;
       const t = Math.min(1, (performance.now() - start) / durationMs);
       const eased = 1 - Math.pow(1 - t, 3);
       const current = from + (num - from) * eased;
       el.textContent = prefix + current.toFixed(decimals) + suffix;
-      if (t < 1) { const rafInner = requestAnimationFrame(step); _countUpState.set(el, { raf: rafInner }); }
+      if (t < 1) state.raf = requestAnimationFrame(step);
       else { el.textContent = targetText; _countUpState.delete(el); }
     };
-    const rafOuter = requestAnimationFrame(step);
+    state.raf = requestAnimationFrame(step);
   }
 
   // ── Skeleton loading (design-motion-principles) ──
@@ -6392,6 +6439,83 @@ function renderPool(pool, luck) {
     'admin':       { title: 'ADMIN · CFO',   desc: 'Operador: pool health + funil PRO + LTV/CAC' },
   };
 
+  const MODULE_SOURCES = {
+    dashboard: 'Fonte: seleção Pool ou Fleet. Cada equipamento mantém sua origem e idade da observação.',
+    analysis: 'Fontes: rede Bitcoin, pool e entradas do operador. Custos e cenários dependem das premissas informadas.',
+    wallet: 'Fonte: wallet conectada e status do provedor. Conexão não comprova saldo liquidado nem envia fundos.',
+    fleet: 'Fonte: registro e telemetria local via agente. A API cloud não descobre diretamente a LAN do cliente.',
+    live: 'Fontes: resumo Fleet e eventos reportados. Cache ou falha de consulta não confirmam estado físico atual.',
+    probability: 'Fontes: rede, pool e entradas manuais. Estatísticas por janela são modelos, sem prazo ou previsão.',
+    market: 'Fontes: provedores configurados de mercado e hashprice. Disponibilidade e idade pertencem a cada cotação.',
+    rentals: 'Fontes: contratos MRR/Braiins e observações disponíveis. Hashrate contratado e observado são distintos.',
+    alerts: 'Fonte: alertas reportados. Uma lista vazia não estabelece a saúde dos equipamentos ou dos provedores.',
+    automations: 'Fontes: regras, advisory e dry runs. Acesso, capacidades e confirmação limitam ações operacionais.',
+    docs: 'Fonte: documentação local do projeto. Use as seções para configuração, limites e procedimentos.',
+    learning: 'Fontes: material educacional e referências externas. Conteúdo de estudo não é telemetria operacional.',
+    support: 'Fonte: métodos de apoio configurados pelo operador. Escolher um método não comprova pagamento.',
+    admin: 'Fontes: endpoints restritos do operador. Cada dataset pode falhar separadamente; falha não significa zero.',
+  };
+
+  function openSupportModal(panel) {
+    openModalAnimated(panel);
+    const close = panel.querySelector('.modal__close');
+    if (close) close.focus({ preventScroll: true });
+    renderSupportMethods();
+  }
+
+  function renderModuleSections(name) {
+    const context = document.getElementById('module-evidence-context');
+    const destination = document.getElementById(name === 'dashboard' ? 'operation-console' : 'module-header');
+    if (context && destination && context.parentElement !== destination) destination.appendChild(context);
+    const source = document.getElementById('module-source-context');
+    const nav = document.getElementById('module-section-nav');
+    if (source) source.textContent = MODULE_SOURCES[name] || '';
+    if (!nav) return;
+    nav.replaceChildren();
+    let targets = Array.from(document.querySelectorAll('[data-module].panel, section[data-module].section, .operation-console[data-module], .operational-overview[data-module]'));
+    if (name === 'docs') targets = Array.from(document.querySelectorAll('#section-docs .doc-section[id]'));
+    if (name === 'learning') targets = Array.from(document.querySelectorAll('#learning-panel .doc-section[id]'));
+    if (name === 'support') targets = [document.getElementById('support-panel')].filter(Boolean);
+    // Closed disclosures expose their visible summary; navigation opens them.
+    targets = Array.from(new Set(targets.map(target => {
+      const disclosure = target.closest('details');
+      return disclosure && !disclosure.open && disclosure.id ? disclosure : target;
+    })));
+    targets.filter(target => {
+      if (!target.id || target.hidden || target.classList.contains('module-hidden')) return false;
+      if (name !== 'docs' && name !== 'learning' && name !== 'support' && !(target.getAttribute('data-module') || '').split(/\s+/).includes(name)) return false;
+      if (name === 'support') return true;
+      const pane = target.closest('.tab-pane');
+      if (pane && !pane.classList.contains('active')) return false;
+      return target.getClientRects().length > 0;
+    }).forEach(target => {
+      const heading = target.querySelector('h2, h3, .modal__title');
+      const label = (heading && heading.textContent.trim()) || target.getAttribute('aria-label') || (MODULE_MAP[name] || {}).title;
+      if (!label) return;
+      const link = document.createElement('a');
+      link.className = 'module-section-link';
+      link.href = '#' + target.id;
+      link.textContent = label;
+      link.addEventListener('click', event => {
+        event.preventDefault();
+        if (name === 'support') { openSupportModal(target); return; }
+        // Section navigation is frequent and keyboard-accessible: no motion.
+        const disclosure = target.closest('details');
+        if (disclosure) disclosure.open = true;
+        if (target.classList.contains('panel--collapsible')) {
+          target.classList.remove('collapsed');
+          const toggle = target.querySelector('.panel__toggle');
+          if (toggle) { toggle.classList.remove('collapsed'); toggle.setAttribute('aria-expanded', 'true'); }
+        }
+        target.setAttribute('tabindex', '-1');
+        target.focus({ preventScroll: true });
+        target.scrollIntoView({ block: 'start', behavior: 'instant' });
+      });
+      nav.appendChild(link);
+    });
+    nav.hidden = !nav.children.length;
+  }
+
   function openSidebar() {
     sidebar.classList.add('open');
     if (sidebarBackdrop) sidebarBackdrop.classList.add('visible');
@@ -6597,7 +6721,10 @@ function renderPool(pool, luck) {
     // Depois que a visibilidade estabiliza: resize dos charts já criados
     // E cria/atualiza charts dos canvases que acabaram de ficar visíveis
     // (renderCharts pula canvases ocultos, então é seguro chamá-lo aqui)
+    renderModuleSections(name);
     requestAnimationFrame(function() {
+      if (document.body.dataset.activeModule !== name) return;
+      if (name === 'automations') { _apRefreshStatus(); _apRefreshAutoStatus(); }
       // Motion: staggered enter for the panels that just became visible
       // (opacity + translateY + blur, 200ms, 24ms stagger — Emil <300ms).
       if (!reduceMotion) {
@@ -6676,8 +6803,7 @@ function renderPool(pool, luck) {
       if (name === 'support') {
         const panel = document.getElementById('support-panel');
         if (panel) {
-          openModalAnimated(panel);
-          renderSupportMethods();  // also fills the LN recipient row
+          openSupportModal(panel);  // also fills the LN recipient row
         }
       }
     });
@@ -7586,7 +7712,7 @@ function renderAccount(acct) {
       return;
     }
     if (!alerts || !alerts.length) {
-      setHtmlIfChanged(dom.alertsList, '<li class="alert-empty">no alerts — all systems nominal</li>');
+      setHtmlIfChanged(dom.alertsList, '<li class="alert-empty">no alerts reported — device and source health are not established by an empty alert list</li>');
       if (dom.alertsCountBadge) dom.alertsCountBadge.textContent = '0 active';
       return;
     }
@@ -7870,7 +7996,21 @@ function renderAccount(acct) {
   // Backend: POST /api/automation/arm {armed} (fail-closed per tenant) +
   // GET /api/automation/status (armed + action budget). Arming enables
   // autonomous rule actions, so it requires typed confirmation.
+  let _apControlSessionGeneration = 0;
+  let _apArmedStatusGeneration = 0;
+  let _apAutoStatusGeneration = 0;
   let _apArmed = false;
+  function _apUnknownControl(kind, reason) {
+    const prefix = kind === 'armed' ? 'ap-armed' : 'ap-auto';
+    const label = document.getElementById(prefix + '-label');
+    const btn = document.getElementById(prefix + '-btn');
+    const dot = document.getElementById(prefix + '-dot');
+    if (label) label.textContent = 'UNKNOWN';
+    if (btn) { btn.disabled = true; btn.classList.remove('is-armed'); btn.title = reason || 'Operational status unavailable; reopen Automations to retry'; }
+    if (dot) { dot.style.background = 'var(--text-tertiary)'; dot.style.boxShadow = 'none'; }
+    const badge = document.getElementById(kind === 'armed' ? 'ap-budget-badge' : 'ap-auto-pro-badge');
+    if (badge) { badge.textContent = '—'; badge.className = 'badge badge--mute'; badge.title = reason || 'Status unknown'; }
+  }
   let _apToggleInit = false;
 
   function _apSetUi(armed) {
@@ -7880,6 +8020,7 @@ function renderAccount(acct) {
     const dot = document.getElementById('ap-armed-dot');
     if (label) label.textContent = armed ? 'ARM' : 'OFF';
     if (btn) {
+      btn.disabled = false;
       btn.classList.toggle('is-armed', armed);
       btn.title = armed
         ? 'Auto-Pilot ARMADO — as regras executam ações sozinhas. Clique para desarmar.'
@@ -7892,11 +8033,15 @@ function renderAccount(acct) {
   }
 
   async function _apRefreshStatus() {
+    const session = _apControlSessionGeneration, generation = ++_apArmedStatusGeneration;
     try {
       const r = await authFetch('/api/automation/status');
-      if (!r.ok) return;
-      const d = await r.json().catch(() => ({}));
-      _apSetUi(!!d.armed);
+      if (session !== _apControlSessionGeneration || generation !== _apArmedStatusGeneration) return;
+      if (!r.ok) throw new Error('Operational status unavailable (HTTP ' + r.status + ')');
+      const d = await r.json();
+      if (session !== _apControlSessionGeneration || generation !== _apArmedStatusGeneration) return;
+      if (!d || typeof d.armed !== 'boolean') throw new Error('Invalid operational status');
+      _apSetUi(d.armed);
       const badge = document.getElementById('ap-budget-badge');
       if (badge && typeof d.max_actions_per_window === 'number') {
         const used = d.actions_in_window || 0;
@@ -7906,10 +8051,13 @@ function renderAccount(acct) {
         badge.classList.toggle('badge--amber', used > 0);
         badge.classList.toggle('badge--mute', used === 0);
       }
-    } catch (e) { /* status is advisory — never break the panel */ }
+    } catch (error) {
+      if (session === _apControlSessionGeneration && generation === _apArmedStatusGeneration) _apUnknownControl('armed', error.message);
+    }
   }
 
   async function _apSetArmed(armed) {
+    const session = _apControlSessionGeneration;
     const btn = document.getElementById('ap-armed-btn');
     setBtnLoading(btn, true);
     try {
@@ -7919,6 +8067,7 @@ function renderAccount(acct) {
         body: JSON.stringify({ armed: armed }),
       });
       const d = await r.json().catch(() => ({}));
+      if (session !== _apControlSessionGeneration) return false;
       if (!r.ok || !d.success) {
         showToast('error', '⚠ Auto-Pilot: ' + (d.error || ('HTTP ' + r.status)));
         _apRefreshStatus();
@@ -7929,10 +8078,11 @@ function renderAccount(acct) {
       _apRefreshStatus();
       return true;
     } catch (e) {
+      if (session !== _apControlSessionGeneration) return false;
       showToast('error', '⚠ falha de rede ao alterar o Auto-Pilot');
       return false;
     } finally {
-      setBtnLoading(btn, false);
+      if (session === _apControlSessionGeneration) setBtnLoading(btn, false);
     }
   }
 
@@ -8007,6 +8157,7 @@ function renderAccount(acct) {
     const dot = document.getElementById('ap-auto-dot');
     if (label) label.textContent = auto ? 'ON' : 'OFF';
     if (btn) {
+      btn.disabled = false;
       btn.classList.toggle('is-armed', auto);
       btn.title = auto
         ? 'EXECUÇÃO AUTÔNOMA ON — o piloto executa restart/pause sozinho (PRO + armado). Clique para desligar.'
@@ -8019,11 +8170,15 @@ function renderAccount(acct) {
   }
 
   async function _apRefreshAutoStatus() {
+    const session = _apControlSessionGeneration, generation = ++_apAutoStatusGeneration;
     try {
       const r = await authFetch('/api/auto-pilot/autonomous');
-      if (!r.ok) return;
-      const d = await r.json().catch(() => ({}));
-      _apSetAutoUi(!!d.autonomous);
+      if (session !== _apControlSessionGeneration || generation !== _apAutoStatusGeneration) return;
+      if (!r.ok) throw new Error('Autonomous status unavailable (HTTP ' + r.status + ')');
+      const d = await r.json();
+      if (session !== _apControlSessionGeneration || generation !== _apAutoStatusGeneration) return;
+      if (!d || typeof d.autonomous !== 'boolean' || typeof d.pro !== 'boolean') throw new Error('Invalid autonomous status');
+      _apSetAutoUi(d.autonomous);
       const badge = document.getElementById('ap-auto-pro-badge');
       if (badge) {
         badge.textContent = d.pro ? 'PRO ✓' : 'PRO 🔒';
@@ -8037,10 +8192,13 @@ function renderAccount(acct) {
         const autoBtn = document.getElementById('ap-auto-btn');
         if (autoBtn) autoBtn.title = 'Execução autônoma ON mas o Auto-Pilot está DESARMADO — arme o piloto para ativar.';
       }
-    } catch (e) { /* advisory — never break the panel */ }
+    } catch (error) {
+      if (session === _apControlSessionGeneration && generation === _apAutoStatusGeneration) _apUnknownControl('auto', error.message);
+    }
   }
 
   async function _apSetAuto(enabled) {
+    const session = _apControlSessionGeneration;
     const btn = document.getElementById('ap-auto-btn');
     setBtnLoading(btn, true);
     try {
@@ -8050,6 +8208,7 @@ function renderAccount(acct) {
         body: JSON.stringify({ autonomous: enabled }),
       });
       const d = await r.json().catch(() => ({}));
+      if (session !== _apControlSessionGeneration) return false;
       if (r.status === 402) {
         const price = d.upgrade && d.upgrade.price_usd_month ? ' ($' + d.upgrade.price_usd_month + '/m)' : '';
         showToast('error', '🔒 EXECUÇÃO AUTÔNOMA é PRO — licença necessária' + price);
@@ -8066,10 +8225,11 @@ function renderAccount(acct) {
       _apRefreshAutoStatus();
       return true;
     } catch (e) {
+      if (session !== _apControlSessionGeneration) return false;
       showToast('error', '⚠ falha de rede ao alterar a execução autônoma');
       return false;
     } finally {
-      setBtnLoading(btn, false);
+      if (session === _apControlSessionGeneration) setBtnLoading(btn, false);
     }
   }
 
@@ -8131,6 +8291,37 @@ function renderAccount(acct) {
   let _apRecs = [];
   let _apAudit = [];
   let _apRecsInit = false;
+  let _apRecommendationsGeneration = 0;
+  let _apDryRunGeneration = 0;
+  function _apSourceMessage(listId, countId, message) {
+    const list = document.getElementById(listId);
+    const count = document.getElementById(countId);
+    if (list) list.textContent = message;
+    if (count) count.textContent = '—';
+  }
+  function resetAutomationEvidence() {
+    _apControlSessionGeneration++;
+    _apArmedStatusGeneration++; _apAutoStatusGeneration++;
+    _apArmed = false; _apAuto = false;
+    _apUnknownControl('armed'); _apUnknownControl('auto');
+    ['ap-arm-modal', 'ap-auto-modal'].forEach(id => { const modal = document.getElementById(id); if (modal) modal.classList.remove('modal--open'); });
+    ['ap-arm-type', 'ap-auto-type'].forEach(id => { const input = document.getElementById(id); if (input) input.value = ''; });
+    ['ap-arm-consent', 'ap-auto-consent'].forEach(id => { const checkbox = document.getElementById(id); if (checkbox) checkbox.checked = false; });
+    _apRecommendationsGeneration++;
+    _apDryRunGeneration++;
+    _apRecs = []; _apAudit = [];
+    _apSourceMessage('ap-recs-list', 'ap-recs-badge', 'Recommendations not loaded for this session');
+    _apSourceMessage('ap-audit-list', 'ap-audit-count', 'Audit not loaded for this session');
+    _apSourceMessage('ap-dr-now-list', 'ap-dr-now-count', 'Dry run not loaded for this session');
+    _apSourceMessage('ap-dr-replay-list', 'ap-dr-replay-count', 'Replay not loaded for this session');
+  }
+  async function _apReadSource(url, field) {
+    const response = await authFetch(url);
+    if (!response.ok) throw new Error((response.status === 401 || response.status === 403 ? 'Access required' : 'Source unavailable') + ' (HTTP ' + response.status + ')');
+    const data = await response.json();
+    if (!data || !Array.isArray(data[field]) || data.error || data[field].some(row => !row || typeof row !== 'object' || Array.isArray(row))) throw new Error('Invalid source response');
+    return data;
+  }
 
   function _apRecCardHtml(rec) {
     if (!rec || typeof rec !== 'object') return '';
@@ -8202,7 +8393,9 @@ function renderAccount(acct) {
     const count = document.getElementById('ap-audit-count');
     if (!wrap || !list) return;
     if (!_apAudit.length) {
-      wrap.style.display = 'none';
+      wrap.style.display = '';
+      if (count) count.textContent = '0';
+      list.textContent = 'No recommendation audit entries';
       return;
     }
     wrap.style.display = '';
@@ -8211,23 +8404,25 @@ function renderAccount(acct) {
   }
 
   async function _apLoadRecs() {
-    try {
-      const r = await authFetch('/api/auto-pilot/recommendations');
-      if (r.ok) {
-        const d = await r.json().catch(() => ({}));
-        _apRecs = Array.isArray(d.recommendations) ? d.recommendations : [];
-        if (typeof d.armed === 'boolean') _apSetUi(d.armed);
-      }
-    } catch (e) { /* advisory — never break the module */ }
-    try {
-      const r2 = await authFetch('/api/auto-pilot/recommendations/audit?limit=50');
-      if (r2.ok) {
-        const d2 = await r2.json().catch(() => ({}));
-        _apAudit = Array.isArray(d2.audit) ? d2.audit : [];
-      }
-    } catch (e) { /* best-effort */ }
-    _apRenderRecs();
-    _apRenderAudit();
+    const generation = ++_apRecommendationsGeneration;
+    _apSourceMessage('ap-recs-list', 'ap-recs-badge', 'Loading recommendations…');
+    _apSourceMessage('ap-audit-list', 'ap-audit-count', 'Loading recommendation audit…');
+    const results = await Promise.allSettled([
+      _apReadSource('/api/auto-pilot/recommendations', 'recommendations'),
+      _apReadSource('/api/auto-pilot/recommendations/audit?limit=50', 'audit'),
+    ]);
+    if (generation !== _apRecommendationsGeneration) return;
+    _apRecs = results[0].status === 'fulfilled' ? results[0].value.recommendations : [];
+    _apAudit = results[1].status === 'fulfilled' ? results[1].value.audit : [];
+    // Operational controls have one read owner: /api/automation/status.
+    // A delayed advisory snapshot must not overwrite a newer confirmed state.
+    _apRenderRecs(); _apRenderAudit();
+    if (results[0].status === 'rejected') _apSourceMessage('ap-recs-list', 'ap-recs-badge', 'Recommendations unavailable: ' + String(results[0].reason.message) + '. Use Refresh to retry.');
+    if (results[1].status === 'rejected') {
+      const wrap = document.getElementById('ap-audit-wrap');
+      if (wrap) wrap.style.display = '';
+      _apSourceMessage('ap-audit-list', 'ap-audit-count', 'Recommendation audit unavailable: ' + String(results[1].reason.message) + '. Use Refresh to retry.');
+    }
   }
 
   async function _apRespond(recId, decision, trigger) {
@@ -8348,56 +8543,32 @@ function renderAccount(acct) {
   }
 
   async function _apDrLoad() {
-    try {
-      const r = await authFetch('/api/automation/dry-run');
-      if (r.ok) {
-        const d = await r.json().catch(() => ({}));
-        const list = document.getElementById('ap-dr-now-list');
-        const count = document.getElementById('ap-dr-now-count');
-        const actions = Array.isArray(d.actions) ? d.actions : [];
-        if (count) count.textContent = actions.length ? String(actions.length) : '0';
-        if (list) {
-          if (!actions.length) {
-            list.innerHTML =
-              '<div class="empty-state" style="grid-column:1/-1;border:none;padding:12px">' +
-              '<div class="empty-state__icon">◈</div>' +
-              '<div class="empty-state__title">Nenhuma regra dispararia agora</div>' +
-              '<div class="empty-state__desc">Com a telemetria atual e as regras ativas, o piloto não teria nenhuma ação a tomar.</div>' +
-              '</div>';
-          } else {
-            list.innerHTML = actions.map(_apDrNowCardHtml).join('');
-          }
-        }
-      } else {
-        // Honest feedback: a failed simulation is NOT "nothing fires".
-        // escapeHtml at the source (status is numeric — double-escape is
-        // harmless) to satisfy the DOM regression guard's data-flow scan.
-        const list = document.getElementById('ap-dr-now-list');
-        if (list) list.innerHTML = _apDrErrHtml('simulação indisponível (' + escapeHtml(r.status) + ')');
+    const generation = ++_apDryRunGeneration;
+    _apSourceMessage('ap-dr-now-list', 'ap-dr-now-count', 'Loading dry run…');
+    _apSourceMessage('ap-dr-replay-list', 'ap-dr-replay-count', 'Loading replay…');
+    const results = await Promise.allSettled([
+      _apReadSource('/api/automation/dry-run', 'actions'),
+      _apReadSource('/api/automation/dry-run/replay?hours=24&limit=288', 'per_rule'),
+    ]);
+    if (generation !== _apDryRunGeneration) return;
+    const specs = [
+      { list: 'ap-dr-now-list', count: 'ap-dr-now-count', field: 'actions', render: _apDrNowCardHtml, empty: 'Nenhuma regra dispararia agora', label: 'Dry run' },
+      { list: 'ap-dr-replay-list', count: 'ap-dr-replay-count', field: 'per_rule', render: _apDrReplayRowHtml, empty: 'Nenhuma regra teria disparado nas últimas 24h', label: 'Replay' },
+    ];
+    results.forEach((result, index) => {
+      const spec = specs[index];
+      if (result.status === 'rejected') {
+        _apSourceMessage(spec.list, spec.count, spec.label + ' unavailable: ' + String(result.reason.message) + '. Use Refresh to retry.');
+        return;
       }
-    } catch (e) { /* dry-run — never break the module */ }
-    try {
-      const r2 = await authFetch('/api/automation/dry-run/replay?hours=24&limit=288');
-      if (r2.ok) {
-        const d2 = await r2.json().catch(() => ({}));
-        const list2 = document.getElementById('ap-dr-replay-list');
-        const count2 = document.getElementById('ap-dr-replay-count');
-        const rows = Array.isArray(d2.per_rule) ? d2.per_rule : [];
-        if (count2) count2.textContent = d2.total_fires != null ? String(d2.total_fires) + ' disparos' : '—';
-        if (list2) {
-          if (!rows.length) {
-            list2.innerHTML =
-              '<div class="empty-state" style="grid-column:1/-1;border:none;padding:12px">' +
-              '<div class="empty-state__icon">↻</div>' +
-              '<div class="empty-state__title">Nenhuma regra teria disparado nas últimas 24h</div>' +
-              '<div class="empty-state__desc">Simulação sobre o histórico de telemetria — cooldown, conflitos e budget aplicados.</div>' +
-              '</div>';
-          } else {
-            list2.innerHTML = rows.map(_apDrReplayRowHtml).join('');
-          }
-        }
+      const data = result.value, rows = data[spec.field];
+      const list = document.getElementById(spec.list), count = document.getElementById(spec.count);
+      if (count) count.textContent = index === 0 ? String(rows.length) : (data.total_fires != null ? String(data.total_fires) + ' disparos' : '—');
+      if (list) {
+        if (rows.length) list.innerHTML = rows.map(spec.render).join('');
+        else list.textContent = spec.empty;
       }
-    } catch (e) { /* best-effort */ }
+    });
   }
 
   function _initAutoPilotDryRun() {
@@ -9753,64 +9924,66 @@ function renderAccount(acct) {
   function buildMarketTrendDatasets(providers) {
     const colors = ['rgb(247,147,26)', 'rgb(6,214,240)', 'rgb(168,85,247)', 'rgb(245,158,11)', 'rgb(16,185,129)'];
     const allTs = new Set();
-    Object.values(providers || {}).forEach(pts => (pts || []).forEach(p => { if (p && p.ts) allTs.add(p.ts); }));
+    Object.values(providers || {}).forEach(pts => (pts || []).forEach(p => { if (p && typeof p.ts === 'number' && Number.isFinite(p.ts) && p.ts > 0 && Number.isFinite(new Date(p.ts * 1000).getTime())) allTs.add(p.ts); }));
     const times = Array.from(allTs).sort((a, b) => a - b);
     const labels = times.map(t => { const d = new Date(t * 1000); return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); });
     const datasets = Object.keys(providers || {}).map((name, i) => {
       const byTs = {};
-      ((providers[name]) || []).forEach(p => { if (p && p.ts != null) byTs[p.ts] = p.price_btc_per_th_day; });
+      ((providers[name]) || []).forEach(p => { if (p && typeof p.price_btc_per_th_day === 'number' && Number.isFinite(p.price_btc_per_th_day) && p.price_btc_per_th_day >= 0 && Number.isFinite(p.price_btc_per_th_day * 1e8)) byTs[p.ts] = p.price_btc_per_th_day; });
       return {
         label: name,
         data: times.map(t => byTs[t] != null ? Number(byTs[t]) * 1e8 : null),
         borderColor: colors[i % colors.length],
         backgroundColor: colors[i % colors.length].replace(')', ',0.08)').replace('rgb', 'rgba'),
-        tension: 0.4, pointRadius: 0, fill: false,
+        tension: 0.4, pointRadius: times.map((t, index) => byTs[t] != null && byTs[times[index - 1]] == null && byTs[times[index + 1]] == null ? 3 : 0), fill: false,
       };
     });
     return { times, labels, datasets };
   }
 
+  let _marketTrendGeneration = 0;
   async function loadMarketTrend() {
-    // Returns true on success, false on failure — the lazy caller (activateModule)
-    // resets _mktTrendLoaded on false so a transient failure retries next activation.
     const canvas = document.getElementById('mkt-trend-chart');
     if (!canvas) return false;
+    const generation = ++_marketTrendGeneration;
+    const countEl = document.getElementById('mkt-trend-count');
+    const legendEl = document.getElementById('mkt-trend-legend');
+    if (window._mktTrendChart) { window._mktTrendChart.destroy(); window._mktTrendChart = null; }
+    canvas.hidden = true;
+    if (countEl) countEl.textContent = 'LOADING';
+    if (legendEl) legendEl.textContent = 'Loading retained market prices…';
     try {
       const r = await fetch('/api/market/trend');
-      if (!r.ok) return false;
+      if (generation !== _marketTrendGeneration) return false;
+      if (!r.ok) throw new Error((r.status === 401 || r.status === 403 ? 'Access required' : 'Source unavailable') + ' (HTTP ' + r.status + ')');
       const data = await r.json();
-      const provs = data.providers || {};
-      const countEl = document.getElementById('mkt-trend-count');
-      const legendEl = document.getElementById('mkt-trend-legend');
-      const { labels, datasets } = buildMarketTrendDatasets(provs);
-      // Frescor honesto: mostra quantos providers têm histórico e QUANDO o
-      // snapshot mais recente foi persistido (dado real do /api/market/trend).
-      if (countEl) {
-        const upd = data.updated_at || 0;
-        const clock = upd ? new Date(upd * 1000) : null;
-        const hhmm = clock ? String(clock.getHours()).padStart(2, '0') + ':' + String(clock.getMinutes()).padStart(2, '0') : '';
-        countEl.textContent = datasets.length
-          ? (datasets.length + ' providers' + (hhmm ? ' · ' + hhmm : ''))
-          : '0 providers — sem histórico ainda';
+      if (generation !== _marketTrendGeneration) return false;
+      if (!data || !data.providers || typeof data.providers !== 'object' || Array.isArray(data.providers) || Object.values(data.providers).some(points => !Array.isArray(points))) throw new Error('Invalid market trend response');
+      const { labels, datasets } = buildMarketTrendDatasets(data.providers);
+      const hasPoints = datasets.some(dataset => dataset.data.some(value => value != null && Number.isFinite(value)));
+      const suppliedPoints = Object.values(data.providers).some(points => points.length);
+      if (!hasPoints && suppliedPoints) {
+        if (countEl) countEl.textContent = 'UNKNOWN';
+        if (legendEl) legendEl.textContent = 'Retained market rows have no usable timestamps or numeric prices. Reopen Hash Market to retry.';
+        return false;
       }
-      if (legendEl) {
-        legendEl.innerHTML = datasets.length
-          ? datasets.map(d =>
-              `<span class="mkt-trend__legend-item"><span class="mkt-trend__legend-dot" style="background:${d.borderColor}"></span>${escapeHtml(d.label)}</span>`
-            ).join('')
-          : '<span class="mkt-trend__legend-item" style="color:var(--text-tertiary)">preços são persistidos a cada fetch (warm-up 5min) — volte mais tarde</span>';
-      }
-      if (!datasets.length) return true;  // valid empty state — nothing to plot
-      if (typeof Chart === 'undefined') return false;  // Issue #186: defer — próximo poll re-tenta
-      const ctx = canvas.getContext('2d');
-      if (window._mktTrendChart) window._mktTrendChart.destroy();
-      window._mktTrendChart = new Chart(ctx, {
-        type: 'line',
-        data: { labels, datasets },
-        options: { responsive: true, maintainAspectRatio: false, scales: { x: { ticks: { color: cssVar('--text-tertiary'), maxTicksLimit: 8 } }, y: { ticks: { color: cssVar('--text-tertiary') } } }, plugins: { legend: { display: false } } }
+      if (countEl) countEl.textContent = hasPoints ? datasets.length + ' providers' : 'EMPTY';
+      if (legendEl) legendEl.textContent = hasPoints ? 'Source: retained market prices · received ' + new Date().toLocaleTimeString() : 'No retained market prices. Retry on the next module activation.';
+      if (!hasPoints) return true;
+      if (typeof Chart === 'undefined') throw new Error('Chart renderer unavailable');
+      canvas.hidden = false;
+      window._mktTrendChart = new Chart(canvas.getContext('2d'), {
+        type: 'line', data: { labels, datasets },
+        options: { responsive: true, maintainAspectRatio: false, animation: window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches ? false : { duration: 180 }, scales: { x: { ticks: { color: cssVar('--text-tertiary'), maxTicksLimit: 8 } }, y: { title: { display: true, text: 'sats/TH/day' }, ticks: { color: cssVar('--text-tertiary') } } }, plugins: { legend: { display: true } } }
       });
       return true;
-    } catch (e) { return false; }
+    } catch (error) {
+      if (generation !== _marketTrendGeneration) return false;
+      canvas.hidden = true;
+      if (countEl) countEl.textContent = 'ERROR';
+      if (legendEl) legendEl.textContent = String(error.message || 'Market prices unavailable') + '. Reopen Hash Market to retry.';
+      return false;
+    }
   }
   // ══════════════════════════════════════════════════════════════════════
   // Rentals — domínio extraído de `40-app-logic.js`
@@ -12206,47 +12379,127 @@ function renderAccount(acct) {
   let _adminAnalyticsCharts = {};
   let _adminAnalyticsRendered = false;
 
+  let _adminRequestGeneration = 0;
+  const _adminSources = ['sessions', 'conversion', 'rentals/accepted-recos', 'pool-metrics', 'docs-feedback', 'error-rate', 'degradation-rate', 'analytics'];
+  const _adminEmptyLabels = {};
+
+  function _restoreAdminEmptyLabels() {
+    Object.keys(_adminEmptyLabels).forEach(id => _setAdminText(id, _adminEmptyLabels[id]));
+  }
+
+  function _markAdminUnavailable(sources) {
+    const fields = {
+      sessions: ['sessions', 'polls-per-sec', 'queue', 'workers', 'uptime', 'autoex-alerts'],
+      conversion: ['drop-paywall-modal', 'drop-modal-checkout', 'drop-checkout-paid', 'conv-rate', 'funnel-sessions', 'funnel-session-conv', 'ltv', 'ltv-source', 'cac', 'ltv-cac', 'payback', 'cohort-source'],
+      analytics: ['analytics-boots', 'analytics-dau', 'analytics-wau', 'analytics-modules', 'analytics-top-module'],
+      'error-rate': ['err-total', 'err-peak', 'err-sentry'],
+      'degradation-rate': ['deg-total', 'deg-peak', 'deg-state'],
+    };
+    const states = {
+      conversion: ['admin-cohort-empty', 'admin-funnel-trend-empty'],
+      'pool-metrics': ['admin-metrics-empty'],
+      'error-rate': ['admin-error-rate-empty'],
+      'degradation-rate': ['admin-deg-empty'],
+    };
+    sources.forEach(source => {
+      (fields[source] || []).forEach(id => _setAdminText('admin-' + id, '—'));
+      (states[source] || []).forEach(id => {
+        const el = document.getElementById(id);
+        if (el) {
+          if (!(id in _adminEmptyLabels)) _adminEmptyLabels[id] = el.textContent;
+          el.hidden = false;
+          el.textContent = 'Source unavailable: ' + source + '. Retry with Refresh.';
+        }
+      });
+      if (source === 'conversion') {
+        ['admin-funnel-list', 'admin-feature-list'].forEach(id => {
+          const el = document.getElementById(id);
+          if (el) el.innerHTML = '<li class="alert-empty">conversion source unavailable</li>';
+        });
+      }
+      if (source === 'docs-feedback') {
+        const wrap = document.getElementById('admin-docs-feedback');
+        if (wrap) wrap.hidden = true;
+      }
+      if (source === 'rentals/accepted-recos') {
+        ['admin-audit', 'admin-autoex'].forEach(id => {
+          const el = document.getElementById(id);
+          if (el) el.hidden = true;
+        });
+        _adminAuditDecisions = [];
+      }
+      if (source === 'sessions') {
+        const stall = document.getElementById('admin-stall');
+        if (stall) { stall.hidden = true; stall.textContent = ''; }
+      }
+      if (source === 'degradation-rate') {
+        const state = document.getElementById('admin-deg-state');
+        if (state) state.className = 'kpi-card__value';
+      }
+    });
+  }
+
+  function resetAdminEvidence() {
+    _adminRequestGeneration++;
+    _adminLoaded = false;
+    _renderAdmin({}, {}, {}, {}, {}, {}, {}, { error: 'Analytics not loaded for this session' });
+    _markAdminUnavailable(_adminSources);
+    _setAdminText('admin-gate-badge', 'unknown');
+    const err = document.getElementById('admin-error');
+    if (err) { err.hidden = true; err.textContent = ''; }
+    const refresh = document.getElementById('admin-refresh-btn');
+    if (refresh) { refresh.disabled = false; refresh.setAttribute('aria-busy', 'false'); }
+  }
+
   async function fetchAdminData() {
     if (_adminLoaded) return;
+    const generation = ++_adminRequestGeneration;
     const errEl = document.getElementById('admin-error');
     const gate = document.getElementById('admin-gate-badge');
+    const refresh = document.getElementById('admin-refresh-btn');
+    if (gate) gate.textContent = 'loading';
+    if (errEl) { errEl.hidden = true; errEl.textContent = ''; }
+    if (refresh) { refresh.disabled = true; refresh.setAttribute('aria-busy', 'true'); }
     _setAdminAnalyticsLoading(true);
     try {
-      // Pool health — no auth needed for localhost/operator-key admin routes.
-      const [sessionsResp, convResp, auditResp, metricsResp, docsResp, errResp, degResp, analyticsResp] = await Promise.all([
-        fetch('/api/admin/sessions', { headers: { 'X-Requested-With': 'fetch' } }),
-        fetch('/api/admin/conversion?weeks=8', { headers: { 'X-Requested-With': 'fetch' } }),
-        fetch('/api/admin/rentals/accepted-recos?limit=1000', { headers: { 'X-Requested-With': 'fetch' } }),
-        fetch('/api/admin/pool-metrics?hours=24', { headers: { 'X-Requested-With': 'fetch' } }),
-        fetch('/api/admin/docs-feedback', { headers: { 'X-Requested-With': 'fetch' } }),
-        fetch('/api/admin/error-rate?hours=24', { headers: { 'X-Requested-With': 'fetch' } }),
-        fetch('/api/admin/degradation-rate?hours=24', { headers: { 'X-Requested-With': 'fetch' } }),
-        fetch('/api/admin/analytics?days=30', { headers: { 'X-Requested-With': 'fetch' } }),
-      ]);
-      if (sessionsResp.status === 403 || convResp.status === 403 || auditResp.status === 403 || metricsResp.status === 403 || docsResp.status === 403 || errResp.status === 403 || degResp.status === 403 || analyticsResp.status === 403) {
-        if (gate) gate.textContent = 'restricted';
-        if (errEl) {
-          errEl.hidden = false;
-          errEl.textContent = 'Admin access required — endpoint só responde de localhost ou com a API key do operador (X-API-Key).';
-        }
-        _renderAdminAnalytics({ error: 'admin access required' });
-        _adminLoaded = true;  // don't re-hammer a 403
-        return;
+      const paths = ['/api/admin/sessions', '/api/admin/conversion?weeks=8', '/api/admin/rentals/accepted-recos?limit=1000', '/api/admin/pool-metrics?hours=24', '/api/admin/docs-feedback', '/api/admin/error-rate?hours=24', '/api/admin/degradation-rate?hours=24', '/api/admin/analytics?days=30'];
+      const results = await Promise.all(paths.map(async path => {
+        try {
+          const response = await fetch(path, { headers: { 'X-Requested-With': 'fetch' } });
+          if (!response.ok) return { error: 'HTTP ' + response.status, status: response.status };
+          const data = await response.json();
+          if (!data || typeof data !== 'object' || Array.isArray(data) || data.error) return { error: 'invalid response' };
+          return { data: data };
+        } catch (e) { return { error: 'request failed' }; }
+      }));
+      if (generation !== _adminRequestGeneration) return;
+      const restricted = results.some(result => result.status === 401 || result.status === 403);
+      const unavailable = restricted ? _adminSources : _adminSources.filter((_, i) => results[i].error);
+      const payloads = restricted ? results.map(() => ({})) : results.map(result => result.data || {});
+      if (restricted || results[7].error) payloads[7] = { error: restricted ? 'admin access required' : 'analytics source unavailable' };
+      _restoreAdminEmptyLabels();
+      _renderAdmin(...payloads);
+      _markAdminUnavailable(unavailable);
+      if (gate) gate.textContent = restricted ? 'restricted' : unavailable.length ? 'partial' : 'ok';
+      if (errEl) {
+        errEl.hidden = !unavailable.length;
+        errEl.textContent = restricted
+          ? 'Admin access required — operator access must be verified before displaying data.'
+          : unavailable.map(source => source + ': ' + results[_adminSources.indexOf(source)].error).join('; ') + (unavailable.length ? '. Data unavailable; retry with Refresh.' : '');
       }
-      if (gate) gate.textContent = 'ok';
-      const sessions = sessionsResp.ok ? await sessionsResp.json() : {};
-      const conv = convResp.ok ? await convResp.json() : {};
-      const audit = auditResp.ok ? await auditResp.json() : {};
-      const metrics = metricsResp.ok ? await metricsResp.json() : {};
-      const docsFb = docsResp.ok ? await docsResp.json() : {};
-      const errData = errResp.ok ? await errResp.json() : {};
-      const degData = degResp.ok ? await degResp.json() : {};
-      const analytics = analyticsResp.ok ? await analyticsResp.json() : { error: 'analytics request failed (' + analyticsResp.status + ')' };
-      _renderAdmin(sessions, conv, audit, metrics, docsFb, errData, degData, analytics);
-      _adminLoaded = true;
+      // Partial responses remain retryable; denied access waits for an explicit
+      // refresh or session change instead of repeatedly hammering the gate.
+      _adminLoaded = restricted || !unavailable.length;
     } catch (e) {
-      if (errEl) { errEl.hidden = false; errEl.textContent = 'admin fetch error: ' + e.message; }
-      _renderAdminAnalytics({ error: 'analytics indisponível' });
+      if (generation !== _adminRequestGeneration) return;
+      resetAdminEvidence();
+      if (gate) gate.textContent = 'error';
+      if (errEl) { errEl.hidden = false; errEl.textContent = 'Admin data unavailable; retry with Refresh.'; }
+    } finally {
+      if (generation === _adminRequestGeneration && refresh) {
+        refresh.disabled = false;
+        refresh.setAttribute('aria-busy', 'false');
+      }
     }
   }
   function _renderAdmin(sessions, conv, audit, metrics, docsFb, errData, degData, analytics) {
@@ -12354,6 +12607,9 @@ function renderAccount(acct) {
     root.querySelectorAll('[data-analytics-canvas], [data-analytics-empty]').forEach(function(el) { el.hidden = true; });
 
     if (report && report.error) {
+      _markAdminUnavailable(['analytics']);
+      const tableBody = document.getElementById('admin-analytics-table-body');
+      if (tableBody) tableBody.innerHTML = '';
       if (state) {
         state.textContent = 'Analytics indisponível: ' + String(report.error);
         state.classList.add('admin-analytics__state--error');
@@ -13151,7 +13407,7 @@ function renderAccount(acct) {
   // "NOT AVAILABLE" for missing fields, so a plain != null check would
   // crash .toFixed(). Returns null for absent / non-numeric values.
   function _numOrNull(v) {
-    if (v == null || v === '') return null;
+    if (v == null || v === '' || typeof v === 'boolean') return null;
     const n = Number(v);
     return isFinite(n) ? n : null;
   }
@@ -13168,10 +13424,11 @@ function renderAccount(acct) {
     // Shares/temp/power/eff = APENAS ONLINE — os contadores cumulativos do
     // firmware persistem depois que o miner morre e congelariam um
     // EFFICIENCY histórico se OFFLINE contribuísse.
-    let totalHr = 0, acc = 0, rej = 0, stale = 0;
+    let totalHr = 0, hrN = 0, acc = 0, rej = 0, stale = 0;
     let tempSum = 0, tempN = 0, powerSum = 0, powerN = 0, effSum = 0, effN = 0;
     fleet.forEach(d => {
-      totalHr += Number((d && d._telemetry && d._telemetry.hashrate_hs) || 0);
+      const hr = _numOrNull(d && d._telemetry && d._telemetry.hashrate_hs);
+      if (hr != null && hr >= 0) { totalHr += hr; hrN++; }
     });
     live.forEach(d => {
       const t = (d && d._telemetry) || {};
@@ -13188,10 +13445,10 @@ function renderAccount(acct) {
     const lats = live.map(d => Number(d && d.latency_ms)).filter(v => v > 0 && isFinite(v));
     const shareTotal = acc + rej;
     return {
-      totalHr: totalHr,
+      totalHr: hrN ? totalHr : null,
       effPct: shareTotal > 0 ? (acc / shareTotal) * 100 : null,
       avgTemp: tempN ? tempSum / tempN : null,
-      totalPowerW: powerSum || null,
+      totalPowerW: powerN ? powerSum : null,
       avgEff: effN ? effSum / effN : null,
       avgLatency: lats.length ? Math.round(lats.reduce((a, b) => a + b, 0) / lats.length) : null,
       acc: acc, rej: rej, stale: stale,
@@ -13383,16 +13640,65 @@ function renderAccount(acct) {
     if (buf.length > _LM_FLOW_MAX) buf.shift();
   }
 
-  // FLEET COMMAND CENTER — fetch /summary and render. Non-fatal: on
-  // failure the panel simply keeps the last good data.
+  let _ccFetchGeneration = 0;
+  let _ccEvidenceState = 'loading';
+  let _ccHasSnapshot = false;
+  let _ccEvidenceAt = null;
+
+  function _ccSourceStatus() {
+    if (!dom.lmStatusBadge) return;
+    const labels = { loading: 'LOADING', error: 'ERROR', cached: 'CACHED', restricted: 'ACCESS REQUIRED', ready: _ccLastFleet.length ? 'LIVE' : 'EMPTY' };
+    dom.lmStatusBadge.textContent = labels[_ccEvidenceState] || 'UNKNOWN';
+    dom.lmStatusBadge.title = _ccHasSnapshot
+      ? 'Fleet summary received at ' + new Date(_ccEvidenceAt).toLocaleTimeString() + (_ccEvidenceState === 'cached' ? '; refresh failed — last successful response' : '')
+      : 'Fleet summary has not been received for this session';
+    dom.lmStatusBadge.classList.toggle('badge--green', _ccEvidenceState === 'ready');
+    dom.lmStatusBadge.classList.toggle('badge--mute', _ccEvidenceState !== 'ready');
+  }
+
+  function resetFleetSummaryEvidence() {
+    _ccFetchGeneration++;
+    _ccLastFleet = [];
+    _ccHasSnapshot = false;
+    _ccEvidenceAt = null;
+    _ccEvidenceState = 'loading';
+    _ccHrSeries.length = 0;
+    [_ccHrHist, _lmFlow, _lmLastCounters].forEach(buffer => Object.keys(buffer).forEach(key => delete buffer[key]));
+    if (typeof _ccShareSeen !== 'undefined') Object.keys(_ccShareSeen).forEach(key => delete _ccShareSeen[key]);
+    if (dom.fccSummaryEarnings) dom.fccSummaryEarnings.textContent = '—';
+    _ccRenderFleet();
+  }
+
+  // Source availability is separate from the registered devices' health.
   async function fetchFleetCommandCenter() {
+    const generation = ++_ccFetchGeneration;
+    if (!_ccHasSnapshot) { _ccEvidenceState = 'loading'; _ccRenderFleet(); }
     try {
       const r = await authFetch('/api/axe-fleet/summary');
-      if (!r.ok) return;
+      if (generation !== _ccFetchGeneration) return;
+      if (!r.ok) {
+        if (r.status === 401 || r.status === 403) {
+          resetFleetSummaryEvidence();
+          _ccEvidenceState = 'restricted';
+          _ccRenderFleet();
+          return;
+        }
+        throw new Error('HTTP ' + r.status);
+      }
       const data = await r.json();
-      _ccLastFleet = (data && data.devices) || [];
+      if (generation !== _ccFetchGeneration) return;
+      if (!data || !Array.isArray(data.devices) || data.devices.some(device => !device || typeof device !== 'object' || Array.isArray(device) || typeof device.id !== 'string' || !device.id)) throw new Error('Invalid fleet summary');
+      _ccLastFleet = data.devices;
+      _ccHasSnapshot = true;
+      _ccEvidenceAt = Date.now();
+      _ccEvidenceState = 'ready';
       _ccRenderFleet();
-    } catch (e) { /* non-fatal */ }
+    } catch (e) {
+      if (generation !== _ccFetchGeneration) return;
+      _ccEvidenceState = _ccHasSnapshot ? 'cached' : 'error';
+      if (!_ccHasSnapshot) _ccRenderFleet();
+      _ccSourceStatus();
+    }
   }
 
   // View toggle (grid cards / dense table) — persisted per browser.
@@ -13418,13 +13724,21 @@ function renderAccount(acct) {
     const rows = buildCommandCenterRows(fleet);
     if (dom.lmWorkersCount) dom.lmWorkersCount.textContent = rows.length + (rows.length === 1 ? ' worker' : ' workers');
     if (dom.lmWorkersBadge) dom.lmWorkersBadge.textContent = rows.length + (rows.length === 1 ? ' worker' : ' workers');
-    if (dom.lmStatusBadge) dom.lmStatusBadge.textContent = rows.length ? 'LIVE' : 'IDLE';
+    _ccSourceStatus();
     if (dom.lmWorkers) dom.lmWorkers.style.display = rows.length ? 'block' : 'none';
     if (dom.lmFlow) dom.lmFlow.style.display = rows.length ? 'block' : 'none';
     if (!rows.length) {
-      if (dom.lmWorkersGrid) dom.lmWorkersGrid.innerHTML = '<div class="lm-workers__empty">no fleet workers registered — add miners in AXE FLEET (⚙) to see live per-worker telemetry here</div>';
+      if (dom.lmWorkersGrid) dom.lmWorkersGrid.innerHTML = '<div class="lm-workers__empty">' + (_ccHasSnapshot ? 'no fleet workers registered — add miners in AXE FLEET (⚙)' : _ccEvidenceState === 'loading' ? 'loading fleet summary…' : _ccEvidenceState === 'restricted' ? 'fleet summary requires access' : 'fleet summary unavailable — retry on the next refresh') + '</div>';
+      [dom.fccSummaryHr, dom.fccSummaryOnline, dom.fccSummaryWarn, dom.fccSummaryOffline, dom.fccSummaryTemp, dom.fccSummaryPower, dom.fccSummaryEff, dom.fccSummaryPing].forEach(el => { if (el) el.textContent = _ccHasSnapshot ? '0' : '—'; });
+      if (dom.fccSummaryTemp) dom.fccSummaryTemp.textContent = '—';
+      if (dom.fccSummaryEff) dom.fccSummaryEff.textContent = '—';
+      if (dom.fccSummaryPing) dom.fccSummaryPing.textContent = '—';
+      if (dom.fccSummaryHr && _ccHasSnapshot) dom.fccSummaryHr.textContent = fmt.hashrate(0);
+      if (dom.fccSummaryPower && _ccHasSnapshot) dom.fccSummaryPower.textContent = '0.00 kW';
+      if (dom.fccSummaryHrSpark) dom.fccSummaryHrSpark.innerHTML = '';
       if (dom.fccExceptions) { dom.fccExceptions.style.display = 'none'; dom.fccExceptions.innerHTML = ''; }
       if (dom.fccThermalGrid) dom.fccThermalGrid.innerHTML = '';
+      if (dom.lmFlowRaster) dom.lmFlowRaster.innerHTML = '';
       // Fleet emptied — drop lingering buffers/counters so a re-added device
       // with reset counters never produces a bogus first delta.
       Object.keys(_lmFlow).forEach(k => delete _lmFlow[k]);
@@ -13434,8 +13748,9 @@ function renderAccount(acct) {
 
     // KPI strip (fleet-fed).
     const k = _ccKpiAgg(fleet);
-    if (dom.fccSummaryHr) dom.fccSummaryHr.textContent = k.totalHr ? fmt.hashrate(k.totalHr) : '—';
-    _ccHrSeries.push(k.totalHr); if (_ccHrSeries.length > 40) _ccHrSeries.shift();
+    if (dom.fccSummaryHr) dom.fccSummaryHr.textContent = k.totalHr != null ? fmt.hashrate(k.totalHr) : '—';
+    if (k.totalHr != null) _ccHrSeries.push(k.totalHr);
+    if (_ccHrSeries.length > 40) _ccHrSeries.shift();
     if (dom.fccSummaryHrSpark) dom.fccSummaryHrSpark.innerHTML = _ccSvgSparkline(_ccHrSeries, cssVar('--brand'));
     const onlineN = fleet.filter(d => d.status === 'ONLINE' || d.status === 'HASHING').length;
     const warnN = fleet.filter(d => d.status === 'WARNING').length;
@@ -13444,7 +13759,7 @@ function renderAccount(acct) {
     if (dom.fccSummaryWarn) dom.fccSummaryWarn.textContent = String(warnN);
     if (dom.fccSummaryOffline) dom.fccSummaryOffline.textContent = String(offlineN);
     if (dom.fccSummaryTemp) dom.fccSummaryTemp.textContent = k.avgTemp != null ? k.avgTemp.toFixed(1) + '°C' : '—';
-    if (dom.fccSummaryPower) dom.fccSummaryPower.textContent = k.totalPowerW ? (k.totalPowerW / 1000).toFixed(2) + ' kW' : '—';
+    if (dom.fccSummaryPower) dom.fccSummaryPower.textContent = k.totalPowerW != null ? (k.totalPowerW / 1000).toFixed(2) + ' kW' : '—';
     if (dom.fccSummaryEff) dom.fccSummaryEff.textContent = k.avgEff != null ? k.avgEff.toFixed(1) + ' J/TH' : '—';
     if (dom.fccSummaryPing) {
       if (k.avgLatency != null) {
@@ -13732,19 +14047,53 @@ function renderAccount(acct) {
     } catch (e) { /* best-effort: the static checklist stays pending */ }
   }
 
+  let _axeFleetRequestGeneration = 0;
+  let _axeAgentSessionGeneration = 0;
+  var _resetAxeAgentPanel; // init runs in boot before this fragment is evaluated.
+
+  function resetAxeFleetEvidence() {
+    _axeFleetRequestGeneration++;
+    _operationalFleetData = null;
+    _operationalFleetReadAt = null;
+    _operationalFleetError = false;
+    if (dom.axeGrid) dom.axeGrid.textContent = 'Fleet source not loaded for this session';
+    ['axeFleetStatusBadge', 'axeFleetCountBadge', 'axeSummaryHr', 'axeSummaryOnline', 'axeSummaryWarning', 'axeSummaryOffline', 'axeSummaryHealth', 'axeSummaryTemp', 'axeSummaryPower', 'axeSummaryEff', 'axeSummaryBest'].forEach(key => {
+      if (dom[key]) countUpValue(dom[key], '—');
+    });
+    if (dom.axeFleetStatusBadge) dom.axeFleetStatusBadge.className = 'badge badge--mute';
+    if (typeof renderOperationalOverview === 'function') renderOperationalOverview(_lastSnapshot || {}, null, false);
+  }
+
   async function fetchAxeFleet() {
+    const generation = ++_axeFleetRequestGeneration;
     try {
       const r = await authFetch('/api/axe-fleet/health');
+      if (generation !== _axeFleetRequestGeneration) return;
+      if (r.status === 401 || r.status === 403) {
+        resetAxeFleetEvidence();
+        _operationalFleetError = true;
+        if (dom.axeFleetStatusBadge) dom.axeFleetStatusBadge.textContent = 'ACCESS REQUIRED';
+        if (dom.axeGrid) dom.axeGrid.textContent = 'Access required to read Fleet health';
+        renderOperationalOverview(_lastSnapshot || {}, null, true);
+        fetchFleetCommandCenter();
+        return;
+      }
       if (!r.ok) throw new Error('fleet health failed (' + r.status + ')');
       const data = await r.json();
+      if (generation !== _axeFleetRequestGeneration) return;
+      if (!data || !data.fleet_stats || typeof data.fleet_stats !== 'object' || Array.isArray(data.fleet_stats) ||
+          !Array.isArray(data.device_health) || data.device_health.some(device => !device || typeof device !== 'object' || Array.isArray(device) || typeof device.id !== 'string' || !device.id.trim())) {
+        throw new Error('fleet health schema unavailable');
+      }
       _operationalFleetData = data;
       _operationalFleetReadAt = Date.now() / 1000;
       _operationalFleetError = false;
       renderAxeFleet(data);
       renderOperationalOverview(_lastSnapshot || {}, data, false);
     } catch (e) {
+      if (generation !== _axeFleetRequestGeneration) return;
       _operationalFleetError = true;
-      if (dom.axeFleetStatusBadge) dom.axeFleetStatusBadge.textContent = 'ERROR';
+      if (dom.axeFleetStatusBadge) dom.axeFleetStatusBadge.textContent = _operationalFleetData ? 'CACHED · ERROR' : 'ERROR';
       renderOperationalOverview(_lastSnapshot || {}, _operationalFleetData, true);
     }
     // FLEET COMMAND CENTER rides the same poll/SSE cadence.
@@ -14023,31 +14372,39 @@ function renderAccount(acct) {
     const fleet = data.fleet_stats || {};
     const devices = data.device_health || [];
 
+    const count = value => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null;
+    const total = count(fleet.total_devices);
+    const online = count(fleet.online);
+    const warning = count(fleet.warning);
+    const offline = count(fleet.offline);
+    const countsKnown = [total, online, warning, offline].every(value => value !== null);
+
     // Summary stats
     if (dom.axeSummaryHr) dom.axeSummaryHr.textContent = fleet.total_hashrate_str || '—';
-    if (dom.axeSummaryOnline) countUpValue(dom.axeSummaryOnline, String(fleet.online || 0));
-    if (dom.axeSummaryWarning) countUpValue(dom.axeSummaryWarning, String(fleet.warning || 0));
-    if (dom.axeSummaryOffline) countUpValue(dom.axeSummaryOffline, String(fleet.offline || 0));
+    if (dom.axeSummaryOnline) countUpValue(dom.axeSummaryOnline, online === null ? '—' : String(online));
+    if (dom.axeSummaryWarning) countUpValue(dom.axeSummaryWarning, warning === null ? '—' : String(warning));
+    if (dom.axeSummaryOffline) countUpValue(dom.axeSummaryOffline, offline === null ? '—' : String(offline));
     if (dom.axeSummaryHealth) dom.axeSummaryHealth.textContent = fleet.avg_health_score != null ? Math.round(fleet.avg_health_score) + '/100' : '—';
     if (dom.axeSummaryTemp) dom.axeSummaryTemp.textContent = fleet.avg_temperature_c != null ? fleet.avg_temperature_c.toFixed(1) + '°C' : '—';
-    if (dom.axeSummaryPower) dom.axeSummaryPower.textContent = fleet.total_power_w ? fleet.total_power_w.toFixed(0) + 'W' : '—';
+    if (dom.axeSummaryPower) dom.axeSummaryPower.textContent = fleet.total_power_w != null ? fleet.total_power_w.toFixed(0) + 'W' : '—';
     if (dom.axeSummaryEff) dom.axeSummaryEff.textContent = fleet.efficiency_jth != null ? fleet.efficiency_jth.toFixed(1) + ' J/TH' : '—';
     if (dom.axeSummaryBest) dom.axeSummaryBest.textContent = fleet.best_diff ? fmt.diff(fleet.best_diff) : '—';
 
     // Count badge
-    const total = fleet.total_devices || 0;
-    if (dom.axeFleetCountBadge) dom.axeFleetCountBadge.textContent = total + ' device' + (total === 1 ? '' : 's');
+    if (dom.axeFleetCountBadge) dom.axeFleetCountBadge.textContent = total === null ? '— devices' : total + ' device' + (total === 1 ? '' : 's');
 
     // Status badge
     if (dom.axeFleetStatusBadge) {
-      if (total === 0) dom.axeFleetStatusBadge.textContent = 'NO DEVICES';
+      if (!countsKnown) dom.axeFleetStatusBadge.textContent = 'UNKNOWN';
+      else if (total === 0) dom.axeFleetStatusBadge.textContent = 'NO DEVICES';
       else if (fleet.offline === total) dom.axeFleetStatusBadge.textContent = 'ALL OFFLINE';
       else if (fleet.warning > 0) dom.axeFleetStatusBadge.textContent = fleet.warning + ' WARNING';
       else if (fleet.online === total) dom.axeFleetStatusBadge.textContent = 'ALL ONLINE';
       else dom.axeFleetStatusBadge.textContent = fleet.online + '/' + total + ' ONLINE';
       dom.axeFleetStatusBadge.className = 'badge';
-      if (fleet.offline === total) dom.axeFleetStatusBadge.classList.add('badge--red');
-      else if (fleet.warning > 0) dom.axeFleetStatusBadge.classList.add('badge--amber');
+      if (!countsKnown || total === 0) dom.axeFleetStatusBadge.classList.add('badge--mute');
+      else if (offline === total) dom.axeFleetStatusBadge.classList.add('badge--red');
+      else if (warning > 0) dom.axeFleetStatusBadge.classList.add('badge--amber');
       else dom.axeFleetStatusBadge.classList.add('badge--green');
     }
 
@@ -14377,41 +14734,90 @@ function renderAccount(acct) {
     '</div>';
   }
 
-  function openAxeDetail(deviceId) {
+  let _axeDetailChart = null;
+  let _axeDetailRequestGeneration = 0;
+  let _axeHistoryRequestGeneration = 0;
+  let _operationalEvidenceSession = null;
+
+  function _clearAxeHistory() {
+    _axeHistoryRequestGeneration++;
+    if (_axeDetailChart) { _axeDetailChart.destroy(); _axeDetailChart = null; }
+    const wrap = document.getElementById('axe-detail-chart-wrap');
+    const canvas = document.getElementById('axe-detail-chart');
+    const status = document.getElementById('axe-detail-chart-status');
+    const count = document.getElementById('axe-detail-chart-count');
+    if (wrap) { wrap.style.display = 'none'; wrap.setAttribute('aria-busy', 'false'); }
+    if (canvas) canvas.hidden = true;
+    if (status) status.textContent = '';
+    if (count) count.textContent = '—';
+  }
+
+  function resetAxeDetail() {
+    _axeDetailRequestGeneration++;
+    _clearAxeHistory();
+    if (dom.axeDetail) dom.axeDetail.style.display = 'none';
+    if (dom.axeDetailTitle) dom.axeDetailTitle.textContent = '';
+    if (dom.axeDetailBody) { dom.axeDetailBody.innerHTML = ''; dom.axeDetailBody.setAttribute('aria-busy', 'false'); }
+  }
+
+  function syncOperationalEvidenceSession(tenant, connected, force) {
+    const key = JSON.stringify([tenant || 'default', !!connected]);
+    if (_operationalEvidenceSession === key && !force) return;
+    _operationalEvidenceSession = key;
+    resetAxeDetail();
+    resetAxeFleetEvidence();
+    _axeAgentSessionGeneration++;
+    if (typeof _resetAxeAgentPanel === 'function') _resetAxeAgentPanel();
+    if (typeof resetFleetSummaryEvidence === 'function') resetFleetSummaryEvidence();
+    if (typeof resetAdminEvidence === 'function') resetAdminEvidence();
+    if (typeof resetWalletHistoryEvidence === 'function') resetWalletHistoryEvidence();
+    if (typeof resetAutomationEvidence === 'function') resetAutomationEvidence();
+  }
+
+  async function openAxeDetail(deviceId) {
     if (!dom.axeDetail || !dom.axeDetailTitle || !dom.axeDetailBody) return;
+    const generation = ++_axeDetailRequestGeneration;
+    _clearAxeHistory();
     dom.axeDetail.style.display = 'block';
     dom.axeDetailTitle.textContent = 'Loading device...';
-    dom.axeDetailBody.innerHTML = '<div class="axe-detail__loading">loading telemetry…</div>';
-
-    authFetch('/api/axe-fleet/devices/' + encodeURIComponent(deviceId))
-      .then(r => r.json())
-      .then(data => {
-        const dev = data.device || {};
-        const tel = data.latest_telemetry || {};
-        dom.axeDetailTitle.textContent = dev.name || 'Device';
-
+    dom.axeDetailBody.setAttribute('aria-busy', 'true');
+    dom.axeDetailBody.innerHTML = '<div class="axe-detail__loading operational-loading" role="status">loading telemetry…</div>';
+    try {
+      const response = await authFetch('/api/axe-fleet/devices/' + encodeURIComponent(deviceId));
+      if (generation !== _axeDetailRequestGeneration) return;
+      if (!response.ok) {
+        dom.axeDetailTitle.textContent = response.status === 401 || response.status === 403 ? 'Access required' : 'Device unavailable';
+        dom.axeDetailBody.textContent = (response.status === 401 || response.status === 403 ? 'Access required. ' : '') + 'Device telemetry request failed (HTTP ' + response.status + '). Reopen the device to retry.';
+        return;
+      }
+      const data = await response.json();
+      if (generation !== _axeDetailRequestGeneration) return;
+      if (!data || !data.device || typeof data.device !== 'object' || Array.isArray(data.device)) throw new Error('Invalid device response');
+      const dev = data.device;
+      const tel = data.latest_telemetry || {};
+      dom.axeDetailTitle.textContent = dev.name || 'Device';
         const items = [
           { lbl: 'Model', val: dev.model || 'unknown' },
           { lbl: 'Firmware', val: (dev.firmware || '') + ' ' + (dev.firmware_version || '') },
           { lbl: 'IP Address', val: dev.ip_address || '—' },
-          { lbl: 'Status', val: dev.status || 'OFFLINE', cls: dev.status === 'ONLINE' ? 'green' : 'red' },
-          { lbl: 'Hashrate', val: fmt.hashrate(tel.hashrate_hs || 0) },
+          { lbl: 'Status', val: dev.status || 'UNKNOWN', cls: dev.status === 'ONLINE' ? 'green' : 'red' },
+          { lbl: 'Hashrate', val: fmt.num(tel.hashrate_hs) ? fmt.hashrate(tel.hashrate_hs) : '—' },
           { lbl: 'Hashrate 1m', val: fmt.num(tel.hashrate_1m) ? fmt.hashrate(tel.hashrate_1m) : 'NOT AVAILABLE' },
           { lbl: 'Hashrate 10m', val: fmt.num(tel.hashrate_10m) ? fmt.hashrate(tel.hashrate_10m) : 'NOT AVAILABLE' },
           { lbl: 'Hashrate 1h', val: fmt.num(tel.hashrate_1h) ? fmt.hashrate(tel.hashrate_1h) : 'NOT AVAILABLE' },
           { lbl: 'Chip Temp', val: fmt.num(tel.chip_temp) ? tel.chip_temp + '°C' : (fmt.num(tel.temp_asic) ? tel.temp_asic + '°C' : 'NOT AVAILABLE'), cls: fmt.num(tel.chip_temp) && tel.chip_temp > 70 ? 'red' : 'green' },
           { lbl: 'VR Temp', val: fmt.num(tel.vr_temp) ? tel.vr_temp + '°C' : (fmt.num(tel.temp_vreg) ? tel.temp_vreg + '°C' : 'NOT AVAILABLE') },
           { lbl: 'Temperature', val: fmt.num(tel.temperature) ? tel.temperature + '°C' : '—', cls: fmt.num(tel.temperature) && tel.temperature > 70 ? 'red' : 'green' },
-          { lbl: 'Power', val: tel.power_watts ? tel.power_watts + ' W' : '—' },
-          { lbl: 'Frequency', val: tel.frequency_mhz ? tel.frequency_mhz + ' MHz' : '—' },
-          { lbl: 'Voltage', val: tel.voltage_mv ? tel.voltage_mv + ' mV' : '—' },
-          { lbl: 'Best Diff', val: tel.best_diff ? fmt.diff(tel.best_diff) : '—', cls: 'gold' },
+          { lbl: 'Power', val: fmt.num(tel.power_watts) ? tel.power_watts + ' W' : '—' },
+          { lbl: 'Frequency', val: fmt.num(tel.frequency_mhz) ? tel.frequency_mhz + ' MHz' : '—' },
+          { lbl: 'Voltage', val: fmt.num(tel.voltage_mv) ? tel.voltage_mv + ' mV' : '—' },
+          { lbl: 'Best Diff', val: fmt.num(tel.best_diff) ? fmt.diff(tel.best_diff) : '—', cls: 'gold' },
           { lbl: 'Shares Accepted', val: tel.shares_accepted != null ? tel.shares_accepted.toLocaleString() : '—' },
           { lbl: 'Shares Rejected', val: tel.shares_rejected != null ? tel.shares_rejected.toLocaleString() : '—' },
           { lbl: 'HW Error %', val: fmt.num(tel.hw_error_pct) ? tel.hw_error_pct.toFixed(2) + '%' : '—', cls: fmt.num(tel.hw_error_pct) && tel.hw_error_pct > 1 ? 'red' : 'green' },
           { lbl: 'Efficiency', val: fmt.num(tel.efficiency_jth) ? tel.efficiency_jth.toFixed(1) + ' J/TH' : '—' },
           { lbl: 'Uptime', val: tel.uptime_str || '—' },
-          { lbl: 'Free Heap', val: tel.free_heap ? tel.free_heap.toLocaleString() + ' B' : '—' },
+          { lbl: 'Free Heap', val: fmt.num(tel.free_heap) ? tel.free_heap.toLocaleString() + ' B' : '—' },
           { lbl: 'WiFi RSSI', val: tel.wifi_rssi != null ? tel.wifi_rssi + ' dBm' : '—' },
           { lbl: 'Last Seen', val: dev.last_seen ? fmt.age(dev.last_seen) : '—' },
         ];
@@ -14420,71 +14826,93 @@ function renderAccount(acct) {
           '<div class="axe-detail__item"><div class="lbl">' + escapeHtml(it.lbl) + '</div><div class="val' + (it.cls ? ' ' + escapeHtml(it.cls) : '') + '">' + escapeHtml(String(it.val)) + '</div></div>'
         ).join('');
 
-        // Phase C: load telemetry history chart
-        loadDeviceHistoryChart(deviceId);
-      })
-      .catch(() => {
-        dom.axeDetailBody.innerHTML = '<div class="axe-detail__loading">error loading device telemetry</div>';
-      });
+      await loadDeviceHistoryChart(deviceId, generation);
+    } catch (e) {
+      if (generation !== _axeDetailRequestGeneration) return;
+      dom.axeDetailTitle.textContent = 'Device unavailable';
+      dom.axeDetailBody.textContent = 'Error loading device telemetry. Reopen the device to retry.';
+    } finally {
+      if (generation === _axeDetailRequestGeneration) dom.axeDetailBody.setAttribute('aria-busy', 'false');
+    }
   }
 
-  // ── Phase C: Device History Chart ─────────────────────────────────────
-  let _axeDetailChart = null;
-
-  async function loadDeviceHistoryChart(deviceId) {
+  // One owner for the selected device and its asynchronous history response.
+  async function loadDeviceHistoryChart(deviceId, detailGeneration = _axeDetailRequestGeneration) {
+    _clearAxeHistory();
+    const generation = _axeHistoryRequestGeneration;
+    const current = () => generation === _axeHistoryRequestGeneration && detailGeneration === _axeDetailRequestGeneration;
     const wrap = document.getElementById('axe-detail-chart-wrap');
     const canvas = document.getElementById('axe-detail-chart');
     const countBadge = document.getElementById('axe-detail-chart-count');
-    if (!wrap || !canvas || typeof Chart === 'undefined') return;  // Issue #186: defer-safe
-
-    // Destroy previous chart instance so Chart.js doesn't complain.
-    if (_axeDetailChart) { _axeDetailChart.destroy(); _axeDetailChart = null; }
-
-    try {
-      const r = await authFetch('/api/axe-fleet/devices/' + encodeURIComponent(deviceId) + '/history?limit=120');
-      if (!r.ok) return;
-      const data = await r.json();
-      const rows = data.history || [];
-      if (rows.length < 2) return;  // need at least 2 points for a line
-
+    const status = document.getElementById('axe-detail-chart-status');
+    if (!wrap || !canvas) return;
+    const showState = (label, message) => {
       wrap.style.display = 'block';
-      if (countBadge) countBadge.textContent = rows.length + ' points';
-
-      var labels = rows.map(function(r) {
-        var d = new Date(r.ts * 1000);
-        return d.getHours().toString().padStart(2, '0') + ':' + d.getMinutes().toString().padStart(2, '0');
-      });
-
-      var hrVals = rows.map(function(r) { return r.hashrate ? r.hashrate / 1e12 : null; });
-      var tempVals = rows.map(function(r) { return r.temperature; });
-      var effVals = rows.map(function(r) { return r.efficiency_jth; });
-
+      wrap.setAttribute('aria-busy', label === 'loading' ? 'true' : 'false');
+      if (countBadge) countBadge.textContent = label;
+      if (status) status.textContent = message;
+      canvas.hidden = true;
+    };
+    showState('loading', 'Loading retained telemetry…');
+    if (typeof Chart === 'undefined') { showState('unavailable', 'Chart renderer unavailable.'); return; }
+    try {
+      const response = await authFetch('/api/axe-fleet/devices/' + encodeURIComponent(deviceId) + '/history?limit=120');
+      if (!current()) return;
+      if (!response.ok) {
+        showState(response.status === 401 || response.status === 403 ? 'access required' : 'error', 'Telemetry history unavailable (HTTP ' + response.status + '). Reopen the device to retry.');
+        return;
+      }
+      const data = await response.json();
+      if (!current()) return;
+      if (!data || !Array.isArray(data.history)) throw new Error('Invalid telemetry history');
+      const rows = data.history.filter(row => row && fmt.num(row.ts) && row.ts > 0 && Number.isFinite(new Date(row.ts * 1000).getTime()));
+      if (!rows.length) {
+        showState(data.history.length ? 'unknown' : 'empty', data.history.length ? 'Retained samples have no usable timestamps; observation times are unknown.' : 'No retained telemetry samples for this device.');
+        return;
+      }
+      if (!rows.some(row => fmt.num(row.hashrate) || fmt.num(row.temperature) || fmt.num(row.efficiency_jth))) {
+        showState('unknown', 'Retained samples have no numeric measurements for these series.');
+        return;
+      }
+      const numeric = value => fmt.num(value) ? value : null;
+      const radius = field => {
+        const present = rows.map(row => numeric(row[field]) != null);
+        if (present.filter(Boolean).length === 1) return 3;
+        return present.map((value, i) => value && !present[i - 1] && !present[i + 1] ? 3 : 0);
+      };
+      const reducedMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+      const labels = rows.map(row => new Date(row.ts * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
+      wrap.style.display = 'block';
+      wrap.setAttribute('aria-busy', 'false');
+      canvas.hidden = false;
+      if (countBadge) countBadge.textContent = rows.length + (rows.length === 1 ? ' point' : ' points');
+      if (status) status.textContent = 'Source: retained device telemetry · up to 120 samples · received ' + new Date().toLocaleTimeString();
       _axeDetailChart = new Chart(canvas.getContext('2d'), {
         type: 'line',
         data: {
           labels: labels,
           datasets: [
-            { label: 'Hashrate TH/s', data: hrVals, borderColor: 'rgb(6,214,240)', backgroundColor: 'rgba(6,214,240,0.06)', tension: 0.3, pointRadius: 0, fill: true, yAxisID: 'y' },
-            { label: 'Temp °C', data: tempVals, borderColor: 'rgb(255,160,0)', backgroundColor: 'rgba(255,160,0,0.04)', tension: 0.3, pointRadius: 0, borderDash: [4, 2], yAxisID: 'y1' },
-            { label: 'Eff J/TH', data: effVals, borderColor: 'rgb(186,133,224)', backgroundColor: 'transparent', tension: 0.3, pointRadius: 0, borderDash: [2, 3], yAxisID: 'y1' },
-          ]
+            { label: 'Hashrate TH/s', data: rows.map(row => numeric(row.hashrate) == null ? null : row.hashrate / 1e12), borderColor: 'rgb(6,214,240)', backgroundColor: 'rgba(6,214,240,0.06)', tension: 0.3, pointRadius: radius('hashrate'), fill: true, yAxisID: 'y' },
+            { label: 'Temp °C', data: rows.map(row => numeric(row.temperature)), borderColor: 'rgb(255,160,0)', backgroundColor: 'transparent', tension: 0.3, pointRadius: radius('temperature'), borderDash: [4, 2], yAxisID: 'y1' },
+            { label: 'Eff J/TH', data: rows.map(row => numeric(row.efficiency_jth)), borderColor: 'rgb(186,133,224)', backgroundColor: 'transparent', tension: 0.3, pointRadius: radius('efficiency_jth'), borderDash: [2, 3], yAxisID: 'y2' },
+          ],
         },
         options: {
           responsive: true,
           maintainAspectRatio: false,
+          animation: reducedMotion ? false : { duration: 180 },
           interaction: { mode: 'index', intersect: false },
           scales: {
             x: { ticks: { color: cssVar('--text-tertiary'), maxTicksLimit: 10, font: { size: 9 } }, grid: { color: 'rgba(94,89,82,0.12)' } },
             y: { type: 'linear', position: 'left', title: { display: true, text: 'TH/s', color: 'rgb(6,214,240)' }, ticks: { color: cssVar('--text-tertiary'), font: { size: 9 } }, grid: { color: 'rgba(94,89,82,0.10)' } },
-            y1: { type: 'linear', position: 'right', title: { display: true, text: '°C / J/TH', color: 'rgb(255,160,0)' }, ticks: { color: cssVar('--text-tertiary'), font: { size: 9 } }, grid: { display: false } }
+            y1: { type: 'linear', position: 'right', title: { display: true, text: '°C', color: 'rgb(255,160,0)' }, ticks: { color: cssVar('--text-tertiary'), font: { size: 9 } }, grid: { display: false } },
+            y2: { type: 'linear', position: 'right', title: { display: true, text: 'J/TH', color: 'rgb(186,133,224)' }, ticks: { color: cssVar('--text-tertiary'), font: { size: 9 } }, grid: { display: false } },
           },
-          plugins: {
-            legend: { labels: { color: cssVar('--text-secondary'), font: { size: 9 }, usePointStyle: true, padding: 12 } }
-          }
-        }
+          plugins: { legend: { labels: { color: cssVar('--text-secondary'), font: { size: 9 }, usePointStyle: true, padding: 12 } } },
+        },
       });
     } catch (e) {
-      // Non-fatal: chart is a nice-to-have, detail panel still works.
+      if (current()) showState('error', 'Error loading telemetry history. Reopen the device to retry.');
     }
   }
 
@@ -14877,7 +15305,7 @@ function renderAccount(acct) {
     // Device detail close
     if (dom.axeDetailClose) {
       dom.axeDetailClose.addEventListener('click', () => {
-        if (dom.axeDetail) dom.axeDetail.style.display = 'none';
+        resetAxeDetail();
       });
     }
 
@@ -15206,10 +15634,13 @@ function renderAccount(acct) {
     };
 
     document.getElementById('axe-agent-gen')?.addEventListener('click', async () => {
+      const generation = _axeAgentSessionGeneration;
       setStatus('> minting token...');
       try {
         const r = await authFetch('/api/agent/token', { method: 'POST' });
+        if (generation !== _axeAgentSessionGeneration) return;
         const data = await r.json();
+        if (generation !== _axeAgentSessionGeneration) return;
         if (!r.ok || !data.token) {
           setStatus('✗ ' + (data.error || 'token mint failed (HTTP ' + r.status + ')'), 'var(--accent-red)');
           return;
@@ -15223,6 +15654,7 @@ function renderAccount(acct) {
         setRevokePhase('idle');
         setStatus('✓ token issued · tenant ' + (data.tenant_id || ''), 'var(--accent-green)');
       } catch (e) {
+        if (generation !== _axeAgentSessionGeneration) return;
         setStatus('✗ network error', 'var(--accent-red)');
       }
     });
@@ -15265,12 +15697,24 @@ function renderAccount(acct) {
       renderRevoke();
     };
 
+    _resetAxeAgentPanel = () => {
+      panel.style.display = 'none';
+      if (tokenArea) tokenArea.value = '';
+      if (tokenRow) tokenRow.style.display = 'none';
+      if (dockerPre) dockerPre.textContent = '';
+      if (oneLinerPre) oneLinerPre.textContent = '';
+      if (revokeRoot) revokeRoot.dataset.inflight = '0';
+      setRevokePhase('idle');
+      setStatus('');
+    };
+
     revokeTrigger?.addEventListener('click', () => setRevokePhase('confirm'));
     revokeCancel?.addEventListener('click', () => {
       setRevokePhase('idle');
       setStatus('');
     });
     revokeDo?.addEventListener('click', async () => {
+      const generation = _axeAgentSessionGeneration;
       if (revokeState.phase === 'working') return; // nada de disparo duplo local
       // Caminho DESTRUTIVO: a guarda acima só cobre o estado deste closure. Se o
       // painel for inicializado duas vezes (já aconteceu de verdade — a linha
@@ -15282,7 +15726,9 @@ function renderAccount(acct) {
       setRevokePhase('working');
       try {
         const r = await authFetch('/api/agent/tokens/revoke', { method: 'POST' });
+        if (generation !== _axeAgentSessionGeneration) return;
         const data = await r.json().catch(() => ({}));
+        if (generation !== _axeAgentSessionGeneration) return;
         if (!r.ok || !data.success) {
           setRevokePhase('error', {
             reason: data.detail || data.error || ('HTTP ' + r.status),
@@ -15294,10 +15740,11 @@ function renderAccount(acct) {
         setRevokePhase('done', { from: data.revoked_epoch, to: data.active_epoch });
         setStatus('✓ tokens revogados — gere um token novo', 'var(--accent-green)');
       } catch (e) {
+        if (generation !== _axeAgentSessionGeneration) return;
         setRevokePhase('error', { reason: 'network error' });
         setStatus('✗ network error', 'var(--accent-red)');
       } finally {
-        if (revokeRoot) revokeRoot.dataset.inflight = '0';
+        if (generation === _axeAgentSessionGeneration && revokeRoot) revokeRoot.dataset.inflight = '0';
       }
     });
     document.getElementById('axe-agent-copy-token')?.addEventListener('click', () => {
