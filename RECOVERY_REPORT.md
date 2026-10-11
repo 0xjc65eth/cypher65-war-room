@@ -6,7 +6,7 @@ Data do checkpoint: 2026-10-11, Europe/Brussels. Relatório iniciado na Issue #8
 
 **Concluído:** checkpoint FreeBuff reconstruído; originais, sete stashes e WIPs preservados; série PR1–PR7 reconstruída sem duplicar implementação; frontend recuperado e publicado; reparos de Fleet, restore e integridade, dependências mobile, fixtures de QA e gate Black separados por Issue, branch e PR; revisões independentes de /devil e /advisor executadas.
 
-**Checkpoint atual #814:** #815 foi integrado externamente por `0xjc65eth` em 2026-10-11 às 08:27:47 UTC, squash `fd683ecda08d2d867bf9f02d708d7b040e49a725`. Seu head `2b484ee27f41c877bdc20e9428728f4f1bf47fb8` passou pelos checks remotos Python/JS, Unit, validate, mobile, frontend, E2E, imagem, integração e Codecov. A #814 parte dessa master e corrige o MEDIUM de status de comandos versus callback atrasado em unidade própria. Contrato e evidência: [#814](docs/qa/ISSUE_814_COMMAND_CACHE.md). **Ainda pendentes:** publicação/CI/review da #814, reconciliação de legado, unificação dos 14 módulos de #757 e critérios externos de hardware, produção, dados e SLO. Nenhum desses critérios externos é comprovado por fixtures.
+**Checkpoint atual #814:** #815 foi integrado externamente por `0xjc65eth` em 2026-10-11 às 08:27:47 UTC, squash `fd683ecda08d2d867bf9f02d708d7b040e49a725`. Seu head `2b484ee27f41c877bdc20e9428728f4f1bf47fb8` passou pelos checks remotos Python/JS, Unit, validate, mobile, frontend, E2E, imagem, integração e Codecov. A #814 parte dessa master e corrige o MEDIUM de status de comandos versus callback atrasado em unidade própria. Contrato e evidência: [#814](docs/qa/ISSUE_814_COMMAND_CACHE.md). **Ainda pendentes:** CI/review do [PR #816](https://github.com/0xjc65eth/cypher65-war-room/pull/816) da #814, reconciliação de legado, unificação dos 14 módulos de #757 e critérios externos de hardware, produção, dados e SLO. Nenhum desses critérios externos é comprovado por fixtures.
 
 O worktree inicial desta conversa estava limpo e em detached HEAD. O checkpoint interrompido estava no checkout `/Users/juliocesar/cypher65-war-room`, branch `fix/798-console-ids-chart-init`, base `ec3bdf6`, com seis arquivos alterados e o mapa PR1–PR7 não rastreado. Foram preservados o backup `/tmp/c65-original-798.patch` e o mapa `/tmp/c65-original-series.md`. O diff original foi comparado novamente byte a byte após a recuperação e continua idêntico; os sete stashes foram preservados. Os WIPs de #777 em `/private/tmp/cypher65-777-clean` e `/Users/juliocesar/cypher65-777-device-identity` não foram incorporados integralmente.
 
@@ -147,11 +147,11 @@ Os corpos e comentários das 13 Issues iniciais foram consultados novamente via 
 
 ## 8. Merge readiness
 
-Os PRs de recuperação anteriores e a [#815](https://github.com/0xjc65eth/cypher65-war-room/pull/815) foram integrados externamente; merge por si só não comprova aprovação independente ou produção. CI do head final da #815 foi verificado verde. A #814 tem implementação e revisão internas em unidade própria, com 110 testes focados e oito E2E Fleet PASS; a suíte completa passou com **4325 testes, 2 skips, zero falhas/erros, 85,59% de cobertura e 184,93 s**. JUnit registra 4327 casos. Publicação, CI do novo SHA e approval GitHub permanecem gates separados. Revisões por subagentes não substituem approval. Este agente não realizou merge/deploy e não alega produção validada.
+Os PRs de recuperação anteriores e a [#815](https://github.com/0xjc65eth/cypher65-war-room/pull/815) foram integrados externamente; merge por si só não comprova aprovação independente ou produção. CI do head final da #815 foi verificado verde. A #814 tem implementação e revisão internas em unidade própria, com 110 testes focados e oito E2E Fleet PASS; a suíte completa passou com **4325 testes, 2 skips, zero falhas/erros, 85,59% de cobertura e 184,93 s**. JUnit registra 4327 casos. O [PR #816](https://github.com/0xjc65eth/cypher65-war-room/pull/816) foi publicado em draft com CI em execução. CI do novo SHA e approval GitHub permanecem gates separados. Revisões por subagentes não substituem approval. Este agente não realizou merge/deploy e não alega produção validada.
 
 ## 9. Next actions
 
-1. Publicar a #814, conferir CI do SHA exato e corrigir falhas demonstradas; obter review/approval GitHub.
+1. Conferir CI do SHA exato do PR #816 e corrigir falhas demonstradas; obter review/approval GitHub.
 2. Integrar somente com autorização adicional, checks verdes e aprovação; preservar merges externos e revalidar cada head após mudança de base.
 3. Manter reconciliação histórica, #757 e os critérios externos de hardware/produção/dados/SLO nas trilhas da matriz; preservar WIPs e histórico.
 
@@ -185,3 +185,14 @@ O [documento #813](docs/qa/ISSUE_813_IDENTITY_ATOMICITY.md) registra contratos, 
 Finding adicional /devil: [#814](https://github.com/0xjc65eth/cypher65-war-room/issues/814), MEDIUM/P2, callback antigo pode sobrescrever o cache PAUSED de um comando que já confirmou no banco. Separado do binding da #813; não há garantia global de coerência de todos os writers de cache. A regressão final fortalecida passou em 51 testes/1,64 s, sem mudança de produção após a suíte completa.
 
 Publicação: [PR #815](https://github.com/0xjc65eth/cypher65-war-room/pull/815), código `67c86f28b7aa58173563eb53b6488d0a7fd6ddfe`. Snapshot na abertura: OPEN/draft, REVIEW_REQUIRED; checks em andamento. Este registro é um checkpoint da publicação; o estado atualizado do CI/approval permanece no PR, por SHA. O commit documental seguinte conserva o código validado e exige seus próprios checks.
+
+
+## Publicação da #814 — 2026-10-11
+
+[PR #816](https://github.com/0xjc65eth/cypher65-war-room/pull/816), código
+`f07d2cdda303eacb8405f0e04f914d84bb1f4adf`, branch
+`fix/814-command-cache-publication`, base `fd683ec`. Seis arquivos: dois de
+produção, dois de teste e dois documentos. Snapshot de abertura OPEN/draft,
+REVIEW_REQUIRED/BLOCKED, CI em execução. O commit documental seguinte precisa
+de checks próprios; resultado atualizado fica no PR por SHA. Revisões internas
+/devil e /advisor não equivalem a approval GitHub. Nenhum merge/deploy deste agente.

@@ -83,5 +83,10 @@ SQLite real, threads/barreiras e conectores simulados nos testes Python.
 
 ## Publicação
 
-Closes #814; referência de dependência #815. CI do SHA exato e approval GitHub
-são gates separados. Nenhum merge/deploy foi executado por este agente.
+[PR #816](https://github.com/0xjc65eth/cypher65-war-room/pull/816),
+commit de código `f07d2cdda303eacb8405f0e04f914d84bb1f4adf`, branch
+`fix/814-command-cache-publication`. Closes #814; referência #815.
+Snapshot de abertura: OPEN/draft, REVIEW_REQUIRED/BLOCKED, CI em execução.
+O commit documental seguinte conserva o código validado e exige seus próprios
+checks. O estado atualizado do CI/approval fica no PR, por SHA; o snapshot não
+é resultado final. CI do SHA exato e approval GitHub são gates separados. Nenhum merge/deploy foi executado por este agente.
