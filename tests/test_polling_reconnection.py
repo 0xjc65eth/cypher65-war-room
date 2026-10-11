@@ -15,6 +15,14 @@ from services.auth import create_token
 from services import state
 
 
+# Explicit synthetic MAC evidence for nominal fixtures; production never infers MAC from IP.
+_DEVICE_MACS = {
+    "192.0.2.80": "02:00:00:00:01:80",
+    "192.168.1.50": "02:00:00:00:01:50",
+    "10.8.0.12": "02:00:00:00:08:12",
+}
+
+
 @pytest.fixture
 def client(monkeypatch):
     """Flask test client with an isolated test JWT secret."""
@@ -86,7 +94,7 @@ def test_agent_telemetry_recovery_emits_one_online_edge(
         registered = client.post(
             "/api/agent/register",
             headers=_headers(agent_token),
-            json={"devices": [{"ip": ip, "model": "Bitaxe"}]},
+            json={"devices": [{"mac": _DEVICE_MACS[ip], "ip": ip, "model": "Bitaxe"}]},
         )
         assert registered.status_code == 201
         device_id = registered.get_json()["registered"][0]["id"]
@@ -94,7 +102,7 @@ def test_agent_telemetry_recovery_emits_one_online_edge(
         offline = client.post(
             "/api/agent/telemetry",
             headers=_headers(agent_token),
-            json={"ip": ip, "telemetry": {}},
+            json={"mac": _DEVICE_MACS[ip], "ip": ip, "telemetry": {}},
         )
         assert offline.status_code == 200
         assert offline.get_json()["status"] == "OFFLINE"
@@ -107,7 +115,7 @@ def test_agent_telemetry_recovery_emits_one_online_edge(
         stale = client.post(
             "/api/agent/telemetry",
             headers=_headers(agent_token),
-            json={"ip": ip, "telemetry": stale_sample},
+            json={"mac": _DEVICE_MACS[ip], "ip": ip, "telemetry": stale_sample},
         )
         assert stale.status_code == 200
         assert stale.get_json()["status"] == "STALE"
@@ -115,7 +123,7 @@ def test_agent_telemetry_recovery_emits_one_online_edge(
         empty_heartbeat = client.post(
             "/api/agent/telemetry",
             headers=_headers(agent_token),
-            json={"ip": ip, "telemetry": {}},
+            json={"mac": _DEVICE_MACS[ip], "ip": ip, "telemetry": {}},
         )
         assert empty_heartbeat.status_code == 200
         assert empty_heartbeat.get_json()["status"] == "STALE"
@@ -124,6 +132,7 @@ def test_agent_telemetry_recovery_emits_one_online_edge(
             "/api/agent/telemetry",
             headers=_headers(agent_token),
             json={
+                "mac": _DEVICE_MACS[ip],
                 "ip": ip,
                 "telemetry": {
                     "ts": int(time.time()),
@@ -138,7 +147,7 @@ def test_agent_telemetry_recovery_emits_one_online_edge(
         fresh_heartbeat = client.post(
             "/api/agent/telemetry",
             headers=_headers(agent_token),
-            json={"ip": ip, "telemetry": {}},
+            json={"mac": _DEVICE_MACS[ip], "ip": ip, "telemetry": {}},
         )
         assert fresh_heartbeat.status_code == 200
         assert fresh_heartbeat.get_json()["status"] == "ONLINE"
@@ -166,6 +175,7 @@ def test_device_poll_backoff_and_recovery_emit_one_event_per_edge(
     caplog.set_level(logging.INFO, logger="cypher65")
 
     recovered_telemetry = {
+        "mac": "AA:BB:CC:DD:EE:FF",
         "ts": 1_800_000_000,
         "hashrate_hs": 4_800_000_000_000,
         "temperature": 58,
@@ -188,7 +198,9 @@ def test_device_poll_backoff_and_recovery_emit_one_event_per_edge(
         registry.update_device(device_id, {"status": "ONLINE"})
         caplog.clear()
 
-        base = 1_800_000_000
+        base = int(time.time())
+        clock = [base]
+        monkeypatch.setattr(time, "time", lambda: clock[0])
         attempts = [
             base,  # initial attempt fails
             base + 60,  # first failure backs off to 120 seconds
@@ -204,6 +216,8 @@ def test_device_poll_backoff_and_recovery_emit_one_event_per_edge(
         ]
         call_counts = []
         for timestamp in attempts:
+            clock[0] = timestamp
+            recovered_telemetry["ts"] = timestamp
             app_module._poll_axe_fleet(timestamp)
             call_counts.append(connector.return_value.extract_telemetry.call_count)
 
@@ -218,7 +232,10 @@ def test_device_poll_backoff_and_recovery_emit_one_event_per_edge(
     assert events == [
         "miner.offline",
         "miner.online",
+        "miner.telemetry.received",
+        "miner.telemetry.received",
         "miner.offline",
         "miner.online",
+        "miner.telemetry.received",
     ]
     assert state.axe_poll_error_counts == {}

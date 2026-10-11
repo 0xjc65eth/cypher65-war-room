@@ -279,7 +279,9 @@ class TestTelemetry:
             lambda ip, command: {"SUMMARY": [{"GHS av": float("inf")}]},
         )
 
-        tel = agent._poll_telemetry({"ip": "127.0.0.1", "type": "cgminer"})
+        tel = agent._poll_telemetry(
+            {"ip": "127.0.0.1", "type": "cgminer", "mac": "02:00:00:00:02:01"}
+        )
 
         assert tel == {"_invalid_fields": ["hashrate_hs"]}
 
@@ -288,7 +290,12 @@ class TestTelemetry:
     ):
         monkeypatch.setattr(agent, "CGMINER_PORT", cgminer_mock)
         tel = agent._poll_telemetry(
-            {"ip": "127.0.0.1", "type": "cgminer", "model": "Antminer S19j Pro"}
+            {
+                "ip": "127.0.0.1",
+                "type": "cgminer",
+                "model": "Antminer S19j Pro",
+                "mac": "02:00:00:00:02:01",
+            }
         )
         assert tel["hashrate_hs"] == 91_200_000_000  # GHS 5s 91.2 × 1e9
         assert tel["temperature"] == 62.5  # from stats temp2_0
@@ -302,7 +309,12 @@ class TestTelemetry:
     def test_axeos_poll_is_full_telemetry(self, monkeypatch, axeos_mock):
         monkeypatch.setattr(agent, "AXEOS_PORT", axeos_mock)
         tel = agent._poll_telemetry(
-            {"ip": "127.0.0.1", "type": "bitaxe", "model": "Gamma 900"}
+            {
+                "ip": "127.0.0.1",
+                "type": "bitaxe",
+                "model": "Gamma 900",
+                "mac": _AXEOS_INFO["mac"],
+            }
         )
         assert tel["hashrate_hs"] == 912345678901
         assert tel["temperature"] == 53.2
@@ -319,7 +331,7 @@ class TestTelemetry:
         (miningResume) desliga o flag e devolve o hashrate."""
         monkeypatch.setattr(agent, "AXEOS_PORT", axeos_mock)
         known = {"127.0.0.1": {"type": "bitaxe"}}
-        dev = {"ip": "127.0.0.1", "type": "bitaxe"}
+        dev = agent._identity_from_axeos("127.0.0.1", _AXEOS_INFO)
         ok, _ = agent._exec_command(
             {"ip_address": "127.0.0.1", "command": "pause"}, known=known
         )
@@ -339,7 +351,9 @@ class TestTelemetry:
     def test_unreachable_cgminer_returns_empty_not_crash(self, monkeypatch):
         # No server on this port → poll must return {} (agent pushes {}).
         monkeypatch.setattr(agent, "CGMINER_PORT", 1)
-        tel = agent._poll_telemetry({"ip": "127.0.0.1", "type": "cgminer"})
+        tel = agent._poll_telemetry(
+            {"ip": "127.0.0.1", "type": "cgminer", "mac": "02:00:00:00:02:01"}
+        )
         assert tel == {}
 
 

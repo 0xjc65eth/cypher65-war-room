@@ -53,7 +53,9 @@ def _poisson(user_hr: float, net_hr: float, seconds: float) -> Dict[str, Any]:
             "expected_blocks": 0.0,
             "expected_time_to_block_seconds": None,
         }
-    if not (math.isfinite(user_hr) and math.isfinite(net_hr) and math.isfinite(seconds)):
+    if not (
+        math.isfinite(user_hr) and math.isfinite(net_hr) and math.isfinite(seconds)
+    ):
         return {
             "lambda": 0.0,
             "probability_at_least_one": 0.0,
@@ -117,7 +119,11 @@ def model_inputs(
         state = src
     elif state not in valid:
         state = "UNKNOWN"
-    now = int(observed_at) if observed_at is not None else int(datetime.now(timezone.utc).timestamp())
+    now = (
+        int(observed_at)
+        if observed_at is not None
+        else int(datetime.now(timezone.utc).timestamp())
+    )
     age = 0 if age_seconds is None else max(0, int(age_seconds))
     return {
         "user_hashrate": _finite_or_default(user_hashrate),
@@ -181,6 +187,7 @@ def target_probability_solver(
         if window_for_rate <= 0:
             raise ValueError("window_for_rate <= 0")
         import math as _math
+
         lambda_for_target = -_math.log(1.0 - target_p)
         share_of_network_required = lambda_for_target / window_for_rate
         required_user_hashrate = share_of_network_required * net_hr
@@ -189,8 +196,14 @@ def target_probability_solver(
             "status": "SOLVED",
             "share_of_network_required": share_of_network_required,
             "required_user_hashrate": required_user_hashrate,
-            "share_of_network_required_str": _format_hr(share_of_network_required) if share_of_network_required else None,
-            "required_user_hashrate_str": _format_hr(required_user_hashrate) if required_user_hashrate else None,
+            "share_of_network_required_str": (
+                _format_hr(share_of_network_required)
+                if share_of_network_required
+                else None
+            ),
+            "required_user_hashrate_str": (
+                _format_hr(required_user_hashrate) if required_user_hashrate else None
+            ),
         }
     except (OverflowError, ValueError, ZeroDivisionError, ZeroDivisionError):
         return {
@@ -211,7 +224,14 @@ def probability_horizons(
     user_hr = _finite_or_default(user_hr)
     network_hr = _finite_or_default(network_hr)
     seconds = _finite_or_default(duration_seconds, 86400.0)
-    if user_hr <= 0 or network_hr <= 0 or not math.isfinite(user_hr) or not math.isfinite(network_hr) or not math.isfinite(seconds) or seconds <= 0:
+    if (
+        user_hr <= 0
+        or network_hr <= 0
+        or not math.isfinite(user_hr)
+        or not math.isfinite(network_hr)
+        or not math.isfinite(seconds)
+        or seconds <= 0
+    ):
         return {
             "lambda": 0.0,
             "probability_at_least_one": 0.0,
@@ -254,15 +274,17 @@ def hashpower_network_what_if(
     for s in scenarios or []:
         nr = _finite_or_default(s.get("network_hashrate"), base_network_hr)
         p = _poisson(base_user_hr, nr, window)
-        out["scenarios"].append({
-            "network_hashrate": nr,
-            "network_hashrate_str": _format_hr(nr),
-            "multiplier": nr / base_network_hr if base_network_hr else None,
-            "probability_at_least_one": p["probability_at_least_one"],
-            "probability_at_least_one_pct": p["probability_at_least_one"] * 100.0,
-            "expected_time_to_block_seconds": p["expected_time_to_block_seconds"],
-            "status": "SOLVED",
-        })
+        out["scenarios"].append(
+            {
+                "network_hashrate": nr,
+                "network_hashrate_str": _format_hr(nr),
+                "multiplier": nr / base_network_hr if base_network_hr else None,
+                "probability_at_least_one": p["probability_at_least_one"],
+                "probability_at_least_one_pct": p["probability_at_least_one"] * 100.0,
+                "expected_time_to_block_seconds": p["expected_time_to_block_seconds"],
+                "status": "SOLVED",
+            }
+        )
     return out
 
 
@@ -307,6 +329,29 @@ def solo_model_summary(
     return result
 
 
+def valid_share_history(history):
+    """Copy finite positive observations without modifying shared telemetry."""
+    valid = []
+    for entry in history or []:
+        if not isinstance(entry, dict) or isinstance(entry.get("share_diff_raw"), bool):
+            continue
+        try:
+            diff = float(entry.get("share_diff_raw"))
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if math.isfinite(diff) and diff > 0:
+            valid.append({**entry, "share_diff_raw": diff})
+    return valid
+
+
+def positive_share_mean(values):
+    """Mean of validated positive finite values, without sum overflow."""
+    if not values:
+        return None
+    scale = max(values)
+    return scale * (math.fsum(value / scale for value in values) / len(values))
+
+
 def share_statistics(
     session_share_count: Optional[int],
     share_calc_history: Optional[Iterable[Dict[str, Any]]],
@@ -322,21 +367,11 @@ def share_statistics(
     chronological order. Missing timestamps, gap counts, and observation
     windows remain unknown when the retained history cannot prove them.
     """
-    history = list(share_calc_history or [])
-    valid_entries = []
-    for entry in history:
-        if not isinstance(entry, dict):
-            continue
-        try:
-            diff = float(entry.get("share_diff_raw"))
-        except (TypeError, ValueError):
-            continue
-        if math.isfinite(diff) and diff > 0:
-            valid_entries.append((entry, diff))
-
-    chronological_diffs = [diff for _, diff in valid_entries]
+    valid_entries = valid_share_history(share_calc_history)
+    chronological_diffs = [entry["share_diff_raw"] for entry in valid_entries]
     diffs = sorted(chronological_diffs)
     count = len(diffs)
+
     out = {
         "session_share_count": session_share_count,
         "sample_count": count,
@@ -372,11 +407,12 @@ def share_statistics(
         chunk = max(1, count // 5)
         earlier = chronological_diffs[:chunk]
         recent = chronological_diffs[-chunk:]
-        avg_earlier = sum(earlier) / len(earlier)
-        avg_recent = sum(recent) / len(recent)
-        if avg_recent > avg_earlier * 1.05:
+        avg_earlier = positive_share_mean(earlier)
+        avg_recent = positive_share_mean(recent)
+        ratio = avg_recent / avg_earlier
+        if ratio > 1.05:
             trend = "INCREASING"
-        elif avg_recent < avg_earlier * 0.95:
+        elif ratio < 0.95:
             trend = "DECREASING"
         else:
             trend = "STABLE"
@@ -384,47 +420,89 @@ def share_statistics(
         trend = "STABLE"
     out["share_diff_trend"] = trend
     out["share_diff_summary"] = {
-        "p50": out["p50"], "p75": out["p75"], "p90": out["p90"],
-        "p95": out["p95"], "p99": out["p99"], "max": out["max"],
-        "sample_count": count, "window_seconds": window_seconds,
+        "p50": out["p50"],
+        "p75": out["p75"],
+        "p90": out["p90"],
+        "p95": out["p95"],
+        "p99": out["p99"],
+        "max": out["max"],
+        "sample_count": count,
+        "window_seconds": window_seconds,
         "trend": trend,
     }
 
+    def _finite_number(value):
+        if isinstance(value, bool):
+            return None
+        try:
+            number = float(value)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        return number if math.isfinite(number) else None
+
+    now = _finite_number(observed_now)
+    now = now if now is not None and now > 0 else None
     ts_values = []
-    for entry, _ in valid_entries:
+    timestamp_present = False
+    for entry in valid_entries:
         for key in ("ts", "timestamp", "time"):
-            try:
-                value = float(entry.get(key))
-            except (TypeError, ValueError):
+            if key not in entry:
                 continue
-            if math.isfinite(value) and value > 0:
+            timestamp_present = True
+            value = _finite_number(entry[key])
+            if value is not None and value > 0 and (now is None or value <= now):
                 ts_values.append(value)
-                break
-    last_age = None
-    if observed_now is not None and ts_values:
-        last_age = max(0, int(float(observed_now) - ts_values[-1]))
-    elif age_seconds is not None:
-        last_age = max(0, int(float(age_seconds)))
-    observed_window = (
-        max(0, int(ts_values[-1] - ts_values[0])) if len(ts_values) >= 2 else None
+            break
+    # A partial, future or reversed timestamp sequence cannot prove the age
+    # or span of this retained history. Never repair it with a different clock.
+    temporal_valid = (
+        count > 0
+        and len(ts_values) == count
+        and all(a <= b for a, b in zip(ts_values, ts_values[1:]))
     )
-    out.update({
-        "valid_modeled_shares": count,
-        "avg_share_difficulty": sum(chronological_diffs) / count if count else None,
-        "data_gaps": None,
-        "last_share_age_seconds": last_age,
-        "last_share_age": (
-            f"{last_age}s" if last_age < 3600 else f"{last_age // 60}m"
-        ) if last_age is not None else None,
-        "observed_window_seconds": observed_window,
-        "observed_window": (
-            f"{observed_window}s" if observed_window < 3600 else f"{observed_window // 60}m"
-        ) if observed_window is not None else None,
-        "evidence_state": evidence_state_from_inputs(
-            user_hashrate, network_hashrate, session_share_count,
-            age_seconds if age_seconds is not None else last_age,
-        ),
-    })
+    last_age = None
+    if temporal_valid and now is not None:
+        last_age = int(now - ts_values[-1])
+    elif count and not timestamp_present:
+        fallback_age = _finite_number(age_seconds)
+        if (
+            fallback_age is not None
+            and fallback_age >= 0
+            and math.copysign(1, fallback_age) > 0
+        ):
+            last_age = int(fallback_age)
+    observed_window = (
+        int(ts_values[-1] - ts_values[0]) if temporal_valid and count >= 2 else None
+    )
+    out.update(
+        {
+            "valid_modeled_shares": count,
+            "avg_share_difficulty": positive_share_mean(chronological_diffs),
+            "data_gaps": None,
+            "last_share_age_seconds": last_age,
+            "last_share_age": (
+                (f"{last_age}s" if last_age < 3600 else f"{last_age // 60}m")
+                if last_age is not None
+                else None
+            ),
+            "observed_window_seconds": observed_window,
+            "observed_window": (
+                (
+                    f"{observed_window}s"
+                    if observed_window < 3600
+                    else f"{observed_window // 60}m"
+                )
+                if observed_window is not None
+                else None
+            ),
+            "evidence_state": evidence_state_from_inputs(
+                user_hashrate,
+                network_hashrate,
+                count,
+                last_age,
+            ),
+        }
+    )
     out["evidence_state_label"] = out["evidence_state"]
     return out
 
@@ -433,14 +511,31 @@ def evidence_state_from_inputs(
     user_hashrate: Optional[float],
     network_hashrate: Optional[float],
     session_share_count: Optional[int],
-    age_seconds: Optional[float] = 0,
+    age_seconds: Optional[float] = None,
 ) -> str:
     """Map the live inputs to one of: GOOD COVERAGE | PARTIAL | STALE |
     INSUFFICIENT | NO DATA. Does not create a score; it only reports the
     state of the evidence."""
-    age = max(0, int(age_seconds)) if age_seconds is not None else None
-    user_hr = _finite_or_default(user_hashrate)
-    net_hr = _finite_or_default(network_hashrate)
+    try:
+        age_value = float(age_seconds) if not isinstance(age_seconds, bool) else -1
+        age = (
+            int(age_value)
+            if math.isfinite(age_value)
+            and age_value >= 0
+            and math.copysign(1, age_value) > 0
+            else None
+        )
+    except (TypeError, ValueError, OverflowError):
+        age = None
+    try:
+        user_hr = _finite_or_default(user_hashrate)
+        net_hr = _finite_or_default(network_hashrate)
+    except OverflowError:
+        user_hr = net_hr = 0
+    if isinstance(user_hashrate, bool) or not math.isfinite(user_hr):
+        user_hr = 0
+    if isinstance(network_hashrate, bool) or not math.isfinite(net_hr):
+        net_hr = 0
     shares = session_share_count or 0
 
     if user_hr <= 0 or net_hr <= 0:
@@ -452,6 +547,8 @@ def evidence_state_from_inputs(
         return "INSUFFICIENT"
     if age is not None and age > 3600:
         return "STALE"
+    if age is None:
+        return "PARTIAL"
     if shares < 10:
         return "PARTIAL"
     if shares < 100:

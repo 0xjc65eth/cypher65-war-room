@@ -55,7 +55,9 @@ def _headers(token):
 
 def _active_device(registry, ip="192.168.10.20", device_type="bitaxe"):
     device = registry.upsert_agent_device(
-        ip, tenant_id="acme", info={"type": device_type, "firmware": "AxeOS"}
+        ip,
+        tenant_id="acme",
+        info={"mac": "02:00:00:00:05:01", "type": device_type, "firmware": "AxeOS"},
     )
     registry.save_agent_telemetry(
         device["id"], {"hashrate_hs": 1_000_000_000}, tenant_id="acme"
@@ -204,7 +206,9 @@ def test_read_only_probe_expires_with_agent_command_ttl(
 
 def test_pull_blocks_offline_device(client, agent_token, registry, monkeypatch):
     monkeypatch.setenv("ENABLE_PHYSICAL_COMMANDS", "true")
-    device = registry.upsert_agent_device("192.168.10.21", tenant_id="acme")
+    device = registry.upsert_agent_device(
+        "192.168.10.21", tenant_id="acme", info={"mac": "02:00:00:00:05:15"}
+    )
     queued = registry.enqueue_agent_command(device["id"], "restart", tenant_id="acme")
 
     response = _pull(client, agent_token, registry)

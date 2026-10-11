@@ -278,8 +278,13 @@ app.register_blueprint(solo_mining_bp, url_prefix="/api/solo-mining")
 register_probability_routes(app)
 
 # ── Register Block Probability Lab blueprint ────────────────────────────────
-from routes.block_probability_lab_routes import dashboard_bp as block_probability_lab_blueprint
-app.register_blueprint(block_probability_lab_blueprint, url_prefix="/api/block-probability-lab")
+from routes.block_probability_lab_routes import (
+    dashboard_bp as block_probability_lab_blueprint,
+)
+
+app.register_blueprint(
+    block_probability_lab_blueprint, url_prefix="/api/block-probability-lab"
+)
 
 # ── Register Axe Fleet blueprint ────────────────────────────────────────────
 app.register_blueprint(axe_fleet_bp, url_prefix="/api/axe-fleet")
@@ -1718,7 +1723,7 @@ _init_axe_routes(_axe_registry)
 # agent-managed devices (the cloud can't reach the user's LAN). Result:
 # every agent push landed in the database but never reached the dashboard
 # (empty fleet → "miners not found" + "telemetry missing"). Fix at the
-# single choke point: save_telemetry() is the ONLY writer of axe_telemetry,
+# Committed registry telemetry is the write-through boundary for axe_telemetry,
 # so wrapping it here makes EVERY push (agent, server poll, manual) feed the
 # cache — it can no longer diverge from the database.
 
@@ -1783,15 +1788,24 @@ def _seed_axe_telemetry_cache(registry) -> None:
 _axe_save_telemetry_orig = _axe_registry.save_telemetry
 
 
-def _axe_save_telemetry_write_through(device_id, telemetry, tenant_id="default"):
-    _axe_save_telemetry_orig(device_id, telemetry, tenant_id=tenant_id)
+def _axe_telemetry_committed(device_id, telemetry, status=""):
     try:
-        _cache_axe_telemetry(device_id, telemetry)
+        _cache_axe_telemetry(device_id, telemetry, status=status)
     except Exception as e:
         log.warning("[axe] telemetry cache write-through failed: %s", e)
 
 
+def _axe_save_telemetry_write_through(
+    device_id, telemetry, tenant_id="default", idempotency_key=""
+):
+    inserted = _axe_save_telemetry_orig(
+        device_id, telemetry, tenant_id=tenant_id, idempotency_key=idempotency_key
+    )
+    return inserted
+
+
 _axe_registry.save_telemetry = _axe_save_telemetry_write_through
+_axe_registry.on_telemetry_committed = _axe_telemetry_committed
 
 # ── Auto-seed Axe Fleet with test devices if registry is empty ──
 _auto_seed_axe_fleet(_axe_registry)
@@ -3312,14 +3326,17 @@ def _poll_axe_fleet(ts: int) -> None:
                 if ts - last >= _axe_poll_interval(errors):
                     _shared_state.axe_last_poll_ts[did] = ts
                     try:
-                        tel = _axe_registry.poll_device(did)
+                        tel = _axe_registry.poll_device(
+                            did, tenant_id=device.get("tenant_id") or "default"
+                        )
                     except Exception as e:
                         _shared_state.axe_poll_error_counts[did] = errors + 1
                         log.warning("[axe poll] error for device %s: %s", did, e)
                         continue
                     if tel:
                         _shared_state.axe_poll_error_counts.pop(did, None)
-                        _cache_axe_telemetry(did, tel)
+                        # Registry publishes committed current state under its lock.
+                        # Re-caching this return value could overwrite a newer sample.
                     else:
                         _shared_state.axe_poll_error_counts[did] = errors + 1
     except Exception as e:
@@ -6337,7 +6354,10 @@ def api_hashrate_market():
     from services.hashrate_market import compute_institutional_view
 
     inst_view = compute_institutional_view(
-        offers, network_hashrate, btc_usd, provider_cache=_shared_state.last_known_prices
+        offers,
+        network_hashrate,
+        btc_usd,
+        provider_cache=_shared_state.last_known_prices,
     )
 
     return jsonify(
@@ -6370,7 +6390,10 @@ def api_hashrate_market_institutional():
         {
             "success": True,
             **compute_institutional_view(
-                offers, network_hashrate, btc_usd, provider_cache=_shared_state.last_known_prices
+                offers,
+                network_hashrate,
+                btc_usd,
+                provider_cache=_shared_state.last_known_prices,
             ),
         }
     )
@@ -8266,7 +8289,8 @@ def api_chart_data():
                 if math.isfinite(value) and value > 0:
                     diffs.append(value)
             share_stats = share_statistics(
-                timeline_state.get("session_share_count"), sch,
+                timeline_state.get("session_share_count"),
+                sch,
                 window_seconds=3600.0,
                 user_hashrate=(latest_snapshot.get("worker") or {}).get("hashrate"),
                 network_hashrate=(latest_snapshot.get("network") or {}).get("hashrate"),

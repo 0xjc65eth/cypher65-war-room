@@ -46,6 +46,22 @@ from services.pool_intelligence import Chain, PoolKind, detect_provider
 # ══════════════════════════════════════════════════════════════════════════
 
 
+# Explicit synthetic MAC evidence for nominal fixtures; production never infers MAC from IP.
+_DEVICE_MACS = {
+    "127.0.0.1": "02:00:00:00:01:01",
+    "192.168.1.77": "02:00:00:00:01:77",
+    "192.168.77.10": "02:00:00:00:01:10",
+    "192.168.77.11": "02:00:00:00:01:11",
+    "192.168.77.12": "02:00:00:00:01:12",
+    "192.168.77.13": "02:00:00:00:01:13",
+    "192.168.77.50": "02:00:00:00:01:50",
+    "192.168.77.51": "02:00:00:00:01:51",
+    "192.168.77.52": "02:00:00:00:01:52",
+    "192.168.77.53": "02:00:00:00:01:53",
+    "10.8.0.12": "02:00:00:00:08:12",
+}
+
+
 @pytest.fixture
 def registry(tmp_path):
     """Real DeviceRegistry on a scratch SQLite file (no network)."""
@@ -159,7 +175,9 @@ class TestOnlineStateSemantics:
 
     def test_empty_heartbeat_never_says_online(self, registry):
         """A device that never produced a measurement is OFFLINE, not IDLE."""
-        dev = registry.upsert_agent_device("192.168.77.10", tenant_id="acme")
+        dev = registry.upsert_agent_device(
+            "192.168.77.10", tenant_id="acme", info={"mac": "02:00:00:00:02:0A"}
+        )
         registry.save_agent_telemetry(dev["id"], {}, tenant_id="acme")
         stored = registry.get_device(dev["id"], tenant_id="acme")
         assert stored["status"] == STATUS_OFFLINE
@@ -168,7 +186,9 @@ class TestOnlineStateSemantics:
 
     def test_empty_heartbeat_after_horizon_is_stale(self, registry):
         """fleet_stale_telemetry_transitions_state — measured data gone old."""
-        dev = registry.upsert_agent_device("192.168.77.11", tenant_id="acme")
+        dev = registry.upsert_agent_device(
+            "192.168.77.11", tenant_id="acme", info={"mac": "02:00:00:00:02:0B"}
+        )
         old = int(time.time()) - 16 * 60
         registry.save_agent_telemetry(
             dev["id"], {"hashrate_hs": 1000, "ts": old}, tenant_id="acme"
@@ -179,7 +199,9 @@ class TestOnlineStateSemantics:
 
     def test_fresh_measured_reading_keeps_live_status(self, registry):
         """A healthy miner with a recent reading is NOT degraded."""
-        dev = registry.upsert_agent_device("192.168.77.12", tenant_id="acme")
+        dev = registry.upsert_agent_device(
+            "192.168.77.12", tenant_id="acme", info={"mac": "02:00:00:00:02:0C"}
+        )
         registry.save_agent_telemetry(
             dev["id"], {"hashrate_hs": 4800000000000}, tenant_id="acme"
         )
@@ -197,7 +219,9 @@ class TestOnlineStateSemantics:
 
     def test_list_devices_degrades_old_online_rows(self, registry):
         """The read path: an ONLINE row with old telemetry reads STALE."""
-        dev = registry.upsert_agent_device("192.168.77.13", tenant_id="acme")
+        dev = registry.upsert_agent_device(
+            "192.168.77.13", tenant_id="acme", info={"mac": "02:00:00:00:02:0D"}
+        )
         old = int(time.time()) - 3600
         registry.save_agent_telemetry(
             dev["id"], {"hashrate_hs": 999, "ts": old}, tenant_id="acme"
@@ -254,9 +278,27 @@ class TestFleetAgentless:
     ):
         """Self-hosted: a private LAN IP add works (only the agent cap and
         duplicates reject), and the response is a 201 with the device."""
-        with patch("axe_fleet.routes._registry", registry), patch(
-            "config.is_cloud_deploy", return_value=False
+        from axe_fleet.axeos_contract import official_esp_miner_info
+
+        with (
+            patch("axe_fleet.routes._registry", registry),
+            patch("config.is_cloud_deploy", return_value=False),
+            patch("axe_fleet.registry.AxeOSConnector") as connector,
+            patch(
+                "core.registry.detector.detect_firmware",
+                return_value={
+                    "reachable": True,
+                    "adapter_type": "bitaxe",
+                    "firmware": "axeos",
+                },
+            ) as detector,
         ):
+            connector.return_value.fetch_info.return_value = official_esp_miner_info(
+                macAddr="02:00:00:00:01:77"
+            )
+            connector.return_value.detect_capabilities.return_value = {
+                "telemetry": True
+            }
             resp = client.post(
                 "/api/axe-fleet/devices",
                 headers=_headers(user_token),
@@ -264,6 +306,11 @@ class TestFleetAgentless:
             )
         assert resp.status_code == 201
         assert resp.get_json()["success"] is True
+        connector.return_value.fetch_info.assert_called_once_with()
+        detector.assert_called_once_with("192.168.1.77")
+        persisted = registry.get_device_by_ip("192.168.1.77", tenant_id="acme")
+        assert persisted["id"] == resp.get_json()["device"]["id"]
+        assert persisted["mac_address"] == "02:00:00:00:01:77"
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -317,7 +364,16 @@ class TestAgentTelemetryApiRegressions:
             resp = client.post(
                 "/api/agent/register",
                 headers=_headers(agent_token),
-                json={"devices": [{"ip": ip, "type": "bitaxe", "model": "NerdQaxe++"}]},
+                json={
+                    "devices": [
+                        {
+                            "mac": _DEVICE_MACS[ip],
+                            "ip": ip,
+                            "type": "bitaxe",
+                            "model": "NerdQaxe++",
+                        }
+                    ]
+                },
             )
         assert resp.status_code == 201
 
@@ -333,6 +389,7 @@ class TestAgentTelemetryApiRegressions:
                 "/api/agent/telemetry",
                 headers=_headers(agent_token),
                 json={
+                    "mac": _DEVICE_MACS["192.168.77.50"],
                     "ip": "192.168.77.50",
                     "telemetry": {"hashrate_hs": 4800000000000, "temperature": 58.0},
                 },
@@ -351,6 +408,7 @@ class TestAgentTelemetryApiRegressions:
                 "/api/agent/telemetry",
                 headers=_headers(agent_token),
                 json={
+                    "mac": _DEVICE_MACS["192.168.77.50"],
                     "ip": "192.168.77.50",
                     "telemetry": {"hashrate_hs": 1, "best_diff": "0"},
                 },
@@ -372,7 +430,11 @@ class TestAgentTelemetryApiRegressions:
             client.post(
                 "/api/agent/telemetry",
                 headers=_headers(agent_token),
-                json={"ip": "192.168.77.51", "telemetry": {}},
+                json={
+                    "mac": _DEVICE_MACS["192.168.77.51"],
+                    "ip": "192.168.77.51",
+                    "telemetry": {},
+                },
             )
             devices = client.get(
                 "/api/axe-fleet/devices", headers=_headers(user_token)
@@ -389,6 +451,7 @@ class TestAgentTelemetryApiRegressions:
                 "/api/agent/telemetry",
                 headers=_headers(agent_token),
                 json={
+                    "mac": _DEVICE_MACS["192.168.77.52"],
                     "ip": "192.168.77.52",
                     "telemetry": {"hashrate_hs": 1000, "temperature": 55.0},
                 },
@@ -400,6 +463,7 @@ class TestAgentTelemetryApiRegressions:
                 "/api/agent/telemetry",
                 headers=_headers(agent_token),
                 json={
+                    "mac": _DEVICE_MACS["192.168.77.52"],
                     "ip": "192.168.77.52",
                     "telemetry": {"hashrate_hs": 1000, "ts": old},
                 },
@@ -407,7 +471,11 @@ class TestAgentTelemetryApiRegressions:
             client.post(
                 "/api/agent/telemetry",
                 headers=_headers(agent_token),
-                json={"ip": "192.168.77.52", "telemetry": {}},
+                json={
+                    "mac": _DEVICE_MACS["192.168.77.52"],
+                    "ip": "192.168.77.52",
+                    "telemetry": {},
+                },
             )
             devices = client.get(
                 "/api/axe-fleet/devices", headers=_headers(user_token)
@@ -415,7 +483,9 @@ class TestAgentTelemetryApiRegressions:
             assert devices[0]["status"] == STATUS_STALE
 
     def test_summary_counts_stale_as_not_online(self, client, user_token, registry):
-        dev = registry.upsert_agent_device("192.168.77.53", tenant_id="acme")
+        dev = registry.upsert_agent_device(
+            "192.168.77.53", tenant_id="acme", info={"mac": "02:00:00:00:02:35"}
+        )
         registry.update_device(dev["id"], {"status": STATUS_STALE}, tenant_id="acme")
         with patch("axe_fleet.routes._registry", registry):
             resp = client.get("/api/axe-fleet/summary", headers=_headers(user_token))

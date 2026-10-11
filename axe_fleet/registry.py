@@ -15,6 +15,7 @@ import json
 import logging
 import re
 import time
+import threading
 import uuid
 
 from .models import (
@@ -35,6 +36,37 @@ log = logging.getLogger("cypher65.axe.registry")
 
 class TelemetryIdempotencyConflict(ValueError):
     """Raised when a telemetry event key is reused for another payload."""
+
+
+class DeviceIdentityConflict(ValueError):
+    """Registration evidence conflicts with a tenant-scoped identity."""
+
+    code = "DEVICE_IDENTITY_CONFLICT"
+
+
+class DeviceRemoved(DeviceIdentityConflict):
+    """An operator tombstone blocks automatic registration and ingestion."""
+
+    code = "DEVICE_REMOVED"
+
+
+def normalize_device_mac(value):
+    """Normalize six-octet unicast MAC evidence; malformed values are unknown."""
+    if not isinstance(value, str):
+        return None
+    raw = value.strip()
+    if re.fullmatch(r"[0-9A-Fa-f]{12}", raw):
+        compact = raw
+    elif re.fullmatch(r"[0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5}", raw):
+        compact = raw.replace(":", "")
+    elif re.fullmatch(r"[0-9A-Fa-f]{2}(?:-[0-9A-Fa-f]{2}){5}", raw):
+        compact = raw.replace("-", "")
+    else:
+        return None
+    octets = [int(compact[i : i + 2], 16) for i in range(0, 12, 2)]
+    if not any(octets) or octets[0] & 1:
+        return None
+    return ":".join(f"{octet:02X}" for octet in octets)
 
 
 def _caps_for_type(info: dict) -> dict:
@@ -76,6 +108,8 @@ class DeviceRegistry:
 
     def __init__(self, get_db_callable):
         self._get_db = get_db_callable
+        self.on_telemetry_committed = None
+        self._telemetry_publish_lock = threading.RLock()
 
     # ── Schema management ─────────────────────────────────────────────
 
@@ -246,26 +280,10 @@ class DeviceRegistry:
         """Register a new device by IP. Attempts to connect and auto-detect.
         Returns the device dict with detected info, or basic info if connection failed.
 
-        Manual operator add UN-TOMBSTONES the IP: the operator explicitly
-        re-adding a device they previously removed must get a fresh active
-        row (the agent path refuses tombstones, the manual path clears them)."""
-        # Revive: purge any tombstoned row for this IP+tenant so the manual
-        # add is authoritative (a removed device the operator explicitly
-        # wants back must not stay blocked by the agent-side tombstone).
-        conn = self._get_db()
-        c = conn.cursor()
-        if tenant_id:
-            c.execute(
-                "DELETE FROM axe_devices WHERE ip_address=? AND tenant_id=? AND COALESCE(removed_at,0)>0",
-                (ip_address, tenant_id),
-            )
-        else:
-            c.execute(
-                "DELETE FROM axe_devices WHERE ip_address=? AND COALESCE(removed_at,0)>0",
-                (ip_address,),
-            )
-        conn.commit()
-        conn.close()
+        Removed devices require explicit MAC-verified restore. A manual add
+        must never delete their identity or history."""
+        if self.get_removed_by_ip(ip_address, tenant_id=tenant_id):
+            return {}
         device_id = uuid.uuid4().hex[:12]
         now = int(time.time())
         device = new_device(ip_address, name)
@@ -300,7 +318,7 @@ class DeviceRegistry:
             device["status"] = STATUS_OFFLINE
             device["capabilities"] = {}
 
-        return self._persist_registered_device(device, allow_restore=True)
+        return self._persist_registered_device(device, allow_restore=False)
 
     def remove_device(
         self, device_id: str, tenant_id: str = "default", hard: bool = False
@@ -316,27 +334,38 @@ class DeviceRegistry:
         hard=True physically deletes the row (used by the seed/test purges,
         which must not accumulate tombstones)."""
         conn = self._get_db()
-        c = conn.cursor()
-        if hard:
+        try:
+            c = conn.cursor()
+            if hard:
+                c.execute(
+                    "DELETE FROM axe_devices WHERE id=? AND tenant_id=?",
+                    (device_id, tenant_id),
+                )
+                deleted = c.rowcount > 0
+                if deleted:
+                    c.execute(
+                        "DELETE FROM axe_device_identity_aliases "
+                        "WHERE device_id=? AND tenant_id=?",
+                        (device_id, tenant_id),
+                    )
+            else:
+                c.execute(
+                    "UPDATE axe_devices SET removed_at=?, status='OFFLINE' "
+                    "WHERE id=? AND tenant_id=? AND COALESCE(removed_at,0)=0",
+                    (int(time.time()), device_id, tenant_id),
+                )
+                deleted = c.rowcount > 0
             c.execute(
-                "DELETE FROM axe_devices WHERE id=? AND tenant_id=?",
+                "DELETE FROM axe_telemetry_quarantine WHERE device_id=? AND tenant_id=?",
                 (device_id, tenant_id),
             )
-            deleted = c.rowcount > 0
-        else:
-            c.execute(
-                "UPDATE axe_devices SET removed_at=?, status='OFFLINE' "
-                "WHERE id=? AND tenant_id=? AND COALESCE(removed_at,0)=0",
-                (int(time.time()), device_id, tenant_id),
-            )
-            deleted = c.rowcount > 0
-        c.execute(
-            "DELETE FROM axe_telemetry_quarantine WHERE device_id=? AND tenant_id=?",
-            (device_id, tenant_id),
-        )
-        conn.commit()
-        conn.close()
-        return deleted
+            conn.commit()
+            return deleted
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
     def gc_tombstones(self, max_age_days: int = 30) -> int:
         """Physically purge tombstoned rows older than max_age_days (and
@@ -344,9 +373,13 @@ class DeviceRegistry:
         Returns the number of tombstoned rows removed. Never raises."""
         cutoff = int(time.time()) - max_age_days * 86400
         removed = 0
+        conn = None
         try:
             conn = self._get_db()
             c = conn.cursor()
+            # Lock before selecting candidates so a concurrent restore cannot
+            # reactivate a row between the candidate read and its deletion.
+            c.execute("BEGIN IMMEDIATE")
             c.execute(
                 "SELECT id, tenant_id FROM axe_devices WHERE COALESCE(removed_at,0)>0 AND removed_at<?",
                 (cutoff,),
@@ -354,10 +387,15 @@ class DeviceRegistry:
             removed_devices = [dict(r) for r in c.fetchall()]
             ids = [row["id"] for row in removed_devices]
             if ids:
+                owners = [(row["tenant_id"], row["id"]) for row in removed_devices]
+                c.executemany(
+                    "DELETE FROM axe_device_identity_aliases WHERE tenant_id=? AND device_id=?",
+                    owners,
+                )
                 # Quarantine metadata is scoped by both tenant and device ID.
                 c.executemany(
                     "DELETE FROM axe_telemetry_quarantine WHERE tenant_id=? AND device_id=?",
-                    [(row["tenant_id"], row["id"]) for row in removed_devices],
+                    owners,
                 )
                 placeholders = ",".join("?" * len(ids))
                 # placeholders are generated ?-markers only — no user input.
@@ -369,13 +407,17 @@ class DeviceRegistry:
                     f"DELETE FROM axe_devices WHERE id IN ({placeholders})",  # nosec B608
                     ids,
                 )
-                removed = len(ids)
-                conn.commit()
-                if removed:
-                    log.info("[gc] purged %d old tombstoned devices", removed)
-            conn.close()
+            conn.commit()
+            removed = len(ids)
+            if removed:
+                log.info("[gc] purged %d old tombstoned devices", removed)
         except Exception as e:
+            if conn is not None:
+                conn.rollback()
             log.warning("[gc] tombstone gc failed: %s", e)
+        finally:
+            if conn is not None:
+                conn.close()
         return removed
 
     def _tombstone_query(self):
@@ -416,13 +458,16 @@ class DeviceRegistry:
         conn.close()
         return rows
 
-    def clear_tombstone(self, ip_address: str, tenant_id: str = "") -> dict:
+    def clear_tombstone(
+        self, ip_address: str, tenant_id: str = "", mac_address: str = ""
+    ) -> dict:
         """Explicitly restore a tenant-scoped locator without deleting history.
 
         Does not create a device or probe the IP. The tombstoned row, MAC alias,
         telemetry and command ledger remain attached to the same canonical ID.
         """
-        if not ip_address or not tenant_id:
+        mac = normalize_device_mac(mac_address)
+        if not ip_address or not tenant_id or not mac:
             return {}
         conn = self._get_db()
         try:
@@ -438,6 +483,8 @@ class DeviceRegistry:
                 conn.rollback()
                 return {}
             row = self._row_to_device(rows[0])
+            if normalize_device_mac(row.get("mac_address")) != mac:
+                raise DeviceIdentityConflict("MAC does not match tombstoned device")
             c.execute(
                 "UPDATE axe_devices SET removed_at=0, status='OFFLINE', updated_at=? "
                 "WHERE id=? AND tenant_id=? AND COALESCE(removed_at,0)>0 "
@@ -577,15 +624,17 @@ class DeviceRegistry:
                 device = self.get_device(alias["device_id"], tenant_id=tenant_id)
                 return device
             # Compatibility for legacy rows written before the alias table.
-            rows = c.execute(
-                "SELECT * FROM axe_devices WHERE "
-                + ("tenant_id=? AND " if tenant_id else "")
-                + self._tombstone_query(),
-                (tenant_id,) if tenant_id else (),
-            ).fetchall()
+            if tenant_id:
+                rows = c.execute(
+                    "SELECT * FROM axe_devices WHERE tenant_id=? AND COALESCE(removed_at,0)=0",
+                    (tenant_id,),
+                ).fetchall()
+            else:
+                rows = c.execute(
+                    "SELECT * FROM axe_devices WHERE COALESCE(removed_at,0)=0"
+                ).fetchall()
             matches = [
-                row for row in rows
-                if normalize_device_mac(row["mac_address"]) == mac
+                row for row in rows if normalize_device_mac(row["mac_address"]) == mac
             ]
             if len(matches) > 1:
                 raise DeviceIdentityConflict("MAC maps to multiple legacy device rows")
@@ -624,6 +673,8 @@ class DeviceRegistry:
 
     def _identity_device_tx(self, c, tenant_id: str, ip_address: str, mac: str):
         """Resolve one identity without ever treating IP as physical proof."""
+        if not mac:
+            raise DeviceIdentityConflict("valid physical MAC evidence required")
         alias = None
         if mac:
             c.execute(
@@ -634,10 +685,13 @@ class DeviceRegistry:
             alias = c.fetchone()
         alias_id = alias["device_id"] if alias else None
 
-        c.execute("SELECT * FROM axe_devices WHERE tenant_id=? ORDER BY id", (tenant_id,))
+        c.execute(
+            "SELECT * FROM axe_devices WHERE tenant_id=? ORDER BY id", (tenant_id,)
+        )
         tenant_rows = [self._row_to_device(row) for row in c.fetchall()]
         mac_rows = [
-            row for row in tenant_rows
+            row
+            for row in tenant_rows
             if mac and normalize_device_mac(row.get("mac_address")) == mac
         ]
         mac_ids = {row["id"] for row in mac_rows}
@@ -649,53 +703,131 @@ class DeviceRegistry:
         target = next((row for row in tenant_rows if row["id"] == target_id), None)
         if alias_id and target is None:
             raise DeviceIdentityConflict("MAC alias points to a missing device row")
+        if target and normalize_device_mac(target.get("mac_address")) != mac:
+            raise DeviceIdentityConflict("MAC alias conflicts with canonical row")
 
         ip_rows = [row for row in tenant_rows if row.get("ip_address") == ip_address]
         if len(ip_rows) > 1:
             raise DeviceIdentityConflict("IP locator maps to multiple registry rows")
         ip_row = ip_rows[0] if ip_rows else None
         if target is not None and ip_row is not None and target["id"] != ip_row["id"]:
-            raise DeviceIdentityConflict("MAC identity and IP locator point to different devices")
+            raise DeviceIdentityConflict(
+                "MAC identity and IP locator point to different devices"
+            )
         if target is None and ip_row is not None:
             stored_mac = normalize_device_mac(ip_row.get("mac_address"))
-            if mac and stored_mac and stored_mac != mac:
-                raise DeviceIdentityConflict("IP locator is already assigned to another MAC")
+            if stored_mac != mac:
+                raise DeviceIdentityConflict(
+                    "IP locator is already assigned to another MAC"
+                )
             target = ip_row
         return target
+
+    def find_device_for_identity(
+        self, ip_address: str, mac_address, tenant_id: str
+    ) -> dict:
+        """Resolve evidence without changing a locator or creating a row."""
+        conn = self._get_db()
+        try:
+            c = conn.cursor()
+            c.execute("BEGIN")
+            device = self._identity_device_tx(
+                c, tenant_id, ip_address, normalize_device_mac(mac_address)
+            )
+            if device and int(device.get("removed_at", 0) or 0):
+                raise DeviceRemoved("device removed by operator")
+            return device or {}
+        finally:
+            conn.close()
+
+    def _assert_live_identity_tx(
+        self, c, device_id, tenant_id, identity_mac, expected_ip
+    ):
+        row = c.execute(
+            "SELECT * FROM axe_devices WHERE id=? AND tenant_id=?",
+            (device_id, tenant_id),
+        ).fetchone()
+        if row is None:
+            raise DeviceIdentityConflict("registered device identity required")
+        device = self._row_to_device(row)
+        if int(device.get("removed_at", 0) or 0):
+            raise DeviceRemoved("device removed by operator")
+        if identity_mac is not None or expected_ip is not None:
+            mac = normalize_device_mac(identity_mac)
+            resolved = self._identity_device_tx(c, tenant_id, expected_ip, mac)
+            if (
+                not resolved
+                or resolved["id"] != device_id
+                or device["ip_address"] != expected_ip
+            ):
+                raise DeviceIdentityConflict("sample identity or IP locator changed")
+        return device
 
     @staticmethod
     def _write_device_tx(c, device: dict, *, insert: bool):
         fields = (
-            "id", "name", "model", "manufacturer", "firmware", "firmware_version",
-            "api_version", "ip_address", "hostname", "mac_address", "last_seen",
-            "status", "group_id", "capabilities", "added_at", "updated_at",
-            "tenant_id", "agent_managed", "removed_at",
+            "id",
+            "name",
+            "model",
+            "manufacturer",
+            "firmware",
+            "firmware_version",
+            "api_version",
+            "ip_address",
+            "hostname",
+            "mac_address",
+            "last_seen",
+            "status",
+            "group_id",
+            "capabilities",
+            "added_at",
+            "updated_at",
+            "tenant_id",
+            "agent_managed",
+            "removed_at",
         )
         values = [
-            device.get("id", ""), device.get("name", ""), device.get("model", ""),
-            device.get("manufacturer", ""), device.get("firmware", ""),
-            device.get("firmware_version", ""), device.get("api_version", ""),
-            device.get("ip_address", ""), device.get("hostname", ""),
-            device.get("mac_address", ""), device.get("last_seen", 0),
-            device.get("status", STATUS_OFFLINE), device.get("group_id", ""),
-            json.dumps(device.get("capabilities", {})), device.get("added_at", int(time.time())),
-            int(time.time()), device.get("tenant_id", "default"),
-            int(device.get("agent_managed", 0) or 0), int(device.get("removed_at", 0) or 0),
+            device.get("id", ""),
+            device.get("name", ""),
+            device.get("model", ""),
+            device.get("manufacturer", ""),
+            device.get("firmware", ""),
+            device.get("firmware_version", ""),
+            device.get("api_version", ""),
+            device.get("ip_address", ""),
+            device.get("hostname", ""),
+            device.get("mac_address", ""),
+            device.get("last_seen", 0),
+            device.get("status", STATUS_OFFLINE),
+            device.get("group_id", ""),
+            json.dumps(device.get("capabilities", {})),
+            device.get("added_at", int(time.time())),
+            int(time.time()),
+            device.get("tenant_id", "default"),
+            int(device.get("agent_managed", 0) or 0),
+            int(device.get("removed_at", 0) or 0),
         ]
         if insert:
             c.execute(
-                "INSERT INTO axe_devices (" + ",".join(fields) + ") VALUES (" +
-                ",".join("?" for _ in fields) + ")",
+                "INSERT INTO axe_devices (id, name, model, manufacturer, firmware, "
+                "firmware_version, api_version, ip_address, hostname, mac_address, "
+                "last_seen, status, group_id, capabilities, added_at, updated_at, "
+                "tenant_id, agent_managed, removed_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 values,
             )
             return
         c.execute(
-            "UPDATE axe_devices SET " + ",".join(f"{field}=?" for field in fields[1:]) +
-            " WHERE id=? AND tenant_id=?",
+            "UPDATE axe_devices SET name=?, model=?, manufacturer=?, firmware=?, "
+            "firmware_version=?, api_version=?, ip_address=?, hostname=?, mac_address=?, "
+            "last_seen=?, status=?, group_id=?, capabilities=?, added_at=?, updated_at=?, "
+            "tenant_id=?, agent_managed=?, removed_at=? WHERE id=? AND tenant_id=?",
             values[1:] + [device["id"], device["tenant_id"]],
         )
         if c.rowcount != 1:
-            raise DeviceIdentityConflict("canonical registry row disappeared during update")
+            raise DeviceIdentityConflict(
+                "canonical registry row disappeared during update"
+            )
 
     def _persist_registered_device(self, device: dict, *, allow_restore: bool) -> dict:
         """Atomically resolve and persist manual registration by MAC evidence."""
@@ -711,19 +843,33 @@ class DeviceRegistry:
                 conn.rollback()
                 return {}
             if target:
-                if mac and normalize_device_mac(target.get("mac_address")) not in (None, mac):
+                if mac and normalize_device_mac(target.get("mac_address")) not in (
+                    None,
+                    mac,
+                ):
                     raise DeviceIdentityConflict("canonical row has a different MAC")
                 merged = dict(target)
                 for field in (
-                    "name", "model", "manufacturer", "firmware", "firmware_version",
-                    "api_version", "hostname", "status", "last_seen", "group_id",
-                    "capabilities", "agent_managed",
+                    "name",
+                    "model",
+                    "manufacturer",
+                    "firmware",
+                    "firmware_version",
+                    "api_version",
+                    "hostname",
+                    "status",
+                    "last_seen",
+                    "group_id",
+                    "capabilities",
+                    "agent_managed",
                 ):
                     if device.get(field) not in (None, ""):
                         merged[field] = device[field]
                 merged["ip_address"] = ip_address
                 merged["mac_address"] = mac or target.get("mac_address", "")
-                merged["removed_at"] = 0 if allow_restore else int(target.get("removed_at", 0) or 0)
+                merged["removed_at"] = (
+                    0 if allow_restore else int(target.get("removed_at", 0) or 0)
+                )
                 self._write_device_tx(c, merged, insert=False)
             else:
                 merged = dict(device)
@@ -744,7 +890,9 @@ class DeviceRegistry:
                 )
                 alias = c.fetchone()
                 if not alias or alias["device_id"] != merged["id"]:
-                    raise DeviceIdentityConflict("MAC alias is already bound to another device")
+                    raise DeviceIdentityConflict(
+                        "MAC alias is already bound to another device"
+                    )
             conn.commit()
             return self.get_device(merged["id"], tenant_id=tenant_id) or merged
         except Exception:
@@ -765,7 +913,7 @@ class DeviceRegistry:
         MAC is physical evidence; IP is only the current locator. SQLite's
         immediate write transaction serializes contenders across independent
         Agent connections. Ambiguous legacy rows fail closed; tombstoned
-        identities are never auto-restored. Missing MAC remains unverified.
+        identities are never auto-restored. Missing or invalid MAC is an explicit conflict.
         """
         info = dict(info or {})
         now = int(time.time())
@@ -773,7 +921,8 @@ class DeviceRegistry:
         caps = _caps_for_type(info)
         proposed = {
             "id": uuid.uuid4().hex[:12],
-            "name": name or str(info.get("hostname") or info.get("model") or ip_address),
+            "name": name
+            or str(info.get("hostname") or info.get("model") or ip_address),
             "model": str(info.get("model") or ""),
             "manufacturer": str(info.get("manufacturer") or ""),
             "firmware": str(info.get("firmware") or ""),
@@ -802,16 +951,36 @@ class DeviceRegistry:
                 log.info("[agent] refusing tombstoned device registration")
                 return {}
             if target:
-                if mac and normalize_device_mac(target.get("mac_address")) not in (None, mac):
+                if mac and normalize_device_mac(target.get("mac_address")) not in (
+                    None,
+                    mac,
+                ):
                     raise DeviceIdentityConflict("canonical row has a different MAC")
                 merged = dict(target)
                 for field in (
-                    "model", "manufacturer", "firmware", "firmware_version", "hostname",
-                    "agent_managed", "last_seen", "capabilities",
+                    "model",
+                    "manufacturer",
+                    "firmware",
+                    "firmware_version",
+                    "hostname",
+                    "agent_managed",
+                    "last_seen",
+                    "capabilities",
                 ):
-                    if info.get({"firmware_version": "version"}.get(field, field)) not in (None, ""):
+                    if info.get(
+                        {"firmware_version": "version"}.get(field, field)
+                    ) not in (None, ""):
                         source = "version" if field == "firmware_version" else field
-                        merged[field] = str(info[source]) if field not in ("agent_managed", "last_seen", "capabilities") else proposed[field]
+                        merged[field] = (
+                            str(info[source])
+                            if field
+                            not in ("agent_managed", "last_seen", "capabilities")
+                            else proposed[field]
+                        )
+                merged["agent_managed"] = 1
+                merged["last_seen"] = now
+                if info.get("type") or info.get("firmware"):
+                    merged["capabilities"] = caps
                 merged["ip_address"] = ip_address
                 merged["mac_address"] = mac or target.get("mac_address", "")
                 if name:
@@ -833,7 +1002,9 @@ class DeviceRegistry:
                 )
                 alias = c.fetchone()
                 if not alias or alias["device_id"] != merged["id"]:
-                    raise DeviceIdentityConflict("MAC alias is already bound to another device")
+                    raise DeviceIdentityConflict(
+                        "MAC alias is already bound to another device"
+                    )
             conn.commit()
             return self.get_device(merged["id"], tenant_id=tenant_id) or merged
         except Exception:
@@ -869,6 +1040,10 @@ class DeviceRegistry:
             )
         rows = c.fetchall()
         conn.close()
+        return self._measured_payload(rows)
+
+    @staticmethod
+    def _measured_payload(rows):
         for row in rows:
             try:
                 payload = json.loads(row["payload"])
@@ -878,25 +1053,46 @@ class DeviceRegistry:
                 return payload
         return None
 
+    def _latest_measured_telemetry_tx(self, c, device_id, tenant_id):
+        rows = c.execute(
+            "SELECT payload FROM axe_telemetry WHERE device_id=? AND tenant_id=? "
+            "ORDER BY rowid DESC LIMIT 50",
+            (device_id, tenant_id),
+        ).fetchall()
+        return self._measured_payload(rows)
+
     def save_agent_telemetry(
         self,
         device_id: str,
         telemetry: dict,
         tenant_id: str = "default",
         idempotency_key: str = "",
+        *,
+        identity_mac=None,
+        expected_ip=None,
     ) -> str:
-        """Persist telemetry pushed by the user's local agent and update the
-        device status. Returns the persisted status so callers (routes) can
-        echo the HONEST state instead of re-deriving from the raw payload.
+        """Atomically save a live Agent sample and its state. API callers bind MAC+locator."""
+        return self._persist_live_telemetry(
+            device_id,
+            telemetry,
+            tenant_id,
+            idempotency_key,
+            identity_mac=identity_mac,
+            expected_ip=expected_ip,
+            agent_managed=True,
+        )
 
-        Fleet audit (Issue #627): an EMPTY heartbeat (``{}`` — the agent pushes
-        one when the device answered nothing) is PRESENCE, not health. It
-        refreshes last_seen but must NOT keep a device at IDLE forever: the
-        status degrades to STALE when the newest MEASURED telemetry is older
-        than the staleness horizon, and OFFLINE when no measured reading has
-        ever been stored. Only a payload with real measurements can say
-        ONLINE/IDLE/PAUSED.
-        """
+    def _persist_live_telemetry(
+        self,
+        device_id,
+        telemetry,
+        tenant_id,
+        idempotency_key="",
+        *,
+        identity_mac=None,
+        expected_ip=None,
+        agent_managed=False,
+    ):
         errors = validate_agent_telemetry(telemetry)
         if errors:
             raise ValueError(f"invalid agent telemetry: {errors}")
@@ -904,107 +1100,189 @@ class DeviceRegistry:
         payload = dict(telemetry or {})
         payload["ts"] = payload.get("ts") or now
         payload["device_id"] = device_id
-        share_fields = (
-            "best_diff",
-            "shares_accepted",
-            "shares_rejected",
-            "shares_stale",
-        )
         has_measurements = any(
             payload.get(k) not in (None, "")
-            for k in (
-                "hashrate_hs",
-                "temperature",
-                "shares_accepted",
-                "best_diff",
-            )
+            for k in ("hashrate_hs", "temperature", "shares_accepted", "best_diff")
         )
-        if has_measurements:
-            # Issue #13 precedence: PAUSED is explicit operator intent and
-            # never expires — it beats staleness. Everything else with an OLD
-            # ts is a stale reading even when it arrives now (agent backlog
-            # after a reboot): ONLINE requires a RECENT signal.
-            status = derive_device_status(payload)
-            if status != "PAUSED" and is_telemetry_stale(payload.get("ts"), now=now):
-                status = STATUS_STALE
-        else:
-            latest = self._latest_measured_telemetry(device_id, tenant_id=tenant_id)
-            if latest is None:
-                status = STATUS_OFFLINE
-            elif is_telemetry_stale(latest.get("ts"), now=now):
-                status = STATUS_STALE
-            else:
-                # Fresh-enough measured reading exists: keep its live status
-                # (PAUSED survives a heartbeat; IDLE stays IDLE).
-                status = derive_device_status(latest)
-        # Compute status before inserting so concurrent replays can repair
-        # denormalized device state even if a writer stopped after the event
-        # row committed but before update_device completed.
-        if idempotency_key:
-            inserted = self.save_telemetry(
-                device_id,
-                payload,
-                tenant_id=tenant_id,
-                idempotency_key=idempotency_key,
+        conn = self._get_db()
+        try:
+            c = conn.cursor()
+            c.execute("BEGIN IMMEDIATE")
+            device = self._assert_live_identity_tx(
+                c, device_id, tenant_id, identity_mac, expected_ip
+            )
+            if "mac" in telemetry and normalize_device_mac(
+                telemetry["mac"]
+            ) != normalize_device_mac(device["mac_address"]):
+                raise DeviceIdentityConflict(
+                    "sample MAC contradicts registered identity"
+                )
+            if "device_id" in telemetry and telemetry["device_id"] != device_id:
+                raise DeviceIdentityConflict(
+                    "sample device_id contradicts registered identity"
+                )
+            latest = self._latest_measured_telemetry_tx(c, device_id, tenant_id)
+            measured = payload if has_measurements else latest
+            status = derive_device_status(measured) if measured else STATUS_OFFLINE
+            # A heartbeat keeps explicit PAUSED only while its measured source is fresh.
+            if measured and is_telemetry_stale(measured.get("ts"), now=now):
+                if not has_measurements or status != "PAUSED":
+                    status = STATUS_STALE
+            inserted, changed = self._save_telemetry_tx(
+                c, device_id, payload, tenant_id, idempotency_key
             )
             if not inserted:
-                latest = self._latest_measured_telemetry(device_id, tenant_id=tenant_id)
-                if latest and latest.get("ts", 0) > payload.get("ts", 0):
-                    status = derive_device_status(latest)
-                    if status != "PAUSED" and is_telemetry_stale(
-                        latest.get("ts"), now=now
-                    ):
-                        status = STATUS_STALE
-        else:
-            # Preserve the established call shape for legacy instrumentation
-            # wrappers around save_telemetry.
-            self.save_telemetry(device_id, payload, tenant_id=tenant_id)
-        transition_events = []
-        if status == STATUS_STALE and any(
-            payload.get(key) not in (None, "") for key in share_fields
-        ):
-            transition_events.append(
+                # A replay is an acknowledgement, never a fresh sample. Preserve
+                # newer state/quarantine/cache and do not repeat sample events.
+                conn.commit()
+                return device["status"]
+            committed_rowid = c.execute(
+                "SELECT rowid FROM axe_telemetry WHERE device_id=? AND tenant_id=? ORDER BY rowid DESC LIMIT 1",
+                (device_id, tenant_id),
+            ).fetchone()[0]
+            c.execute(
+                "UPDATE axe_devices SET last_seen=?, status=?, agent_managed=?, updated_at=? "
+                "WHERE id=? AND tenant_id=? AND COALESCE(removed_at,0)=0",
                 (
-                    "share.stale",
-                    {
-                        "sample_ts": (
-                            payload.get("ts")
-                            if isinstance(payload.get("ts"), int)
-                            else None
-                        ),
-                        "changed_fields": ",".join(
-                            key
-                            for key in share_fields
-                            if payload.get(key) not in (None, "")
-                        ),
-                    },
+                    now,
+                    status,
+                    1 if agent_managed else device.get("agent_managed", 0),
+                    now,
+                    device_id,
+                    tenant_id,
+                ),
+            )
+            if c.rowcount != 1:
+                raise DeviceIdentityConflict(
+                    "registered device disappeared during sample write"
                 )
+            if telemetry:
+                c.execute(
+                    "DELETE FROM axe_telemetry_quarantine WHERE device_id=? AND tenant_id=?",
+                    (device_id, tenant_id),
+                )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+        def publish_events():
+            self._emit_share_update(device_id, payload, tenant_id, inserted, changed)
+            transition_events = []
+            share_fields = (
+                "best_diff",
+                "shares_accepted",
+                "shares_rejected",
+                "shares_stale",
             )
-        updated = self.update_device(
+            if status == STATUS_STALE and any(
+                payload.get(k) not in (None, "") for k in share_fields
+            ):
+                transition_events.append(
+                    (
+                        "share.stale",
+                        {
+                            "sample_ts": payload.get("ts"),
+                            "changed_fields": ",".join(
+                                k
+                                for k in share_fields
+                                if payload.get(k) not in (None, "")
+                            ),
+                        },
+                    )
+                )
+            self._emit_status_transition(
+                device_id, tenant_id, device["status"], status, transition_events
+            )
+            if has_measurements and status != STATUS_STALE:
+                emit_event(
+                    "miner.telemetry.received",
+                    tenant_id=tenant_id,
+                    device_id=device_id,
+                    sample_ts=payload["ts"],
+                    status=status,
+                )
+
+        self._notify_telemetry_committed(
             device_id,
-            {
-                "last_seen": now,
-                "status": status,
-                "agent_managed": 1,
-            },
-            tenant_id=tenant_id,
-            transition_events=transition_events,
+            tenant_id,
+            expected_rowid=committed_rowid,
+            expected_ip=expected_ip,
+            publish_events=publish_events,
         )
-        if telemetry:
-            self.clear_telemetry_quarantine(device_id, tenant_id=tenant_id)
-        sample_ts = payload.get("ts")
-        if updated and has_measurements and status != STATUS_STALE:
-            emit_event(
-                "miner.telemetry.received",
-                tenant_id=tenant_id,
-                device_id=device_id,
-                sample_ts=sample_ts if isinstance(sample_ts, int) else None,
-                status=status,
-            )
         return status
 
+    def publish_device_state(self, device_id: str, tenant_id: str) -> None:
+        """Refresh the cache from committed state without creating telemetry.
+
+        Command status publication shares the telemetry callback lock. Read after
+        acquiring it, so a delayed command never republishes an obsolete status.
+        This orders callbacks on this instance only; it does not confirm hardware
+        execution or synchronize caches in other processes.
+        """
+        self._notify_telemetry_committed(device_id, tenant_id)
+
+    def _notify_telemetry_committed(
+        self,
+        device_id,
+        tenant_id,
+        *,
+        expected_rowid=None,
+        expected_ip=None,
+        publish_events=None,
+    ):
+        """Publish committed state in process order, re-reading after acquiring the lock.
+
+        A delayed older writer must not overwrite a newer committed cache entry.
+        Removal suppresses publication. The callback runs after the read transaction
+        closes and is serialized with other callbacks on this registry instance.
+        """
+        with self._telemetry_publish_lock:
+            conn = self._get_db()
+            try:
+                c = conn.cursor()
+                c.execute("BEGIN")
+                row = c.execute(
+                    "SELECT * FROM axe_devices WHERE id=? AND tenant_id=? AND COALESCE(removed_at,0)=0",
+                    (device_id, tenant_id),
+                ).fetchone()
+                if row is None or (
+                    expected_ip is not None and row["ip_address"] != expected_ip
+                ):
+                    return
+                newest = c.execute(
+                    "SELECT rowid FROM axe_telemetry WHERE device_id=? AND tenant_id=? ORDER BY rowid DESC LIMIT 1",
+                    (device_id, tenant_id),
+                ).fetchone()
+                current_sample = expected_rowid is None or (
+                    newest and newest[0] == expected_rowid
+                )
+                payload = self._latest_measured_telemetry_tx(c, device_id, tenant_id)
+                if payload is None:
+                    sample = c.execute(
+                        "SELECT payload FROM axe_telemetry WHERE device_id=? AND tenant_id=? ORDER BY rowid DESC LIMIT 1",
+                        (device_id, tenant_id),
+                    ).fetchone()
+                    payload = json.loads(sample["payload"]) if sample else {}
+                status = row["status"]
+            finally:
+                conn.close()
+            if self.on_telemetry_committed:
+                self.on_telemetry_committed(device_id, payload, status)
+            if current_sample and publish_events:
+                publish_events()
+
     def record_telemetry_quarantine(
-        self, device_id: str, fields: list, reasons: list, tenant_id: str = "default"
+        self,
+        device_id: str,
+        fields: list,
+        reasons: list,
+        tenant_id: str = "default",
+        *,
+        identity_mac=None,
+        expected_ip=None,
     ) -> bool:
         """Persist only metadata; return True on first/change, never store sample."""
         clean_fields = sorted({str(field)[:160] for field in fields})[:32]
@@ -1012,6 +1290,11 @@ class DeviceRegistry:
         tenant = tenant_id or "default"
         conn = self._get_db()
         try:
+            c = conn.cursor()
+            c.execute("BEGIN IMMEDIATE")
+            self._assert_live_identity_tx(
+                c, device_id, tenant, identity_mac, expected_ip
+            )
             previous = conn.execute(
                 "SELECT fields, reasons FROM axe_telemetry_quarantine "
                 "WHERE tenant_id=? AND device_id=?",
@@ -1089,6 +1372,10 @@ class DeviceRegistry:
         updates: dict,
         tenant_id: str = "",
         transition_events=None,
+        *,
+        active_only: bool = False,
+        identity_mac=None,
+        expected_ip=None,
     ) -> bool:
         """Update device fields. Keys in 'updates' overwrite stored values.
         Returns True if device exists and was updated.
@@ -1141,6 +1428,10 @@ class DeviceRegistry:
                 # both observe the same previous value and emit duplicate edges.
                 is_sqlite = type(conn).__module__.startswith("sqlite3")
                 c.execute("BEGIN IMMEDIATE" if is_sqlite else "BEGIN")
+                if identity_mac is not None or expected_ip is not None:
+                    self._assert_live_identity_tx(
+                        c, device_id, tenant_id, identity_mac, expected_ip
+                    )
                 lookup = "SELECT status, tenant_id FROM axe_devices WHERE id=?"
                 if not is_sqlite:
                     lookup += " FOR UPDATE"
@@ -1162,8 +1453,23 @@ class DeviceRegistry:
         finally:
             conn.close()
 
-        current_status = str(updates.get("status") or "").upper()
-        if updated and previous_status and previous_status != current_status:
+        if updated:
+            self._emit_status_transition(
+                device_id,
+                event_tenant_id,
+                previous_status,
+                updates.get("status"),
+                transition_events,
+            )
+        return updated
+
+    @staticmethod
+    def _emit_status_transition(
+        device_id, tenant_id, previous_status, current_status, transition_events=None
+    ):
+        current_status = str(current_status or "").upper()
+        previous_status = str(previous_status or "").upper()
+        if previous_status and previous_status != current_status:
             event_name = None
             if current_status == STATUS_OFFLINE:
                 event_name = "miner.offline"
@@ -1174,7 +1480,7 @@ class DeviceRegistry:
             if event_name:
                 emit_event(
                     event_name,
-                    tenant_id=event_tenant_id,
+                    tenant_id=tenant_id,
                     device_id=device_id,
                     previous_status=previous_status,
                     status=current_status,
@@ -1182,118 +1488,91 @@ class DeviceRegistry:
             for extra_name, extra_fields in transition_events or ():
                 emit_event(
                     extra_name,
-                    tenant_id=event_tenant_id,
+                    tenant_id=tenant_id,
                     device_id=device_id,
                     status=current_status,
                     **extra_fields,
                 )
-        return updated
 
     # ── Telemetry persistence (tenant-aware) ──────────────────────────
 
-    def save_telemetry(
-        self,
-        device_id: str,
-        telemetry: dict,
-        tenant_id: str = "default",
-        idempotency_key: str = "",
-    ) -> bool:
-        """Persist one sample, ignoring identical keyed replays.
-
-        Returns ``False`` when the event was already stored with an identical
-        canonical payload. Reusing a key for another payload raises
-        :class:`TelemetryIdempotencyConflict`. Legacy calls may omit the key.
-        """
+    def _save_telemetry_tx(self, c, device_id, telemetry, tenant_id, idempotency_key):
+        """Write on caller's transaction; never commit or emit before commit."""
         serialized = json.dumps(telemetry, sort_keys=True, separators=(",", ":"))
-        conn = self._get_db()
-        c = conn.cursor()
-        changed_share_fields = []
         share_fields = (
             "best_diff",
             "shares_accepted",
             "shares_rejected",
             "shares_stale",
         )
-        try:
-            c.execute("BEGIN IMMEDIATE")
+        c.execute(
+            "SELECT payload FROM axe_telemetry WHERE device_id=? AND tenant_id=? "
+            "ORDER BY rowid DESC LIMIT 50",
+            (device_id, tenant_id),
+        )
+        previous_sample = None
+        for row in c.fetchall():
+            try:
+                candidate = json.loads(row["payload"])
+            except (TypeError, ValueError):
+                continue
+            if (
+                isinstance(candidate, dict)
+                and any(candidate.get(key) not in (None, "") for key in share_fields)
+                and not is_telemetry_stale(candidate.get("ts"))
+            ):
+                previous_sample = candidate
+                break
+        changed_share_fields = [
+            key
+            for key in share_fields
+            if telemetry.get(key) not in (None, "")
+            and (previous_sample or {}).get(key) != telemetry.get(key)
+        ]
+        if idempotency_key:
             c.execute(
-                "SELECT payload FROM axe_telemetry WHERE device_id=? AND tenant_id=? "
-                "ORDER BY rowid DESC LIMIT 50",
-                (device_id, tenant_id),
+                """INSERT OR IGNORE INTO axe_telemetry
+                (ts, device_id, payload, tenant_id, idempotency_key)
+                VALUES (?, ?, ?, ?, ?)""",
+                (
+                    telemetry.get("ts", int(time.time())),
+                    device_id,
+                    serialized,
+                    tenant_id,
+                    idempotency_key,
+                ),
             )
-            previous_sample = None
-            for row in c.fetchall():
-                try:
-                    candidate = json.loads(row["payload"])
-                except (TypeError, ValueError):
-                    continue
-                if (
-                    isinstance(candidate, dict)
-                    and any(
-                        candidate.get(key) not in (None, "") for key in share_fields
-                    )
-                    and not is_telemetry_stale(candidate.get("ts"))
-                ):
-                    previous_sample = candidate
-                    break
-            changed_share_fields = [
-                key
-                for key in share_fields
-                if telemetry.get(key) not in (None, "")
-                and (previous_sample or {}).get(key) != telemetry.get(key)
-            ]
-            if idempotency_key:
+            if c.rowcount == 0:
                 c.execute(
-                    """INSERT OR IGNORE INTO axe_telemetry
-                    (ts, device_id, payload, tenant_id, idempotency_key)
-                    VALUES (?, ?, ?, ?, ?)""",
-                    (
-                        telemetry.get("ts", int(time.time())),
-                        device_id,
-                        serialized,
-                        tenant_id,
-                        idempotency_key,
-                    ),
+                    """SELECT payload FROM axe_telemetry
+                    WHERE tenant_id=? AND device_id=? AND idempotency_key=?""",
+                    (tenant_id, device_id, idempotency_key),
                 )
-                if c.rowcount == 0:
-                    c.execute(
-                        """SELECT payload FROM axe_telemetry
-                        WHERE tenant_id=? AND device_id=? AND idempotency_key=?""",
-                        (tenant_id, device_id, idempotency_key),
+                existing = c.fetchone()
+                if existing is None:
+                    raise RuntimeError("telemetry insert was ignored unexpectedly")
+                if existing["payload"] != serialized:
+                    raise TelemetryIdempotencyConflict(
+                        "idempotency key already belongs to a different telemetry sample"
                     )
-                    existing = c.fetchone()
-                    if existing is None:
-                        raise RuntimeError("telemetry insert was ignored unexpectedly")
-                    if existing["payload"] != serialized:
-                        raise TelemetryIdempotencyConflict(
-                            "idempotency key already belongs to a different telemetry sample"
-                        )
-                    conn.commit()
-                    return False
-            else:
-                c.execute(
-                    """INSERT INTO axe_telemetry
-                    (ts, device_id, payload, tenant_id, idempotency_key)
-                    VALUES (?, ?, ?, ?, NULL)""",
-                    (
-                        telemetry.get("ts", int(time.time())),
-                        device_id,
-                        serialized,
-                        tenant_id,
-                    ),
-                )
-            conn.commit()
-            inserted = True
-        except Exception:
-            conn.rollback()
-            raise
-        finally:
-            conn.close()
-        if (
-            inserted
-            and changed_share_fields
-            and not is_telemetry_stale(telemetry.get("ts"))
-        ):
+                return False, []
+        else:
+            c.execute(
+                """INSERT INTO axe_telemetry
+                (ts, device_id, payload, tenant_id, idempotency_key)
+                VALUES (?, ?, ?, ?, NULL)""",
+                (
+                    telemetry.get("ts", int(time.time())),
+                    device_id,
+                    serialized,
+                    tenant_id,
+                ),
+            )
+        return True, changed_share_fields
+
+    @staticmethod
+    def _emit_share_update(device_id, telemetry, tenant_id, inserted, changed_fields):
+        if inserted and changed_fields and not is_telemetry_stale(telemetry.get("ts")):
             emit_event(
                 "share.updated",
                 tenant_id=tenant_id,
@@ -1303,8 +1582,33 @@ class DeviceRegistry:
                     if isinstance(telemetry.get("ts"), int)
                     else None
                 ),
-                changed_fields=",".join(changed_share_fields),
+                changed_fields=",".join(changed_fields),
             )
+
+    def save_telemetry(
+        self,
+        device_id: str,
+        telemetry: dict,
+        tenant_id: str = "default",
+        idempotency_key: str = "",
+    ) -> bool:
+        """Persist history for internal ID-based callers; identical keyed replay is a no-op."""
+        conn = self._get_db()
+        try:
+            c = conn.cursor()
+            c.execute("BEGIN IMMEDIATE")
+            inserted, changed = self._save_telemetry_tx(
+                c, device_id, telemetry, tenant_id, idempotency_key
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+        if inserted:
+            self._notify_telemetry_committed(device_id, tenant_id)
+        self._emit_share_update(device_id, telemetry, tenant_id, inserted, changed)
         return inserted
 
     def get_recent_telemetry(
@@ -1393,27 +1697,35 @@ class DeviceRegistry:
                 # a broken {"device_id": ...} stub, which zeroed the whole fleet.
                 raise AxeOSConnectorError("empty telemetry (device unreachable)")
 
-            telemetry["device_id"] = device_id
-
-            now = int(time.time())
-            self.update_device(
+            if not normalize_device_mac(telemetry.get("mac")) or normalize_device_mac(
+                telemetry.get("mac")
+            ) != normalize_device_mac(device.get("mac_address")):
+                raise DeviceIdentityConflict("poll observed missing or changed MAC")
+            self._persist_live_telemetry(
                 device_id,
-                {
-                    "last_seen": now,
-                    "status": derive_device_status(telemetry),
-                },
-                tenant_id=tenant_id,
+                telemetry,
+                tenant_id,
+                identity_mac=telemetry.get("mac"),
+                expected_ip=device["ip_address"],
             )
-
-            self.save_telemetry(device_id, telemetry, tenant_id=tenant_id)
+            telemetry["device_id"] = device_id
             return telemetry
 
+        except DeviceIdentityConflict:
+            log.warning("[fleet.poll] rejected changed or missing device identity")
+            return {}
         except AxeOSConnectorError:
-            self.update_device(
-                device_id,
-                {"last_seen": int(time.time()), "status": STATUS_OFFLINE},
-                tenant_id=tenant_id,
-            )
+            try:
+                self.update_device(
+                    device_id,
+                    {"last_seen": int(time.time()), "status": STATUS_OFFLINE},
+                    tenant_id=tenant_id,
+                    active_only=True,
+                    identity_mac=device.get("mac_address"),
+                    expected_ip=device["ip_address"],
+                )
+            except DeviceIdentityConflict:
+                pass  # The locator/identity changed while the network probe was running.
             # Return a FALSY dict so the background poll loop never caches
             # error stubs into axe_telemetry_cache / the /api/snapshot payload.
             return {}
