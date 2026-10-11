@@ -168,7 +168,7 @@ function renderAccount(acct) {
       return;
     }
     if (!alerts || !alerts.length) {
-      setHtmlIfChanged(dom.alertsList, '<li class="alert-empty">no alerts — all systems nominal</li>');
+      setHtmlIfChanged(dom.alertsList, '<li class="alert-empty">no alerts reported — device and source health are not established by an empty alert list</li>');
       if (dom.alertsCountBadge) dom.alertsCountBadge.textContent = '0 active';
       return;
     }
@@ -452,7 +452,21 @@ function renderAccount(acct) {
   // Backend: POST /api/automation/arm {armed} (fail-closed per tenant) +
   // GET /api/automation/status (armed + action budget). Arming enables
   // autonomous rule actions, so it requires typed confirmation.
+  let _apControlSessionGeneration = 0;
+  let _apArmedStatusGeneration = 0;
+  let _apAutoStatusGeneration = 0;
   let _apArmed = false;
+  function _apUnknownControl(kind, reason) {
+    const prefix = kind === 'armed' ? 'ap-armed' : 'ap-auto';
+    const label = document.getElementById(prefix + '-label');
+    const btn = document.getElementById(prefix + '-btn');
+    const dot = document.getElementById(prefix + '-dot');
+    if (label) label.textContent = 'UNKNOWN';
+    if (btn) { btn.disabled = true; btn.classList.remove('is-armed'); btn.title = reason || 'Operational status unavailable; reopen Automations to retry'; }
+    if (dot) { dot.style.background = 'var(--text-tertiary)'; dot.style.boxShadow = 'none'; }
+    const badge = document.getElementById(kind === 'armed' ? 'ap-budget-badge' : 'ap-auto-pro-badge');
+    if (badge) { badge.textContent = '—'; badge.className = 'badge badge--mute'; badge.title = reason || 'Status unknown'; }
+  }
   let _apToggleInit = false;
 
   function _apSetUi(armed) {
@@ -462,6 +476,7 @@ function renderAccount(acct) {
     const dot = document.getElementById('ap-armed-dot');
     if (label) label.textContent = armed ? 'ARM' : 'OFF';
     if (btn) {
+      btn.disabled = false;
       btn.classList.toggle('is-armed', armed);
       btn.title = armed
         ? 'Auto-Pilot ARMADO — as regras executam ações sozinhas. Clique para desarmar.'
@@ -474,11 +489,15 @@ function renderAccount(acct) {
   }
 
   async function _apRefreshStatus() {
+    const session = _apControlSessionGeneration, generation = ++_apArmedStatusGeneration;
     try {
       const r = await authFetch('/api/automation/status');
-      if (!r.ok) return;
-      const d = await r.json().catch(() => ({}));
-      _apSetUi(!!d.armed);
+      if (session !== _apControlSessionGeneration || generation !== _apArmedStatusGeneration) return;
+      if (!r.ok) throw new Error('Operational status unavailable (HTTP ' + r.status + ')');
+      const d = await r.json();
+      if (session !== _apControlSessionGeneration || generation !== _apArmedStatusGeneration) return;
+      if (!d || typeof d.armed !== 'boolean') throw new Error('Invalid operational status');
+      _apSetUi(d.armed);
       const badge = document.getElementById('ap-budget-badge');
       if (badge && typeof d.max_actions_per_window === 'number') {
         const used = d.actions_in_window || 0;
@@ -488,10 +507,13 @@ function renderAccount(acct) {
         badge.classList.toggle('badge--amber', used > 0);
         badge.classList.toggle('badge--mute', used === 0);
       }
-    } catch (e) { /* status is advisory — never break the panel */ }
+    } catch (error) {
+      if (session === _apControlSessionGeneration && generation === _apArmedStatusGeneration) _apUnknownControl('armed', error.message);
+    }
   }
 
   async function _apSetArmed(armed) {
+    const session = _apControlSessionGeneration;
     const btn = document.getElementById('ap-armed-btn');
     setBtnLoading(btn, true);
     try {
@@ -501,6 +523,7 @@ function renderAccount(acct) {
         body: JSON.stringify({ armed: armed }),
       });
       const d = await r.json().catch(() => ({}));
+      if (session !== _apControlSessionGeneration) return false;
       if (!r.ok || !d.success) {
         showToast('error', '⚠ Auto-Pilot: ' + (d.error || ('HTTP ' + r.status)));
         _apRefreshStatus();
@@ -511,10 +534,11 @@ function renderAccount(acct) {
       _apRefreshStatus();
       return true;
     } catch (e) {
+      if (session !== _apControlSessionGeneration) return false;
       showToast('error', '⚠ falha de rede ao alterar o Auto-Pilot');
       return false;
     } finally {
-      setBtnLoading(btn, false);
+      if (session === _apControlSessionGeneration) setBtnLoading(btn, false);
     }
   }
 
@@ -589,6 +613,7 @@ function renderAccount(acct) {
     const dot = document.getElementById('ap-auto-dot');
     if (label) label.textContent = auto ? 'ON' : 'OFF';
     if (btn) {
+      btn.disabled = false;
       btn.classList.toggle('is-armed', auto);
       btn.title = auto
         ? 'EXECUÇÃO AUTÔNOMA ON — o piloto executa restart/pause sozinho (PRO + armado). Clique para desligar.'
@@ -601,11 +626,15 @@ function renderAccount(acct) {
   }
 
   async function _apRefreshAutoStatus() {
+    const session = _apControlSessionGeneration, generation = ++_apAutoStatusGeneration;
     try {
       const r = await authFetch('/api/auto-pilot/autonomous');
-      if (!r.ok) return;
-      const d = await r.json().catch(() => ({}));
-      _apSetAutoUi(!!d.autonomous);
+      if (session !== _apControlSessionGeneration || generation !== _apAutoStatusGeneration) return;
+      if (!r.ok) throw new Error('Autonomous status unavailable (HTTP ' + r.status + ')');
+      const d = await r.json();
+      if (session !== _apControlSessionGeneration || generation !== _apAutoStatusGeneration) return;
+      if (!d || typeof d.autonomous !== 'boolean' || typeof d.pro !== 'boolean') throw new Error('Invalid autonomous status');
+      _apSetAutoUi(d.autonomous);
       const badge = document.getElementById('ap-auto-pro-badge');
       if (badge) {
         badge.textContent = d.pro ? 'PRO ✓' : 'PRO 🔒';
@@ -619,10 +648,13 @@ function renderAccount(acct) {
         const autoBtn = document.getElementById('ap-auto-btn');
         if (autoBtn) autoBtn.title = 'Execução autônoma ON mas o Auto-Pilot está DESARMADO — arme o piloto para ativar.';
       }
-    } catch (e) { /* advisory — never break the panel */ }
+    } catch (error) {
+      if (session === _apControlSessionGeneration && generation === _apAutoStatusGeneration) _apUnknownControl('auto', error.message);
+    }
   }
 
   async function _apSetAuto(enabled) {
+    const session = _apControlSessionGeneration;
     const btn = document.getElementById('ap-auto-btn');
     setBtnLoading(btn, true);
     try {
@@ -632,6 +664,7 @@ function renderAccount(acct) {
         body: JSON.stringify({ autonomous: enabled }),
       });
       const d = await r.json().catch(() => ({}));
+      if (session !== _apControlSessionGeneration) return false;
       if (r.status === 402) {
         const price = d.upgrade && d.upgrade.price_usd_month ? ' ($' + d.upgrade.price_usd_month + '/m)' : '';
         showToast('error', '🔒 EXECUÇÃO AUTÔNOMA é PRO — licença necessária' + price);
@@ -648,10 +681,11 @@ function renderAccount(acct) {
       _apRefreshAutoStatus();
       return true;
     } catch (e) {
+      if (session !== _apControlSessionGeneration) return false;
       showToast('error', '⚠ falha de rede ao alterar a execução autônoma');
       return false;
     } finally {
-      setBtnLoading(btn, false);
+      if (session === _apControlSessionGeneration) setBtnLoading(btn, false);
     }
   }
 
@@ -713,6 +747,37 @@ function renderAccount(acct) {
   let _apRecs = [];
   let _apAudit = [];
   let _apRecsInit = false;
+  let _apRecommendationsGeneration = 0;
+  let _apDryRunGeneration = 0;
+  function _apSourceMessage(listId, countId, message) {
+    const list = document.getElementById(listId);
+    const count = document.getElementById(countId);
+    if (list) list.textContent = message;
+    if (count) count.textContent = '—';
+  }
+  function resetAutomationEvidence() {
+    _apControlSessionGeneration++;
+    _apArmedStatusGeneration++; _apAutoStatusGeneration++;
+    _apArmed = false; _apAuto = false;
+    _apUnknownControl('armed'); _apUnknownControl('auto');
+    ['ap-arm-modal', 'ap-auto-modal'].forEach(id => { const modal = document.getElementById(id); if (modal) modal.classList.remove('modal--open'); });
+    ['ap-arm-type', 'ap-auto-type'].forEach(id => { const input = document.getElementById(id); if (input) input.value = ''; });
+    ['ap-arm-consent', 'ap-auto-consent'].forEach(id => { const checkbox = document.getElementById(id); if (checkbox) checkbox.checked = false; });
+    _apRecommendationsGeneration++;
+    _apDryRunGeneration++;
+    _apRecs = []; _apAudit = [];
+    _apSourceMessage('ap-recs-list', 'ap-recs-badge', 'Recommendations not loaded for this session');
+    _apSourceMessage('ap-audit-list', 'ap-audit-count', 'Audit not loaded for this session');
+    _apSourceMessage('ap-dr-now-list', 'ap-dr-now-count', 'Dry run not loaded for this session');
+    _apSourceMessage('ap-dr-replay-list', 'ap-dr-replay-count', 'Replay not loaded for this session');
+  }
+  async function _apReadSource(url, field) {
+    const response = await authFetch(url);
+    if (!response.ok) throw new Error((response.status === 401 || response.status === 403 ? 'Access required' : 'Source unavailable') + ' (HTTP ' + response.status + ')');
+    const data = await response.json();
+    if (!data || !Array.isArray(data[field]) || data.error || data[field].some(row => !row || typeof row !== 'object' || Array.isArray(row))) throw new Error('Invalid source response');
+    return data;
+  }
 
   function _apRecCardHtml(rec) {
     if (!rec || typeof rec !== 'object') return '';
@@ -784,7 +849,9 @@ function renderAccount(acct) {
     const count = document.getElementById('ap-audit-count');
     if (!wrap || !list) return;
     if (!_apAudit.length) {
-      wrap.style.display = 'none';
+      wrap.style.display = '';
+      if (count) count.textContent = '0';
+      list.textContent = 'No recommendation audit entries';
       return;
     }
     wrap.style.display = '';
@@ -793,23 +860,25 @@ function renderAccount(acct) {
   }
 
   async function _apLoadRecs() {
-    try {
-      const r = await authFetch('/api/auto-pilot/recommendations');
-      if (r.ok) {
-        const d = await r.json().catch(() => ({}));
-        _apRecs = Array.isArray(d.recommendations) ? d.recommendations : [];
-        if (typeof d.armed === 'boolean') _apSetUi(d.armed);
-      }
-    } catch (e) { /* advisory — never break the module */ }
-    try {
-      const r2 = await authFetch('/api/auto-pilot/recommendations/audit?limit=50');
-      if (r2.ok) {
-        const d2 = await r2.json().catch(() => ({}));
-        _apAudit = Array.isArray(d2.audit) ? d2.audit : [];
-      }
-    } catch (e) { /* best-effort */ }
-    _apRenderRecs();
-    _apRenderAudit();
+    const generation = ++_apRecommendationsGeneration;
+    _apSourceMessage('ap-recs-list', 'ap-recs-badge', 'Loading recommendations…');
+    _apSourceMessage('ap-audit-list', 'ap-audit-count', 'Loading recommendation audit…');
+    const results = await Promise.allSettled([
+      _apReadSource('/api/auto-pilot/recommendations', 'recommendations'),
+      _apReadSource('/api/auto-pilot/recommendations/audit?limit=50', 'audit'),
+    ]);
+    if (generation !== _apRecommendationsGeneration) return;
+    _apRecs = results[0].status === 'fulfilled' ? results[0].value.recommendations : [];
+    _apAudit = results[1].status === 'fulfilled' ? results[1].value.audit : [];
+    // Operational controls have one read owner: /api/automation/status.
+    // A delayed advisory snapshot must not overwrite a newer confirmed state.
+    _apRenderRecs(); _apRenderAudit();
+    if (results[0].status === 'rejected') _apSourceMessage('ap-recs-list', 'ap-recs-badge', 'Recommendations unavailable: ' + String(results[0].reason.message) + '. Use Refresh to retry.');
+    if (results[1].status === 'rejected') {
+      const wrap = document.getElementById('ap-audit-wrap');
+      if (wrap) wrap.style.display = '';
+      _apSourceMessage('ap-audit-list', 'ap-audit-count', 'Recommendation audit unavailable: ' + String(results[1].reason.message) + '. Use Refresh to retry.');
+    }
   }
 
   async function _apRespond(recId, decision, trigger) {
@@ -930,56 +999,32 @@ function renderAccount(acct) {
   }
 
   async function _apDrLoad() {
-    try {
-      const r = await authFetch('/api/automation/dry-run');
-      if (r.ok) {
-        const d = await r.json().catch(() => ({}));
-        const list = document.getElementById('ap-dr-now-list');
-        const count = document.getElementById('ap-dr-now-count');
-        const actions = Array.isArray(d.actions) ? d.actions : [];
-        if (count) count.textContent = actions.length ? String(actions.length) : '0';
-        if (list) {
-          if (!actions.length) {
-            list.innerHTML =
-              '<div class="empty-state" style="grid-column:1/-1;border:none;padding:12px">' +
-              '<div class="empty-state__icon">◈</div>' +
-              '<div class="empty-state__title">Nenhuma regra dispararia agora</div>' +
-              '<div class="empty-state__desc">Com a telemetria atual e as regras ativas, o piloto não teria nenhuma ação a tomar.</div>' +
-              '</div>';
-          } else {
-            list.innerHTML = actions.map(_apDrNowCardHtml).join('');
-          }
-        }
-      } else {
-        // Honest feedback: a failed simulation is NOT "nothing fires".
-        // escapeHtml at the source (status is numeric — double-escape is
-        // harmless) to satisfy the DOM regression guard's data-flow scan.
-        const list = document.getElementById('ap-dr-now-list');
-        if (list) list.innerHTML = _apDrErrHtml('simulação indisponível (' + escapeHtml(r.status) + ')');
+    const generation = ++_apDryRunGeneration;
+    _apSourceMessage('ap-dr-now-list', 'ap-dr-now-count', 'Loading dry run…');
+    _apSourceMessage('ap-dr-replay-list', 'ap-dr-replay-count', 'Loading replay…');
+    const results = await Promise.allSettled([
+      _apReadSource('/api/automation/dry-run', 'actions'),
+      _apReadSource('/api/automation/dry-run/replay?hours=24&limit=288', 'per_rule'),
+    ]);
+    if (generation !== _apDryRunGeneration) return;
+    const specs = [
+      { list: 'ap-dr-now-list', count: 'ap-dr-now-count', field: 'actions', render: _apDrNowCardHtml, empty: 'Nenhuma regra dispararia agora', label: 'Dry run' },
+      { list: 'ap-dr-replay-list', count: 'ap-dr-replay-count', field: 'per_rule', render: _apDrReplayRowHtml, empty: 'Nenhuma regra teria disparado nas últimas 24h', label: 'Replay' },
+    ];
+    results.forEach((result, index) => {
+      const spec = specs[index];
+      if (result.status === 'rejected') {
+        _apSourceMessage(spec.list, spec.count, spec.label + ' unavailable: ' + String(result.reason.message) + '. Use Refresh to retry.');
+        return;
       }
-    } catch (e) { /* dry-run — never break the module */ }
-    try {
-      const r2 = await authFetch('/api/automation/dry-run/replay?hours=24&limit=288');
-      if (r2.ok) {
-        const d2 = await r2.json().catch(() => ({}));
-        const list2 = document.getElementById('ap-dr-replay-list');
-        const count2 = document.getElementById('ap-dr-replay-count');
-        const rows = Array.isArray(d2.per_rule) ? d2.per_rule : [];
-        if (count2) count2.textContent = d2.total_fires != null ? String(d2.total_fires) + ' disparos' : '—';
-        if (list2) {
-          if (!rows.length) {
-            list2.innerHTML =
-              '<div class="empty-state" style="grid-column:1/-1;border:none;padding:12px">' +
-              '<div class="empty-state__icon">↻</div>' +
-              '<div class="empty-state__title">Nenhuma regra teria disparado nas últimas 24h</div>' +
-              '<div class="empty-state__desc">Simulação sobre o histórico de telemetria — cooldown, conflitos e budget aplicados.</div>' +
-              '</div>';
-          } else {
-            list2.innerHTML = rows.map(_apDrReplayRowHtml).join('');
-          }
-        }
+      const data = result.value, rows = data[spec.field];
+      const list = document.getElementById(spec.list), count = document.getElementById(spec.count);
+      if (count) count.textContent = index === 0 ? String(rows.length) : (data.total_fires != null ? String(data.total_fires) + ' disparos' : '—');
+      if (list) {
+        if (rows.length) list.innerHTML = rows.map(spec.render).join('');
+        else list.textContent = spec.empty;
       }
-    } catch (e) { /* best-effort */ }
+    });
   }
 
   function _initAutoPilotDryRun() {
