@@ -218,6 +218,9 @@
   <span class="module-header__eyebrow">Módulo</span>
   <h1 class="module-header__title" id="module-header-title">DASHBOARD</h1>
   <span class="module-header__desc" id="module-header-desc">Visão geral — pool, worker e rede</span>
+  <div id="module-evidence-context">
+  <p class="module-source-context" id="module-source-context"></p>
+  <nav class="module-section-nav" id="module-section-nav" aria-label="Seções do módulo" hidden></nav></div>
 </div>
 
 <section class="operation-console" id="operation-console" data-module="dashboard" role="main" aria-labelledby="console-title" aria-busy="true">
@@ -1534,6 +1537,7 @@
         <span class="axe-detail-chart__title">▸ TELEMETRY HISTORY</span>
         <span class="badge badge--mute" id="axe-detail-chart-count">—</span>
       </div>
+      <p id="axe-detail-chart-status" class="operational-source-state" role="status" aria-live="polite"></p>
       <div class="chart-wrap chart-wrap--sm"><canvas id="axe-detail-chart"></canvas></div>
     </div>
   </div>
@@ -2246,7 +2250,7 @@
       </div>
     </div>
     <div class="fcc-header__badges">
-      <span class="badge badge--green" id="lm-status-badge">LIVE</span>
+      <span class="badge badge--mute" id="lm-status-badge" role="status" aria-live="polite">LOADING</span>
       <span class="badge badge--mute" id="lm-workers-badge">— workers</span>
       <span class="lm-event-log__conn" id="lm-conn-dot" title="connection status"></span>
     </div>

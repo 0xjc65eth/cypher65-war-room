@@ -296,7 +296,8 @@ test('real login and logout invalidate a pending history response across tenants
   await page.route('**/api/axe-fleet/devices/desk-01/history*',async r=>{await gate;await r.fulfill({json:{device_id:'desk-01',history:[{ts:now()-10,hashrate:99e12}]}}).catch(()=>{});});
   await page.locator('#console-history-refresh').click();
   const next={fleet_stats:{total_devices:1},device_health:[{id:'acme-one',name:'ACME miner',status:'ONLINE',telemetry:{ts:now()-5,hashrate_hs:2e12}}]};
-  await page.route('**/api/axe-fleet/health*',r=>r.fulfill({json:next}));
+  // Model the real tenant boundary: ACME observations require its bearer.
+  await page.route('**/api/axe-fleet/health*',r=>r.fulfill({json:r.request().headers().authorization === 'Bearer fixture-acme' ? next : {fleet_stats:{total_devices:0},device_health:[]}}));
   await page.route('**/api/axe-fleet/devices/acme-one/history*',r=>r.fulfill({json:{device_id:'acme-one',history:[{ts:now()-10,hashrate:2e12}]}}));
   await page.route('**/api/auth/login',r=>r.fulfill({json:{success:true,access_token:'fixture-acme',refresh_token:'fixture-refresh',expires_at:Math.floor(now())+3600,tenant_id:'acme'}}));
   await page.route('**/api/auth/logout',r=>r.fulfill({json:{success:true}}));
