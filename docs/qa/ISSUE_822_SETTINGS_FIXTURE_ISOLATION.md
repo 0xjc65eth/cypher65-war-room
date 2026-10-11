@@ -19,3 +19,7 @@ On an isolated, unmodified master checkout, `test_tenant_settings.py` followed b
 Logs: `/tmp/c65-821-baseline-settings-order.log`, `/tmp/c65-821-baseline-order.log`, `/tmp/c65-821-contracts.log`, `/tmp/c65-822-order.log`, `/tmp/c65-822-contracts.log`. These are temporary local logs, not remote artifacts.
 
 Full CI of the published head remains authoritative. This separate branch inherits the mobile pins tracked in #819/PR820 and the clock-sensitive assertion tracked in #821; success in a later composed validation does not imply either dependency is already merged. No merge, deploy, manual Issue closure, secrets or physical operations were performed.
+
+## Reconciled publication — Issue #825
+
+PR824 was integrated externally by0xjc65eth at2026-10-11T16:02:40Z, squash5f6b0e5d98995100bc902f3ec788304ba87c6437. The merge occurred while E2E was still running. By the16:04UTC checkpoint, external head4296178b6fe62cee6c1235dc45e721f5fed1cc21 independently completed all eight required checks and Codecov SUCCESS. Reviews were empty in the snapshot. Completed CI is not classified as GitHub approval or deployment; no agent merge/deploy/manual Issue closure was performed.
