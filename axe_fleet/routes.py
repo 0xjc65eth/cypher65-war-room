@@ -249,18 +249,16 @@ def _safety_block_response(device_id: str, command: str, tenant_id: str, reason:
     )
 
 
-def _mark_cache_status(device_id: str, status: str) -> None:
-    """Flip the snapshot-cache entry status so the Fleet card reflects a
-    command immediately (Issue #13 — no wait for the next poll). Best-effort:
-    the poll loop remains the source of truth and confirms on the next cycle."""
-    try:
-        import services.state as _shared_state
+def _mark_cache_status(device_id: str, tenant_id: str) -> None:
+    """Publish committed command state through the telemetry cache boundary.
 
-        entry = _shared_state.axe_telemetry_cache.get(device_id)
-        if isinstance(entry, dict):
-            entry = dict(entry)
-            entry["status"] = status
-            _shared_state.axe_telemetry_cache[device_id] = entry
+    Best-effort UI refresh, without inventing a telemetry sample or device ACK.
+    Reading after the shared publisher lock prevents a delayed telemetry callback
+    from undoing this command's status in the snapshot cache (Issue #814).
+    """
+    try:
+        if _registry is not None:
+            _registry.publish_device_state(device_id, tenant_id)
     except Exception as exc:
         log.warning("[axe] cache status mark failed for %s: %s", device_id, exc)
 
@@ -3302,8 +3300,10 @@ def _execute_device_command(device_id: str, command: str, tenant_id: str = None)
             # Issue #13: reflect the operator's intent immediately even when
             # the command runs on the home LAN — the agent's next telemetry
             # push (carrying mining_paused) confirms and self-heals any gap.
-            _registry.update_device(device_id, {"status": STATUS_PAUSED}, tenant_id=tid)
-            _mark_cache_status(device_id, STATUS_PAUSED)
+            if _registry.update_device(
+                device_id, {"status": STATUS_PAUSED}, tenant_id=tid
+            ):
+                _mark_cache_status(device_id, tid)
         if command == "restart":
             _safety_engine.record_restart(core_device)
         _log_audit(
@@ -3343,11 +3343,13 @@ def _execute_device_command(device_id: str, command: str, tenant_id: str = None)
         elif command == "pause":
             # ESP-Miner: POST /api/system/miningPause (empty body).
             result = conn.pause()
-            # Issue #13: reflect PAUSED immediately — never wait for the next
-            # poll. The DB row + snapshot cache flip together so the Fleet
-            # card shows the truth the moment the command succeeds.
-            _registry.update_device(device_id, {"status": STATUS_PAUSED}, tenant_id=tid)
-            _mark_cache_status(device_id, STATUS_PAUSED)
+            # Reflect the committed PAUSED intent without waiting for a poll.
+            # Cache publication follows any callback already in progress;
+            # telemetry, not this refresh, confirms the physical post-state.
+            if _registry.update_device(
+                device_id, {"status": STATUS_PAUSED}, tenant_id=tid
+            ):
+                _mark_cache_status(device_id, tid)
         elif command == "resume":
             # ESP-Miner: POST /api/system/miningResume (empty body).
             result = conn.resume()
@@ -3359,8 +3361,10 @@ def _execute_device_command(device_id: str, command: str, tenant_id: str = None)
                 tel = {}
             if tel:
                 new_st = derive_device_status(tel)
-                _registry.update_device(device_id, {"status": new_st}, tenant_id=tid)
-                _mark_cache_status(device_id, new_st)
+                if _registry.update_device(
+                    device_id, {"status": new_st}, tenant_id=tid
+                ):
+                    _mark_cache_status(device_id, tid)
         else:
             operation_ledger.update_operation(
                 operation_id,

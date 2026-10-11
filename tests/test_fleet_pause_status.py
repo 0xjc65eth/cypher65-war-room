@@ -268,37 +268,24 @@ class TestPauseResumeRoutes:
         assert call[0][0] == "dev-pause-1"
         assert call[0][1]["status"] == STATUS_PAUSED
 
-    def test_pause_updates_snapshot_cache(self, client):
+    def test_pause_publishes_committed_state_for_request_tenant(self, client):
         reg = _mock_registry()
-        import services.state as _shared_state
 
-        _shared_state.axe_telemetry_cache["dev-pause-1"] = {
-            "device_id": "dev-pause-1",
-            "hashrate_hs": 1.4e12,
-            "status": "ONLINE",
-            "hashrate": 1.4e12,
-        }
-        try:
+        class FakeConn:
+            def __init__(self, ip):
+                pass
 
-            class FakeConn:
-                def __init__(self, ip):
-                    pass
+            def pause(self):
+                return {"success": True}
 
-                def pause(self):
-                    return {"success": True}
-
-            with patch("axe_fleet.routes._registry", reg), patch(
-                "axe_fleet.routes.AxeOSConnector", FakeConn
-            ):
-                resp = _confirmed_post(
-                    client, "/api/axe-fleet/devices/dev-pause-1/pause"
-                )
-            assert resp.status_code == 200
-            cached = _shared_state.axe_telemetry_cache["dev-pause-1"]
-            assert cached["status"] == STATUS_PAUSED
-        finally:
-            # Module-level cache: never leak the entry into later tests.
-            _shared_state.axe_telemetry_cache.pop("dev-pause-1", None)
+        with patch("axe_fleet.routes._registry", reg), patch(
+            "axe_fleet.routes.AxeOSConnector", FakeConn
+        ):
+            resp = _confirmed_post(client, "/api/axe-fleet/devices/dev-pause-1/pause")
+        assert resp.status_code == 200
+        tenant = reg.update_device.call_args.kwargs["tenant_id"]
+        assert tenant
+        reg.publish_device_state.assert_called_once_with("dev-pause-1", tenant)
 
     def test_resume_repolls_and_derives_online(self, client):
         reg = _mock_registry()
