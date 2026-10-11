@@ -1,12 +1,16 @@
 # CYPHER65 — MASTER ENGINEERING RECOVERY REPORT
 
-Data do checkpoint: 2026-10-11, Europe/Brussels. Relatório iniciado na Issue #807 e atualizado nos follow-ups #811 e #813. Snapshot inicial de master: `155dcc7a0ce9e725a54e06bba291932a5b8793a4`. As atualizações externas são atribuídas explicitamente abaixo. Evidência local não substitui CI do SHA exato, approval no GitHub ou prova física.
+Data do checkpoint: 2026-10-11, Europe/Brussels. Relatório iniciado na Issue #807 e atualizado nos follow-ups #811, #813 e #787. Os checkpoints antigos abaixo sao historicos; o estado vigente esta nos primeiros paragrafos e na atualizacao #787 ao fim. Snapshot inicial de master: `155dcc7a0ce9e725a54e06bba291932a5b8793a4`. As atualizações externas são atribuídas explicitamente abaixo. Evidência local não substitui CI do SHA exato, approval no GitHub ou prova física.
 
 ## 1. Recovery status
 
 **Concluído:** checkpoint FreeBuff reconstruído; originais, sete stashes e WIPs preservados; série PR1–PR7 reconstruída sem duplicar implementação; frontend recuperado e publicado; reparos de Fleet, restore e integridade, dependências mobile, fixtures de QA e gate Black separados por Issue, branch e PR; revisões independentes de /devil e /advisor executadas.
 
-**Checkpoint atual #813:** binding de registro/ingestão/polling implementado sobre master `b2a4c22`, preservando os primitivos integrados de #805. Suíte completa: **4.310 PASS, 2 skips, zero falhas/erros e 85,57%**, 219,69 s; E2E afetado: 8 PASS. A evidência anterior de composição (4.270 PASS) permanece histórica abaixo. A revisão e publicação atual são descritas no [contrato #813](docs/qa/ISSUE_813_IDENTITY_ATOMICITY.md). **Ainda pendentes:** CI do SHA publicado/approval independente, reconciliação de legado sem dados reais disponíveis, unificação completa dos 14 módulos de #757 e critérios externos de hardware, produção, dados e SLO. Nenhum desses itens é apresentado como terminado por mocks ou PR aberto.
+**Checkpoint atual #787:** Session Evidence calcula cobertura somente das observações válidas retidas e usa a mesma idade na apresentação e classificação. Valores/timestamps inválidos permanecem desconhecidos; o endpoint valida números sem arredondar contagens. Contrato e regressões no [documento #787](docs/qa/ISSUE_787_SESSION_EVIDENCE_VALIDITY.md). Validações focadas/estáticas e 10 E2E PASS; suíte completa **4455 PASS, 2 SKIP, zero falhas/erros, 85,79%, 192,95 s**. JUnit: 4457 casos.
+
+**Integrações externas e revisão:** #815 foi integrado por `0xjc65eth` no squash `fd683ecda08d2d867bf9f02d708d7b040e49a725`, base desta unidade. A correção distinta de cache #814 foi publicada no [PR #816](https://github.com/0xjc65eth/cypher65-war-room/pull/816), head `11f5a87457585df4f556173db600aeffca55f94d`: OPEN/ready, oito checks obrigatórios e Codecov PASS; REVIEW_REQUIRED/BLOCKED, sem approval no snapshot atual. Seu backend completo passou em 4325 testes/2 skips/85,59%; esse resultado é da branch #814, não desta #787. Nenhum merge foi executado por este agente.
+
+**Ainda pendentes:** publicação/CI exato/review da #787, revisão GitHub da #816, UX dos 14 módulos de #757 e critérios externos de hardware, produção, contratos de dados e SLO. A recuperação completa ainda não está terminada.
 
 O worktree inicial desta conversa estava limpo e em detached HEAD. O checkpoint interrompido estava no checkout `/Users/juliocesar/cypher65-war-room`, branch `fix/798-console-ids-chart-init`, base `ec3bdf6`, com seis arquivos alterados e o mapa PR1–PR7 não rastreado. Foram preservados o backup `/tmp/c65-original-798.patch` e o mapa `/tmp/c65-original-series.md`. O diff original foi comparado novamente byte a byte após a recuperação e continua idêntico; os sete stashes foram preservados. Os WIPs de #777 em `/private/tmp/cypher65-777-clean` e `/Users/juliocesar/cypher65-777-device-identity` não foram incorporados integralmente.
 
@@ -14,7 +18,7 @@ O acesso ao GitHub no sandbox apresentou um falso aviso de autenticação; consu
 
 ## 2. GitHub status e rastreabilidade
 
-O quadro abaixo conserva os checkpoints publicados da recuperação. Estado atual: #801/#804/#805/#806/#808/#809/#810/#812 integrados externamente; #813 é a continuação implementada no [PR #815](https://github.com/0xjc65eth/cypher65-war-room/pull/815). A atualização ao fim deste relatório identifica os SHAs mais recentes.
+O quadro abaixo conserva os checkpoints publicados da recuperação. Estado histórico deste quadro: #801/#804/#805/#806/#808/#809/#810/#812 integrados externamente; #813 foi a continuação implementada no [PR #815](https://github.com/0xjc65eth/cypher65-war-room/pull/815). A atualização ao fim deste relatório identifica os SHAs mais recentes.
 
 A matriz detalhada permanece em [PR1–PR7](docs/PR1-PR7-SERIES.md). Os sete ordinais já estavam integrados: #784, #785, #786, #794, #795, #796 e #797; #793 complementa PR3. PR2 não declara uma Issue no corpo. #797 foi encontrado como MERGED, com checks FAILURE e reviews vazios; não foi recriado nem apresentado como CI verde.
 
@@ -147,14 +151,14 @@ Os corpos e comentários das 13 Issues iniciais foram consultados novamente via 
 
 ## 8. Merge readiness
 
-Os PRs de recuperação anteriores foram integrados externamente; os snapshots históricos não equivalem a aprovação independente ou CI global verde. O [PR #815](https://github.com/0xjc65eth/cypher65-war-room/pull/815), código `67c86f28b7aa58173563eb53b6488d0a7fd6ddfe`, está validado localmente e passou pelas revisões independentes /devil e /advisor, sem HIGH restante demonstrado nos caminhos corrigidos. Exige CI do SHA publicado e approval no GitHub antes de integração. Um MEDIUM distinto de cache após comando está rastreado na [#814](https://github.com/0xjc65eth/cypher65-war-room/issues/814); não houve troca de identidade ou corrupção de histórico nessa reprodução. Não se afirma consistência global de todos os writers de cache. Este agente não realizou merge/deploy e não alega produção validada.
+#815 foi integrado externamente. #816 tem CI verde no head `11f5a87`, mas permanece REVIEW_REQUIRED/BLOCKED, sem aprovação GitHub. #787 passou no lote completo e aguarda publicação/CI do SHA exato. As revisões /devil e /advisor não substituem approval no GitHub; o ruleset vigente exige uma aprovação, threads resolvidas e oito checks estritos sobre a base corrente. Não houve merge/deploy e não se alega produção validada.
 
 ## 9. Next actions
 
-1. Conferir CI do SHA publicado da #813 e corrigir falhas que forem demonstradas; obter review/approval GitHub. Revisões por subagente não substituem approval.
-2. Integrar somente com autorização adicional, checks verdes e aprovação; preservar merges externos e revalidar cada head após mudança de base.
-3. Resolver a #814 em unidade própria: status de comandos e publisher devem compartilhar ordem de publicação, mantendo ACK/auditoria e limites explícitos.
-4. Manter reconciliação histórica, #757 e os critérios externos de hardware/produção/dados/SLO nas trilhas descritas na matriz; preservar WIPs e histórico.
+1. Publicar a PR #787 após o gate completo verde, vinculada à Issue, e conferir a PR vinculada à Issue e verificar todos os checks no SHA final.
+2. Corrigir eventuais falhas demonstradas e deixar as PRs em revisão independente; não integrar sem autorização adicional.
+3. Continuar a #757 em unidade própria: cinco falhas locais reproduzidas em alertas, resumo Fleet, Admin parcial e histórico de device (erro/cache, zero, um ponto, unidades e resposta tardia).
+4. Manter a reconciliação histórica e os critérios externos de hardware/produção/dados/SLO nas trilhas da matriz; preservar WIPs, branches e histórico.
 
 ## Evidência durável e limites de integração
 
@@ -180,3 +184,12 @@ O [documento #813](docs/qa/ISSUE_813_IDENTITY_ATOMICITY.md) registra contratos, 
 Finding adicional /devil: [#814](https://github.com/0xjc65eth/cypher65-war-room/issues/814), MEDIUM/P2, callback antigo pode sobrescrever o cache PAUSED de um comando que já confirmou no banco. Separado do binding da #813; não há garantia global de coerência de todos os writers de cache. A regressão final fortalecida passou em 51 testes/1,64 s, sem mudança de produção após a suíte completa.
 
 Publicação: [PR #815](https://github.com/0xjc65eth/cypher65-war-room/pull/815), código `67c86f28b7aa58173563eb53b6488d0a7fd6ddfe`. Snapshot na abertura: OPEN/draft, REVIEW_REQUIRED; checks em andamento. Este registro é um checkpoint da publicação; o estado atualizado do CI/approval permanece no PR, por SHA. O commit documental seguinte conserva o código validado e exige seus próprios checks.
+
+
+## Atualização de implementação #787 — 2026-10-11
+
+Base `fd683ec`; branch `fix/787-evidence-validity`, sem incorporar WIPs antigos. #793 entregou a chamada do renderer; os cinco critérios de validade ainda tinham lacunas demonstradas por /advisor. Esta unidade corrige bool como dificuldade, cobertura promovida pelo contador cumulativo, idade zero fabricada, janela invertida e classificação inconsistente com histórico stale. /devil encontrou overflow de dificuldade/média, perda de precisão, expoente Decimal extremo e idade negativa com underflow; corrigidos e cobertos por regressões.
+
+O histórico validado é copiado; os dados de origem e contagem cumulativa não são alterados. Serviço e caminhos live legados usam o mesmo filtro. Os 145 novos casos cobrem serviço/API/cálculo público completo. QA: 207 PASS; /devil: 198 PASS mais sete provas de estado preservado; sem CRITICAL/HIGH/MEDIUM novo demonstrado no escopo. /advisor recomenda Closes #787 depois da validação final; esta revisão não é approval GitHub.
+
+Frontend real: 10 E2E desktop/mobile (incluindo WHAT-IF), 13,7 s; 1694 JS core PASS; bundle de 17 fragmentos sincronizado e gates estáticos PASS. São dados sintéticos, endpoint real e renderer real com snapshot interceptado, sem comprovar ingestão física ou produção. Suíte completa: 4455 PASS/2 SKIP/85,79%, zero falhas/erros; CI remoto pendente neste checkpoint. O [contrato #787](docs/qa/ISSUE_787_SESSION_EVIDENCE_VALIDITY.md) registra semântica e caminhos das evidências, incluindo a prova negativa de base com 48 FAIL/44 PASS.

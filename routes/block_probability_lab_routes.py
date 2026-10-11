@@ -25,6 +25,8 @@ purchases hashpower and never claims a block deadline.
 
 import logging
 import math
+import json
+from decimal import Decimal, DecimalException
 import time
 from flask import Blueprint, jsonify, request
 
@@ -327,7 +329,18 @@ def api_share_statistics():
 @dashboard_bp.route("/session-evidence", methods=["GET", "POST"])
 def api_evidence_state():
     """Return evidence from supplied fields, or the current in-memory session."""
-    body = request.get_json(silent=True) or {}
+    try:
+        body = (
+            json.loads(request.get_data(), parse_float=Decimal)
+            if request.is_json and request.data
+            else None
+        )
+    except (ValueError, TypeError, DecimalException):
+        return jsonify({"error": "request body must be a JSON object"}), 400
+    if body is None:
+        if request.method == "POST" and request.data:
+            return jsonify({"error": "request body must be a JSON object"}), 400
+        body = {}
     if not isinstance(body, dict):
         return jsonify({"error": "request body must be a JSON object"}), 400
     import services.state as state
@@ -337,6 +350,7 @@ def api_evidence_state():
     network = snapshot.get("network") or {}
     timeline = getattr(state, "timeline_state", {}) or {}
     history = body.get("share_calc_history", body.get("history"))
+    live_history = history is None
     if history is None:
         history = list(timeline.get("share_calc_history") or [])
     if isinstance(history, str):
@@ -364,20 +378,46 @@ def api_evidence_state():
         raw = body.get(name, request.args.get(name, fallback))
         return None if raw in (None, "") else raw
 
+    def _number(name, fallback=None, *, integral=False):
+        raw = _value(name, fallback)
+        if raw is None:
+            return None
+        if isinstance(raw, bool):
+            raise ValueError("booleans are not measurements")
+        exact = Decimal(str(raw))
+        if not exact.is_finite() or exact < 0:
+            raise ValueError("measurement must be finite and non-negative")
+        value = float(exact)
+        if not math.isfinite(value):
+            raise ValueError("measurement must be finite and non-negative")
+        if integral:
+            if exact != exact.to_integral_value():
+                raise ValueError("count must be an integer")
+            return int(exact)
+        return value
+
+    now = time.time()
     try:
-        user_raw = _value("user_hashrate", worker.get("hashrate"))
-        net_raw = _value("network_hashrate", network.get("hashrate"))
-        user_hr = float(user_raw) if user_raw is not None else None
-        net_hr = float(net_raw) if net_raw is not None else None
-        shares_raw = _value("session_share_count", timeline.get("session_share_count"))
-        shares = int(shares_raw) if shares_raw is not None else None
-        age_raw = _value("age_seconds", None)
-        age = float(age_raw) if age_raw is not None else None
+        user_hr = _number("user_hashrate", worker.get("hashrate"))
+        net_hr = _number("network_hashrate", network.get("hashrate"))
+        shares = _number(
+            "session_share_count", timeline.get("session_share_count"), integral=True
+        )
+        age = _number("age_seconds")
         last_submit = timeline.get("last_submit_ts")
-        if age is None and last_submit is not None:
-            age = max(0.0, time.time() - float(last_submit))
-        window = float(_value("window_seconds", 3600.0))
-    except (TypeError, ValueError):
+        if age is None and live_history and last_submit is not None:
+            try:
+                submitted_at = float(last_submit)
+                if (
+                    not isinstance(last_submit, bool)
+                    and math.isfinite(submitted_at)
+                    and 0 < submitted_at <= now
+                ):
+                    age = now - submitted_at
+            except (TypeError, ValueError, OverflowError):
+                pass  # Invalid live clock remains unknown.
+        window = _number("window_seconds", 3600.0)
+    except (TypeError, ValueError, OverflowError, DecimalException):
         return (
             jsonify(
                 {
@@ -391,10 +431,9 @@ def api_evidence_state():
         return jsonify({"error": "numeric inputs must be finite"}), 400
     if shares is not None and shares < 0:
         return jsonify({"error": "session_share_count must be non-negative"}), 400
-    if window <= 0:
+    if window is None or window <= 0:
         return jsonify({"error": "window_seconds must be positive"}), 400
 
-    now = time.time()
     stats = share_statistics(
         shares,
         history,
