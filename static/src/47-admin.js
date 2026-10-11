@@ -198,47 +198,127 @@
   let _adminAnalyticsCharts = {};
   let _adminAnalyticsRendered = false;
 
+  let _adminRequestGeneration = 0;
+  const _adminSources = ['sessions', 'conversion', 'rentals/accepted-recos', 'pool-metrics', 'docs-feedback', 'error-rate', 'degradation-rate', 'analytics'];
+  const _adminEmptyLabels = {};
+
+  function _restoreAdminEmptyLabels() {
+    Object.keys(_adminEmptyLabels).forEach(id => _setAdminText(id, _adminEmptyLabels[id]));
+  }
+
+  function _markAdminUnavailable(sources) {
+    const fields = {
+      sessions: ['sessions', 'polls-per-sec', 'queue', 'workers', 'uptime', 'autoex-alerts'],
+      conversion: ['drop-paywall-modal', 'drop-modal-checkout', 'drop-checkout-paid', 'conv-rate', 'funnel-sessions', 'funnel-session-conv', 'ltv', 'ltv-source', 'cac', 'ltv-cac', 'payback', 'cohort-source'],
+      analytics: ['analytics-boots', 'analytics-dau', 'analytics-wau', 'analytics-modules', 'analytics-top-module'],
+      'error-rate': ['err-total', 'err-peak', 'err-sentry'],
+      'degradation-rate': ['deg-total', 'deg-peak', 'deg-state'],
+    };
+    const states = {
+      conversion: ['admin-cohort-empty', 'admin-funnel-trend-empty'],
+      'pool-metrics': ['admin-metrics-empty'],
+      'error-rate': ['admin-error-rate-empty'],
+      'degradation-rate': ['admin-deg-empty'],
+    };
+    sources.forEach(source => {
+      (fields[source] || []).forEach(id => _setAdminText('admin-' + id, '—'));
+      (states[source] || []).forEach(id => {
+        const el = document.getElementById(id);
+        if (el) {
+          if (!(id in _adminEmptyLabels)) _adminEmptyLabels[id] = el.textContent;
+          el.hidden = false;
+          el.textContent = 'Source unavailable: ' + source + '. Retry with Refresh.';
+        }
+      });
+      if (source === 'conversion') {
+        ['admin-funnel-list', 'admin-feature-list'].forEach(id => {
+          const el = document.getElementById(id);
+          if (el) el.innerHTML = '<li class="alert-empty">conversion source unavailable</li>';
+        });
+      }
+      if (source === 'docs-feedback') {
+        const wrap = document.getElementById('admin-docs-feedback');
+        if (wrap) wrap.hidden = true;
+      }
+      if (source === 'rentals/accepted-recos') {
+        ['admin-audit', 'admin-autoex'].forEach(id => {
+          const el = document.getElementById(id);
+          if (el) el.hidden = true;
+        });
+        _adminAuditDecisions = [];
+      }
+      if (source === 'sessions') {
+        const stall = document.getElementById('admin-stall');
+        if (stall) { stall.hidden = true; stall.textContent = ''; }
+      }
+      if (source === 'degradation-rate') {
+        const state = document.getElementById('admin-deg-state');
+        if (state) state.className = 'kpi-card__value';
+      }
+    });
+  }
+
+  function resetAdminEvidence() {
+    _adminRequestGeneration++;
+    _adminLoaded = false;
+    _renderAdmin({}, {}, {}, {}, {}, {}, {}, { error: 'Analytics not loaded for this session' });
+    _markAdminUnavailable(_adminSources);
+    _setAdminText('admin-gate-badge', 'unknown');
+    const err = document.getElementById('admin-error');
+    if (err) { err.hidden = true; err.textContent = ''; }
+    const refresh = document.getElementById('admin-refresh-btn');
+    if (refresh) { refresh.disabled = false; refresh.setAttribute('aria-busy', 'false'); }
+  }
+
   async function fetchAdminData() {
     if (_adminLoaded) return;
+    const generation = ++_adminRequestGeneration;
     const errEl = document.getElementById('admin-error');
     const gate = document.getElementById('admin-gate-badge');
+    const refresh = document.getElementById('admin-refresh-btn');
+    if (gate) gate.textContent = 'loading';
+    if (errEl) { errEl.hidden = true; errEl.textContent = ''; }
+    if (refresh) { refresh.disabled = true; refresh.setAttribute('aria-busy', 'true'); }
     _setAdminAnalyticsLoading(true);
     try {
-      // Pool health — no auth needed for localhost/operator-key admin routes.
-      const [sessionsResp, convResp, auditResp, metricsResp, docsResp, errResp, degResp, analyticsResp] = await Promise.all([
-        fetch('/api/admin/sessions', { headers: { 'X-Requested-With': 'fetch' } }),
-        fetch('/api/admin/conversion?weeks=8', { headers: { 'X-Requested-With': 'fetch' } }),
-        fetch('/api/admin/rentals/accepted-recos?limit=1000', { headers: { 'X-Requested-With': 'fetch' } }),
-        fetch('/api/admin/pool-metrics?hours=24', { headers: { 'X-Requested-With': 'fetch' } }),
-        fetch('/api/admin/docs-feedback', { headers: { 'X-Requested-With': 'fetch' } }),
-        fetch('/api/admin/error-rate?hours=24', { headers: { 'X-Requested-With': 'fetch' } }),
-        fetch('/api/admin/degradation-rate?hours=24', { headers: { 'X-Requested-With': 'fetch' } }),
-        fetch('/api/admin/analytics?days=30', { headers: { 'X-Requested-With': 'fetch' } }),
-      ]);
-      if (sessionsResp.status === 403 || convResp.status === 403 || auditResp.status === 403 || metricsResp.status === 403 || docsResp.status === 403 || errResp.status === 403 || degResp.status === 403 || analyticsResp.status === 403) {
-        if (gate) gate.textContent = 'restricted';
-        if (errEl) {
-          errEl.hidden = false;
-          errEl.textContent = 'Admin access required — endpoint só responde de localhost ou com a API key do operador (X-API-Key).';
-        }
-        _renderAdminAnalytics({ error: 'admin access required' });
-        _adminLoaded = true;  // don't re-hammer a 403
-        return;
+      const paths = ['/api/admin/sessions', '/api/admin/conversion?weeks=8', '/api/admin/rentals/accepted-recos?limit=1000', '/api/admin/pool-metrics?hours=24', '/api/admin/docs-feedback', '/api/admin/error-rate?hours=24', '/api/admin/degradation-rate?hours=24', '/api/admin/analytics?days=30'];
+      const results = await Promise.all(paths.map(async path => {
+        try {
+          const response = await fetch(path, { headers: { 'X-Requested-With': 'fetch' } });
+          if (!response.ok) return { error: 'HTTP ' + response.status, status: response.status };
+          const data = await response.json();
+          if (!data || typeof data !== 'object' || Array.isArray(data) || data.error) return { error: 'invalid response' };
+          return { data: data };
+        } catch (e) { return { error: 'request failed' }; }
+      }));
+      if (generation !== _adminRequestGeneration) return;
+      const restricted = results.some(result => result.status === 401 || result.status === 403);
+      const unavailable = restricted ? _adminSources : _adminSources.filter((_, i) => results[i].error);
+      const payloads = restricted ? results.map(() => ({})) : results.map(result => result.data || {});
+      if (restricted || results[7].error) payloads[7] = { error: restricted ? 'admin access required' : 'analytics source unavailable' };
+      _restoreAdminEmptyLabels();
+      _renderAdmin(...payloads);
+      _markAdminUnavailable(unavailable);
+      if (gate) gate.textContent = restricted ? 'restricted' : unavailable.length ? 'partial' : 'ok';
+      if (errEl) {
+        errEl.hidden = !unavailable.length;
+        errEl.textContent = restricted
+          ? 'Admin access required — operator access must be verified before displaying data.'
+          : unavailable.map(source => source + ': ' + results[_adminSources.indexOf(source)].error).join('; ') + (unavailable.length ? '. Data unavailable; retry with Refresh.' : '');
       }
-      if (gate) gate.textContent = 'ok';
-      const sessions = sessionsResp.ok ? await sessionsResp.json() : {};
-      const conv = convResp.ok ? await convResp.json() : {};
-      const audit = auditResp.ok ? await auditResp.json() : {};
-      const metrics = metricsResp.ok ? await metricsResp.json() : {};
-      const docsFb = docsResp.ok ? await docsResp.json() : {};
-      const errData = errResp.ok ? await errResp.json() : {};
-      const degData = degResp.ok ? await degResp.json() : {};
-      const analytics = analyticsResp.ok ? await analyticsResp.json() : { error: 'analytics request failed (' + analyticsResp.status + ')' };
-      _renderAdmin(sessions, conv, audit, metrics, docsFb, errData, degData, analytics);
-      _adminLoaded = true;
+      // Partial responses remain retryable; denied access waits for an explicit
+      // refresh or session change instead of repeatedly hammering the gate.
+      _adminLoaded = restricted || !unavailable.length;
     } catch (e) {
-      if (errEl) { errEl.hidden = false; errEl.textContent = 'admin fetch error: ' + e.message; }
-      _renderAdminAnalytics({ error: 'analytics indisponível' });
+      if (generation !== _adminRequestGeneration) return;
+      resetAdminEvidence();
+      if (gate) gate.textContent = 'error';
+      if (errEl) { errEl.hidden = false; errEl.textContent = 'Admin data unavailable; retry with Refresh.'; }
+    } finally {
+      if (generation === _adminRequestGeneration && refresh) {
+        refresh.disabled = false;
+        refresh.setAttribute('aria-busy', 'false');
+      }
     }
   }
   function _renderAdmin(sessions, conv, audit, metrics, docsFb, errData, degData, analytics) {
@@ -346,6 +426,9 @@
     root.querySelectorAll('[data-analytics-canvas], [data-analytics-empty]').forEach(function(el) { el.hidden = true; });
 
     if (report && report.error) {
+      _markAdminUnavailable(['analytics']);
+      const tableBody = document.getElementById('admin-analytics-table-body');
+      if (tableBody) tableBody.innerHTML = '';
       if (state) {
         state.textContent = 'Analytics indisponível: ' + String(report.error);
         state.classList.add('admin-analytics__state--error');

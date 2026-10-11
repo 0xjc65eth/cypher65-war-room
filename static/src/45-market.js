@@ -415,62 +415,64 @@
   function buildMarketTrendDatasets(providers) {
     const colors = ['rgb(247,147,26)', 'rgb(6,214,240)', 'rgb(168,85,247)', 'rgb(245,158,11)', 'rgb(16,185,129)'];
     const allTs = new Set();
-    Object.values(providers || {}).forEach(pts => (pts || []).forEach(p => { if (p && p.ts) allTs.add(p.ts); }));
+    Object.values(providers || {}).forEach(pts => (pts || []).forEach(p => { if (p && typeof p.ts === 'number' && Number.isFinite(p.ts) && p.ts > 0 && Number.isFinite(new Date(p.ts * 1000).getTime())) allTs.add(p.ts); }));
     const times = Array.from(allTs).sort((a, b) => a - b);
     const labels = times.map(t => { const d = new Date(t * 1000); return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); });
     const datasets = Object.keys(providers || {}).map((name, i) => {
       const byTs = {};
-      ((providers[name]) || []).forEach(p => { if (p && p.ts != null) byTs[p.ts] = p.price_btc_per_th_day; });
+      ((providers[name]) || []).forEach(p => { if (p && typeof p.price_btc_per_th_day === 'number' && Number.isFinite(p.price_btc_per_th_day) && p.price_btc_per_th_day >= 0 && Number.isFinite(p.price_btc_per_th_day * 1e8)) byTs[p.ts] = p.price_btc_per_th_day; });
       return {
         label: name,
         data: times.map(t => byTs[t] != null ? Number(byTs[t]) * 1e8 : null),
         borderColor: colors[i % colors.length],
         backgroundColor: colors[i % colors.length].replace(')', ',0.08)').replace('rgb', 'rgba'),
-        tension: 0.4, pointRadius: 0, fill: false,
+        tension: 0.4, pointRadius: times.map((t, index) => byTs[t] != null && byTs[times[index - 1]] == null && byTs[times[index + 1]] == null ? 3 : 0), fill: false,
       };
     });
     return { times, labels, datasets };
   }
 
+  let _marketTrendGeneration = 0;
   async function loadMarketTrend() {
-    // Returns true on success, false on failure — the lazy caller (activateModule)
-    // resets _mktTrendLoaded on false so a transient failure retries next activation.
     const canvas = document.getElementById('mkt-trend-chart');
     if (!canvas) return false;
+    const generation = ++_marketTrendGeneration;
+    const countEl = document.getElementById('mkt-trend-count');
+    const legendEl = document.getElementById('mkt-trend-legend');
+    if (window._mktTrendChart) { window._mktTrendChart.destroy(); window._mktTrendChart = null; }
+    canvas.hidden = true;
+    if (countEl) countEl.textContent = 'LOADING';
+    if (legendEl) legendEl.textContent = 'Loading retained market prices…';
     try {
       const r = await fetch('/api/market/trend');
-      if (!r.ok) return false;
+      if (generation !== _marketTrendGeneration) return false;
+      if (!r.ok) throw new Error((r.status === 401 || r.status === 403 ? 'Access required' : 'Source unavailable') + ' (HTTP ' + r.status + ')');
       const data = await r.json();
-      const provs = data.providers || {};
-      const countEl = document.getElementById('mkt-trend-count');
-      const legendEl = document.getElementById('mkt-trend-legend');
-      const { labels, datasets } = buildMarketTrendDatasets(provs);
-      // Frescor honesto: mostra quantos providers têm histórico e QUANDO o
-      // snapshot mais recente foi persistido (dado real do /api/market/trend).
-      if (countEl) {
-        const upd = data.updated_at || 0;
-        const clock = upd ? new Date(upd * 1000) : null;
-        const hhmm = clock ? String(clock.getHours()).padStart(2, '0') + ':' + String(clock.getMinutes()).padStart(2, '0') : '';
-        countEl.textContent = datasets.length
-          ? (datasets.length + ' providers' + (hhmm ? ' · ' + hhmm : ''))
-          : '0 providers — sem histórico ainda';
+      if (generation !== _marketTrendGeneration) return false;
+      if (!data || !data.providers || typeof data.providers !== 'object' || Array.isArray(data.providers) || Object.values(data.providers).some(points => !Array.isArray(points))) throw new Error('Invalid market trend response');
+      const { labels, datasets } = buildMarketTrendDatasets(data.providers);
+      const hasPoints = datasets.some(dataset => dataset.data.some(value => value != null && Number.isFinite(value)));
+      const suppliedPoints = Object.values(data.providers).some(points => points.length);
+      if (!hasPoints && suppliedPoints) {
+        if (countEl) countEl.textContent = 'UNKNOWN';
+        if (legendEl) legendEl.textContent = 'Retained market rows have no usable timestamps or numeric prices. Reopen Hash Market to retry.';
+        return false;
       }
-      if (legendEl) {
-        legendEl.innerHTML = datasets.length
-          ? datasets.map(d =>
-              `<span class="mkt-trend__legend-item"><span class="mkt-trend__legend-dot" style="background:${d.borderColor}"></span>${escapeHtml(d.label)}</span>`
-            ).join('')
-          : '<span class="mkt-trend__legend-item" style="color:var(--text-tertiary)">preços são persistidos a cada fetch (warm-up 5min) — volte mais tarde</span>';
-      }
-      if (!datasets.length) return true;  // valid empty state — nothing to plot
-      if (typeof Chart === 'undefined') return false;  // Issue #186: defer — próximo poll re-tenta
-      const ctx = canvas.getContext('2d');
-      if (window._mktTrendChart) window._mktTrendChart.destroy();
-      window._mktTrendChart = new Chart(ctx, {
-        type: 'line',
-        data: { labels, datasets },
-        options: { responsive: true, maintainAspectRatio: false, scales: { x: { ticks: { color: cssVar('--text-tertiary'), maxTicksLimit: 8 } }, y: { ticks: { color: cssVar('--text-tertiary') } } }, plugins: { legend: { display: false } } }
+      if (countEl) countEl.textContent = hasPoints ? datasets.length + ' providers' : 'EMPTY';
+      if (legendEl) legendEl.textContent = hasPoints ? 'Source: retained market prices · received ' + new Date().toLocaleTimeString() : 'No retained market prices. Retry on the next module activation.';
+      if (!hasPoints) return true;
+      if (typeof Chart === 'undefined') throw new Error('Chart renderer unavailable');
+      canvas.hidden = false;
+      window._mktTrendChart = new Chart(canvas.getContext('2d'), {
+        type: 'line', data: { labels, datasets },
+        options: { responsive: true, maintainAspectRatio: false, animation: window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches ? false : { duration: 180 }, scales: { x: { ticks: { color: cssVar('--text-tertiary'), maxTicksLimit: 8 } }, y: { title: { display: true, text: 'sats/TH/day' }, ticks: { color: cssVar('--text-tertiary') } } }, plugins: { legend: { display: true } } }
       });
       return true;
-    } catch (e) { return false; }
+    } catch (error) {
+      if (generation !== _marketTrendGeneration) return false;
+      canvas.hidden = true;
+      if (countEl) countEl.textContent = 'ERROR';
+      if (legendEl) legendEl.textContent = String(error.message || 'Market prices unavailable') + '. Reopen Hash Market to retry.';
+      return false;
+    }
   }

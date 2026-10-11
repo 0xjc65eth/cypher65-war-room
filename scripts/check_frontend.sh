@@ -118,6 +118,8 @@ step bash tests/test_tokens_hex.sh
 step node --check static/app.js
 step node --check static/sw.js
 step node --test tests/test_app_js_core.js
+step node tests/test_operational_evidence_states.js
+step node tests/test_operational_secondary_sources.js
 step node tests/test_sw_push.cjs
 step node scripts/check-mobile-xss.cjs
 step node tests/test_mobile_xss_guards.js

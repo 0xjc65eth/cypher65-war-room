@@ -1738,9 +1738,9 @@ tr:hover td { background: var(--bg-hover); }
 .lm-flow__dot--warn { background: var(--amber); }
 .lm-flow__dot--bad { background: var(--red); }
 .lm-flow__raster { display: flex; flex-direction: column; gap: 2px; }
-.lm-flow__row { display: grid; grid-template-columns: 1.6fr 24fr; gap: 6px; align-items: center; }
+.lm-flow__row { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 24fr); gap: 6px; align-items: center; }
 .lm-flow__label { font-size: 9px; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.lm-flow__cells { display: grid; grid-template-columns: repeat(24, 1fr); gap: 1px; }
+.lm-flow__cells { min-width: 0; display: grid; grid-template-columns: repeat(24, minmax(0, 1fr)); gap: 1px; }
 .lm-flow__cell { height: 10px; border-radius: 1px; background: var(--border-subtle); }
 .lm-flow__cell--ok { background: var(--green); }
 .lm-flow__cell--rej { background: var(--red); }
@@ -3718,6 +3718,14 @@ dimmed so they never read as a discovered miner. */
 .axe-cmd-btn--restart { color: var(--text-secondary); border-color: var(--border-subtle); }
 .axe-detail__item { display: flex; justify-content: space-between; font-size: 10px; padding: 3px 0; }
 .axe-detail__loading { color: var(--text-tertiary); font-style: italic; font-size: 10px; padding: 8px; }
+.operational-source-state { color: var(--text-secondary); font-size: 10px; margin: 6px 0; overflow-wrap: anywhere; }
+.operational-loading { background: var(--bg-elevated); border-radius: var(--radius-sm); min-height: 28px; }
+.module-source-context { flex-basis: 100%; margin: 4px 0; color: var(--text-secondary); font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
+.module-header { flex-wrap: wrap; }
+.module-section-nav { display: flex; flex-basis: 100%; flex-wrap: wrap; gap: 6px; margin: 4px 0; }
+.module-section-nav[hidden] { display: none; }
+.module-section-link { padding: 4px 8px; border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); color: var(--text-secondary); font-size: 11px; line-height: 1.5; text-decoration: none; max-width: 100%; overflow-wrap: anywhere; }
+.module-section-link:hover, .module-section-link:focus-visible { color: var(--text-primary); border-color: var(--brand); outline-offset: 2px; }
 
 /* ── Solo mining ─────────────────────────────────────────────────── */
 .solo-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 6px; }
@@ -4518,3 +4526,6 @@ dimmed so they never read as a discovered miner. */
   .premium-ui .desk-quote.console-market-strip { gap: 16px; padding: 8px 0; }
   .premium-ui .desk-quote strong { font-size: 13px; }
 }
+
+#module-evidence-context { flex-basis: 100%; min-width: 0; width: 100%; }
+.operation-console > #module-evidence-context { border-top: 1px solid var(--border-default); padding-top: 8px; }
