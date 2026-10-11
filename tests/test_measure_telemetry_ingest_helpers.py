@@ -307,10 +307,14 @@ def test_real_blueprint_and_sqlite_idempotency_contract_without_app_bootstrap() 
                     registry, get_db = HARNESS._new_registry(registry_type, database)
                     routes.init_routes(registry)
                     first_device = registry.upsert_agent_device(
-                        "192.0.2.9", tenant_id="tenant-a"
+                        "192.0.2.9",
+                        tenant_id="tenant-a",
+                        info={"mac": "02:00:00:00:07:09"},
                     )
                     second_device = registry.upsert_agent_device(
-                        "192.0.2.9", tenant_id="tenant-b"
+                        "192.0.2.9",
+                        tenant_id="tenant-b",
+                        info={"mac": "02:00:00:00:07:09"},
                     )
                     assert first_device and second_device
                     with app.app_context():
@@ -324,6 +328,7 @@ def test_real_blueprint_and_sqlite_idempotency_contract_without_app_bootstrap() 
                         }
                     sample = {
                         "ip": "192.0.2.9",
+                        "mac": first_device["mac_address"],
                         "idempotency_key": "load002-fast-event-01",
                         "telemetry": {
                             "ts": int(time.time()),

@@ -26,6 +26,40 @@ from axe_fleet.models import validate_agent_telemetry
 import agent.agent as agent_mod
 
 
+# Explicit synthetic MAC evidence for nominal fixtures; production never infers MAC from IP.
+_DEVICE_MACS = {
+    "10.8.0.12": "02:00:00:00:08:12",
+    "10.8.0.13": "02:00:00:00:08:12",
+    "127.0.0.1": "02:00:00:00:01:01",
+    "192.168.1.10": "02:00:00:00:01:10",
+    "192.168.1.20": "02:00:00:00:01:20",
+    "192.168.1.50": "02:00:00:00:01:50",
+    "192.168.1.55": "02:00:00:00:01:55",
+    "192.168.1.56": "02:00:00:00:01:56",
+    "192.168.1.57": "02:00:00:00:01:57",
+    "192.168.1.60": "02:00:00:00:01:60",
+    "192.168.1.61": "02:00:00:00:01:61",
+    "192.168.1.70": "02:00:00:00:01:70",
+    "192.168.1.71": "02:00:00:00:01:71",
+    "192.168.1.72": "02:00:00:00:01:72",
+    "192.168.1.73": "02:00:00:00:01:73",
+    "192.168.1.74": "02:00:00:00:01:74",
+    "192.168.1.75": "02:00:00:00:01:75",
+    "192.168.1.77": "02:00:00:00:01:77",
+    "192.168.1.78": "02:00:00:00:01:78",
+    "192.168.1.79": "02:00:00:00:01:79",
+    "192.168.1.80": "02:00:00:00:01:80",
+    "192.168.1.81": "02:00:00:00:01:81",
+    "192.168.1.91": "02:00:00:00:01:91",
+    "192.168.1.92": "02:00:00:00:01:92",
+    "192.168.1.93": "02:00:00:00:01:93",
+    "192.168.1.94": "02:00:00:00:01:94",
+    "192.168.1.95": "02:00:00:00:01:95",
+    "192.168.1.97": "02:00:00:00:01:97",
+    "192.168.1.99": "02:00:00:00:01:99",
+}
+
+
 @pytest.fixture
 def client(monkeypatch):
     """Test client with pinned JWT secret (app.config + env, in sync)."""
@@ -99,7 +133,15 @@ class TestAgentToken:
             resp = client.post(
                 "/api/agent/register",
                 headers=_headers(mint["token"]),
-                json={"devices": [{"ip": "192.168.1.50", "model": "Bitaxe"}]},
+                json={
+                    "devices": [
+                        {
+                            "mac": _DEVICE_MACS["192.168.1.50"],
+                            "ip": "192.168.1.50",
+                            "model": "Bitaxe",
+                        }
+                    ]
+                },
             )
             assert resp.status_code == 201
             assert resp.get_json()["count"] == 1
@@ -208,10 +250,22 @@ class TestAgentRegister:
             resp = client.post(
                 "/api/agent/register",
                 headers=_headers(agent_token),
-                json={"devices": [
-                    {"ip": "192.168.1.50", "model": "Bitaxe", "firmware": "AxeOS 3.1.4"},
-                    {"ip": "192.168.1.60", "model": "Antminer S19", "hostname": "s19-01"},
-                ]},
+                json={
+                    "devices": [
+                        {
+                            "mac": _DEVICE_MACS["192.168.1.50"],
+                            "ip": "192.168.1.50",
+                            "model": "Bitaxe",
+                            "firmware": "AxeOS 3.1.4",
+                        },
+                        {
+                            "mac": _DEVICE_MACS["192.168.1.60"],
+                            "ip": "192.168.1.60",
+                            "model": "Antminer S19",
+                            "hostname": "s19-01",
+                        },
+                    ]
+                },
             )
             assert resp.status_code == 201
             data = resp.get_json()
@@ -223,11 +277,18 @@ class TestAgentRegister:
         assert ips == {"192.168.1.50", "192.168.1.60"}
         assert all(int(d.get("agent_managed", 0) or 0) == 1 for d in devices)
 
-    def test_register_is_idempotent_by_ip(self, client, agent_token, registry):
+    def test_register_is_idempotent_by_mac(self, client, agent_token, registry):
         with patch("axe_fleet.routes._registry", registry):
             for _ in range(2):
-                r = client.post("/api/agent/register", headers=_headers(agent_token),
-                                json={"devices": [{"ip": "192.168.1.50"}]})
+                r = client.post(
+                    "/api/agent/register",
+                    headers=_headers(agent_token),
+                    json={
+                        "devices": [
+                            {"mac": _DEVICE_MACS["192.168.1.50"], "ip": "192.168.1.50"}
+                        ]
+                    },
+                )
                 assert r.status_code == 201
         assert len(registry.list_devices(tenant_id="acme")) == 1
 
@@ -235,13 +296,33 @@ class TestAgentRegister:
         """Re-registering an existing IP must persist firmware/version
         updates (regression: update_device dropped those fields silently)."""
         with patch("axe_fleet.routes._registry", registry):
-            client.post("/api/agent/register", headers=_headers(agent_token),
-                        json={"devices": [{"ip": "192.168.1.50",
-                                           "firmware": "AxeOS 3.1.4"}]})
-            client.post("/api/agent/register", headers=_headers(agent_token),
-                        json={"devices": [{"ip": "192.168.1.50",
-                                           "firmware": "AxeOS 3.2.0",
-                                           "version": "3.2.0"}]})
+            client.post(
+                "/api/agent/register",
+                headers=_headers(agent_token),
+                json={
+                    "devices": [
+                        {
+                            "mac": _DEVICE_MACS["192.168.1.50"],
+                            "ip": "192.168.1.50",
+                            "firmware": "AxeOS 3.1.4",
+                        }
+                    ]
+                },
+            )
+            client.post(
+                "/api/agent/register",
+                headers=_headers(agent_token),
+                json={
+                    "devices": [
+                        {
+                            "mac": _DEVICE_MACS["192.168.1.50"],
+                            "ip": "192.168.1.50",
+                            "firmware": "AxeOS 3.2.0",
+                            "version": "3.2.0",
+                        }
+                    ]
+                },
+            )
         dev = registry.get_device_by_ip("192.168.1.50", tenant_id="acme")
         assert dev["firmware"] == "AxeOS 3.2.0"
         assert dev["firmware_version"] == "3.2.0"
@@ -257,10 +338,20 @@ class TestAgentRegister:
             resp = client.post(
                 "/api/agent/register",
                 headers=_headers(agent_token),
-                json={"devices": [
-                    {"ip": "192.168.1.50", "model": "Bitaxe"},
-                    {"ip": "192.168.1.60", "model": "Antminer S19"},
-                ]},
+                json={
+                    "devices": [
+                        {
+                            "mac": _DEVICE_MACS["192.168.1.50"],
+                            "ip": "192.168.1.50",
+                            "model": "Bitaxe",
+                        },
+                        {
+                            "mac": _DEVICE_MACS["192.168.1.60"],
+                            "ip": "192.168.1.60",
+                            "model": "Antminer S19",
+                        },
+                    ]
+                },
             )
         assert resp.status_code == 201  # register stays 201, blocking is per-device
         data = resp.get_json()
@@ -275,17 +366,35 @@ class TestAgentRegister:
         refresh it (no new slot consumed) — only brand-new devices block."""
         with patch("axe_fleet.routes._registry", registry), \
                 patch("axe_fleet.routes._can_add_worker", return_value=True):
-            client.post("/api/agent/register", headers=_headers(agent_token),
-                        json={"devices": [{"ip": "192.168.1.50"}]})
+            client.post(
+                "/api/agent/register",
+                headers=_headers(agent_token),
+                json={
+                    "devices": [
+                        {"mac": _DEVICE_MACS["192.168.1.50"], "ip": "192.168.1.50"}
+                    ]
+                },
+            )
         with patch("axe_fleet.routes._registry", registry), \
                 patch("axe_fleet.routes._can_add_worker", return_value=False):
             resp = client.post(
                 "/api/agent/register",
                 headers=_headers(agent_token),
-                json={"devices": [
-                    {"ip": "192.168.1.50", "model": "Bitaxe Gamma", "firmware": "AxeOS 3.2.0"},
-                    {"ip": "192.168.1.60", "model": "NerdAxe"},
-                ]},
+                json={
+                    "devices": [
+                        {
+                            "mac": _DEVICE_MACS["192.168.1.50"],
+                            "ip": "192.168.1.50",
+                            "model": "Bitaxe Gamma",
+                            "firmware": "AxeOS 3.2.0",
+                        },
+                        {
+                            "mac": _DEVICE_MACS["192.168.1.60"],
+                            "ip": "192.168.1.60",
+                            "model": "NerdAxe",
+                        },
+                    ]
+                },
             )
         data = resp.get_json()
         assert data["count"] == 1          # existing refreshed
@@ -304,8 +413,11 @@ class TestAgentRegister:
 class TestAgentTelemetry:
     def _register_one(self, client, agent_token, registry, ip="192.168.1.50"):
         with patch("axe_fleet.routes._registry", registry):
-            client.post("/api/agent/register", headers=_headers(agent_token),
-                        json={"devices": [{"ip": ip}]})
+            client.post(
+                "/api/agent/register",
+                headers=_headers(agent_token),
+                json={"devices": [{"mac": _DEVICE_MACS[ip], "ip": ip}]},
+            )
 
     def test_telemetry_marks_online(self, client, agent_token, registry):
         self._register_one(client, agent_token, registry)
@@ -313,10 +425,16 @@ class TestAgentTelemetry:
             resp = client.post(
                 "/api/agent/telemetry",
                 headers=_headers(agent_token),
-                json={"ip": "192.168.1.50", "telemetry": {
-                    "hashrate_hs": 500_000_000_000, "temperature": 62.0,
-                    "fan_rpm": 4200, "power_watts": 45.0,
-                }},
+                json={
+                    "mac": _DEVICE_MACS["192.168.1.50"],
+                    "ip": "192.168.1.50",
+                    "telemetry": {
+                        "hashrate_hs": 500_000_000_000,
+                        "temperature": 62.0,
+                        "fan_rpm": 4200,
+                        "power_watts": 45.0,
+                    },
+                },
             )
             assert resp.status_code == 200
             assert resp.get_json()["status"] == "ONLINE"
@@ -329,26 +447,38 @@ class TestAgentTelemetry:
             resp = client.post(
                 "/api/agent/telemetry",
                 headers=_headers(agent_token),
-                json={"ip": "192.168.1.50", "telemetry": {"hashrate_hs": 0}},
+                json={
+                    "mac": _DEVICE_MACS["192.168.1.50"],
+                    "ip": "192.168.1.50",
+                    "telemetry": {"hashrate_hs": 0},
+                },
             )
             assert resp.status_code == 200
             assert resp.get_json()["status"] == "IDLE"
 
-    def test_telemetry_upserts_unknown_device(self, client, agent_token, registry):
-        """Agent may report a device whose row vanished (server DB reset)."""
+    def test_telemetry_rejects_unregistered_identity(
+        self, client, agent_token, registry
+    ):
+        """Telemetry cannot reconstruct identity after a DB reset; register first."""
         with patch("axe_fleet.routes._registry", registry):
             resp = client.post(
                 "/api/agent/telemetry",
                 headers=_headers(agent_token),
-                json={"ip": "192.168.1.99", "telemetry": {"hashrate_hs": 1e9,
-                                                         "model": "Bitaxe"}},
+                json={
+                    "mac": _DEVICE_MACS["192.168.1.99"],
+                    "ip": "192.168.1.99",
+                    "telemetry": {"hashrate_hs": 1e9, "model": "Bitaxe"},
+                },
             )
-            assert resp.status_code == 200
-        assert registry.get_device_by_ip("192.168.1.99", tenant_id="acme") is not None
+            assert resp.status_code == 409
+        assert not registry.get_device_by_ip("192.168.1.99", tenant_id="acme")
+        assert registry.list_devices(tenant_id="acme") == []
 
-    def test_telemetry_upsert_blocked_at_plan_cap(self, client, agent_token, registry):
+    def test_unknown_telemetry_never_bypasses_registration_at_plan_cap(
+        self, client, agent_token, registry
+    ):
         """At the plan cap an unknown IP must NOT be auto-created via the
-        telemetry path (403 + no row) — otherwise telemetry would bypass the
+        telemetry path (409 + no row) — otherwise telemetry would bypass the
         cap that register enforces."""
         with patch("axe_fleet.routes._registry", registry), \
                 patch("axe_fleet.routes._can_add_worker", return_value=False), \
@@ -357,10 +487,14 @@ class TestAgentTelemetry:
             resp = client.post(
                 "/api/agent/telemetry",
                 headers=_headers(agent_token),
-                json={"ip": "192.168.1.99", "telemetry": {"hashrate_hs": 1e9}},
+                json={
+                    "mac": _DEVICE_MACS["192.168.1.99"],
+                    "ip": "192.168.1.99",
+                    "telemetry": {"hashrate_hs": 1e9},
+                },
             )
-        assert resp.status_code == 403
-        assert resp.get_json()["error"] == "plan worker limit reached"
+        assert resp.status_code == 409
+        assert resp.get_json()["code"] == "DEVICE_IDENTITY_CONFLICT"
         # get_device_by_ip returns {} (falsy) for a missing row.
         assert not registry.get_device_by_ip("192.168.1.99", tenant_id="acme")
 
@@ -374,7 +508,11 @@ class TestAgentTelemetry:
             resp = client.post(
                 "/api/agent/telemetry",
                 headers=_headers(agent_token),
-                json={"ip": "192.168.1.50", "telemetry": {"hashrate_hs": 2e12}},
+                json={
+                    "mac": _DEVICE_MACS["192.168.1.50"],
+                    "ip": "192.168.1.50",
+                    "telemetry": {"hashrate_hs": 2e12},
+                },
             )
         assert resp.status_code == 200
         dev = registry.get_device_by_ip("192.168.1.50", tenant_id="acme")
@@ -403,8 +541,15 @@ class TestAgentCommands:
     def _registered_device(self, client, agent_token, registry):
         self._reg = registry
         with patch("axe_fleet.routes._registry", registry):
-            client.post("/api/agent/register", headers=_headers(agent_token),
-                        json={"devices": [{"ip": "192.168.1.50"}]})
+            client.post(
+                "/api/agent/register",
+                headers=_headers(agent_token),
+                json={
+                    "devices": [
+                        {"mac": _DEVICE_MACS["192.168.1.50"], "ip": "192.168.1.50"}
+                    ]
+                },
+            )
         dev = registry.get_device_by_ip("192.168.1.50", tenant_id="acme")
         registry.save_agent_telemetry(
             dev["id"], {"hashrate_hs": 1}, tenant_id="acme"
@@ -441,8 +586,12 @@ class TestAgentCommands:
 
     def test_pull_isolated_by_tenant(self, client, registry):
         """Tenant A pulling commands must not see tenant B's queue."""
-        dev_a = registry.upsert_agent_device("192.168.1.10", tenant_id="acme")
-        registry.upsert_agent_device("192.168.1.20", tenant_id="brave")
+        dev_a = registry.upsert_agent_device(
+            "192.168.1.10", tenant_id="acme", info={"mac": "02:00:00:00:01:10"}
+        )
+        registry.upsert_agent_device(
+            "192.168.1.20", tenant_id="brave", info={"mac": "02:00:00:00:01:20"}
+        )
         registry.save_agent_telemetry(
             dev_a["id"], {"hashrate_hs": 1}, tenant_id="acme"
         )
@@ -481,7 +630,9 @@ class TestAgentCommands:
         assert ack2.get_json()["success"] is True
 
     def test_ack_wrong_tenant_404(self, client, registry):
-        dev = registry.upsert_agent_device("192.168.1.10", tenant_id="acme")
+        dev = registry.upsert_agent_device(
+            "192.168.1.10", tenant_id="acme", info={"mac": "02:00:00:00:01:10"}
+        )
         q = registry.enqueue_agent_command(dev["id"], "restart", tenant_id="acme")
         # Another tenant's agent tries to ack it.
         token_b = create_token(subject="brave", ttl=86400,
@@ -625,15 +776,37 @@ class TestSnapshotWriteThrough:
         import app as app_module
         from services import state as shared_state
         ip = "192.168.1.77"
-        client.post("/api/agent/register", headers=_headers(agent_token),
-                    json={"devices": [{"ip": ip, "model": "Gamma 900",
-                                       "firmware": "AxeOS 2.13.0",
-                                       "hostname": "gamma-01"}]})
-        client.post("/api/agent/telemetry", headers=_headers(agent_token),
-                    json={"ip": ip, "telemetry": {
-                        "hashrate_hs": 912345678901, "temperature": 53.2,
-                        "power_watts": 15.6, "fan_rpm": 4600,
-                        "best_diff": "8.2T", "shares_accepted": 1450}})
+        client.post(
+            "/api/agent/register",
+            headers=_headers(agent_token),
+            json={
+                "devices": [
+                    {
+                        "mac": _DEVICE_MACS[ip],
+                        "ip": ip,
+                        "model": "Gamma 900",
+                        "firmware": "AxeOS 2.13.0",
+                        "hostname": "gamma-01",
+                    }
+                ]
+            },
+        )
+        client.post(
+            "/api/agent/telemetry",
+            headers=_headers(agent_token),
+            json={
+                "mac": _DEVICE_MACS[ip],
+                "ip": ip,
+                "telemetry": {
+                    "hashrate_hs": 912345678901,
+                    "temperature": 53.2,
+                    "power_watts": 15.6,
+                    "fan_rpm": 4600,
+                    "best_diff": "8.2T",
+                    "shares_accepted": 1450,
+                },
+            },
+        )
         # _do_poll assembles snap.axe_fleet from the cache (app.py:3800);
         # simulate that single line — the write-through is what's under test.
         app_module.latest_snapshot["axe_fleet"] = list(
@@ -655,10 +828,16 @@ class TestSnapshotWriteThrough:
         import app as app_module
         from services import state as shared_state
         ip = "192.168.1.78"
-        client.post("/api/agent/register", headers=_headers(agent_token),
-                    json={"devices": [{"ip": ip}]})
-        client.post("/api/agent/telemetry", headers=_headers(agent_token),
-                    json={"ip": ip, "telemetry": {"hashrate_hs": 1e9}})
+        client.post(
+            "/api/agent/register",
+            headers=_headers(agent_token),
+            json={"devices": [{"mac": _DEVICE_MACS[ip], "ip": ip}]},
+        )
+        client.post(
+            "/api/agent/telemetry",
+            headers=_headers(agent_token),
+            json={"mac": _DEVICE_MACS[ip], "ip": ip, "telemetry": {"hashrate_hs": 1e9}},
+        )
         app_module.latest_snapshot["axe_fleet"] = list(
             shared_state.axe_telemetry_cache.values())
 
@@ -674,10 +853,20 @@ class TestSnapshotWriteThrough:
         import app as app_module
         from services import state as shared_state
         ip = "192.168.1.79"
-        client.post("/api/agent/register", headers=_headers(agent_token),
-                    json={"devices": [{"ip": ip}]})
-        client.post("/api/agent/telemetry", headers=_headers(agent_token),
-                    json={"ip": ip, "telemetry": {"hashrate_hs": 5e12}})
+        client.post(
+            "/api/agent/register",
+            headers=_headers(agent_token),
+            json={"devices": [{"mac": _DEVICE_MACS[ip], "ip": ip}]},
+        )
+        client.post(
+            "/api/agent/telemetry",
+            headers=_headers(agent_token),
+            json={
+                "mac": _DEVICE_MACS[ip],
+                "ip": ip,
+                "telemetry": {"hashrate_hs": 5e12},
+            },
+        )
         shared_state.axe_telemetry_cache.clear()        # simulated restart
         assert shared_state.axe_telemetry_cache == {}
         app_module._seed_axe_telemetry_cache(app_module._axe_registry)
@@ -693,7 +882,9 @@ class TestSnapshotWriteThrough:
 
 class TestDevicesJoinTelemetry:
     def test_list_devices_with_telemetry_joins_latest(self, registry):
-        dev = registry.upsert_agent_device("192.168.1.60", tenant_id="acme")
+        dev = registry.upsert_agent_device(
+            "192.168.1.60", tenant_id="acme", info={"mac": "02:00:00:00:01:60"}
+        )
         registry.save_telemetry(dev["id"], {"hashrate_hs": 5e12, "temperature": 61.0},
                                 tenant_id="acme")
         with_tel = registry.list_devices(tenant_id="acme", with_telemetry=True)
@@ -706,13 +897,32 @@ class TestDevicesJoinTelemetry:
     def test_devices_route_includes_telemetry(self, client, agent_token, user_token, registry):
         """The fleet list the grid renders must show live hashrate."""
         with patch("axe_fleet.routes._registry", registry):
-            client.post("/api/agent/register", headers=_headers(agent_token),
-                        json={"devices": [{"ip": "192.168.1.60",
-                                           "model": "Antminer S19j Pro"}]})
-            client.post("/api/agent/telemetry", headers=_headers(agent_token),
-                        json={"ip": "192.168.1.60", "telemetry": {
-                            "hashrate_hs": 91_200_000_000, "temperature": 62.5,
-                            "fan_rpm": 4200}})
+            client.post(
+                "/api/agent/register",
+                headers=_headers(agent_token),
+                json={
+                    "devices": [
+                        {
+                            "mac": _DEVICE_MACS["192.168.1.60"],
+                            "ip": "192.168.1.60",
+                            "model": "Antminer S19j Pro",
+                        }
+                    ]
+                },
+            )
+            client.post(
+                "/api/agent/telemetry",
+                headers=_headers(agent_token),
+                json={
+                    "mac": _DEVICE_MACS["192.168.1.60"],
+                    "ip": "192.168.1.60",
+                    "telemetry": {
+                        "hashrate_hs": 91_200_000_000,
+                        "temperature": 62.5,
+                        "fan_rpm": 4200,
+                    },
+                },
+            )
             resp = client.get("/api/axe-fleet/devices", headers=_headers(user_token))
             assert resp.status_code == 200
             devs = resp.get_json()["devices"]
@@ -722,7 +932,9 @@ class TestDevicesJoinTelemetry:
             assert d["telemetry"]["temperature"] == 62.5
 
     def test_empty_heartbeat_does_not_erase_telemetry(self, registry):
-        dev = registry.upsert_agent_device("192.168.1.61", tenant_id="acme")
+        dev = registry.upsert_agent_device(
+            "192.168.1.61", tenant_id="acme", info={"mac": "02:00:00:00:01:61"}
+        )
         registry.save_telemetry(dev["id"], {"hashrate_hs": 5e12}, tenant_id="acme")
         # Fix 4: agent now pushes {} heartbeats — they must NOT be joined
         # as trusted telemetry (the last real reading wins).
@@ -769,20 +981,24 @@ class TestTelemetryQuarantine:
             )
 
     def test_quarantine_helpers_require_an_explicit_tenant(self, registry):
+        device_id = registry.upsert_agent_device(
+            "192.0.2.100", tenant_id="acme", info={"mac": "02:00:00:00:01:64"}
+        )["id"]
         registry.record_telemetry_quarantine(
-            "tenant-bound", ["temperature"], ["not_finite"], tenant_id="acme"
+            device_id, ["temperature"], ["not_finite"], tenant_id="acme"
         )
 
         assert registry.get_telemetry_quarantines() == {}
-        registry.clear_telemetry_quarantine("tenant-bound")
-        quarantine = registry.get_telemetry_quarantines(tenant_id="acme")[
-            "tenant-bound"
-        ]
+        registry.clear_telemetry_quarantine(device_id)
+        quarantine = registry.get_telemetry_quarantines(tenant_id="acme")[device_id]
         assert quarantine["fields"] == ["temperature"]
         assert quarantine["reasons"] == ["not_finite"]
 
     def test_unchanged_quarantine_is_not_reported_as_new(self, registry):
-        args = ("stable-quarantine", ["temperature"], ["not_finite"])
+        device_id = registry.upsert_agent_device(
+            "192.0.2.101", tenant_id="acme", info={"mac": "02:00:00:00:01:65"}
+        )["id"]
+        args = (device_id, ["temperature"], ["not_finite"])
 
         assert registry.record_telemetry_quarantine(
             *args, tenant_id="acme"
@@ -792,7 +1008,9 @@ class TestTelemetryQuarantine:
         ) is False
 
     def test_device_removal_clears_quarantine_metadata(self, registry):
-        device = registry.upsert_agent_device("192.168.1.97", tenant_id="acme")
+        device = registry.upsert_agent_device(
+            "192.168.1.97", tenant_id="acme", info={"mac": "02:00:00:00:01:97"}
+        )
         registry.record_telemetry_quarantine(
             device["id"], ["temperature"], ["not_finite"], tenant_id="acme"
         )
@@ -801,7 +1019,9 @@ class TestTelemetryQuarantine:
         assert registry.get_telemetry_quarantines(tenant_id="acme") == {}
 
     def test_record_recovers_when_previous_quarantine_json_is_corrupt(self, registry):
-        device_id = "quarantine-json-recovery"
+        device_id = registry.upsert_agent_device(
+            "192.0.2.102", tenant_id="acme", info={"mac": "02:00:00:00:01:66"}
+        )["id"]
         registry.record_telemetry_quarantine(
             device_id, ["temperature"], ["not_finite"], tenant_id="acme"
         )
@@ -826,7 +1046,9 @@ class TestTelemetryQuarantine:
         ] == ["fan_speed"]
 
     def test_list_ignores_corrupt_quarantine_json(self, registry):
-        device_id = "quarantine-json-read"
+        device_id = registry.upsert_agent_device(
+            "192.0.2.103", tenant_id="acme", info={"mac": "02:00:00:00:01:67"}
+        )["id"]
         registry.record_telemetry_quarantine(
             device_id, ["temperature"], ["not_finite"], tenant_id="acme"
         )
@@ -853,12 +1075,17 @@ class TestTelemetryQuarantine:
             client.post(
                 "/api/agent/register",
                 headers=_headers(agent_token),
-                json={"devices": [{"ip": "192.168.1.93"}]},
+                json={
+                    "devices": [
+                        {"mac": _DEVICE_MACS["192.168.1.93"], "ip": "192.168.1.93"}
+                    ]
+                },
             )
             valid = client.post(
                 "/api/agent/telemetry",
                 headers=_headers(agent_token),
                 json={
+                    "mac": _DEVICE_MACS["192.168.1.93"],
                     "ip": "192.168.1.93",
                     "telemetry": {"hashrate_hs": 5e12, "temperature": 62.0},
                 },
@@ -874,6 +1101,7 @@ class TestTelemetryQuarantine:
                 "/api/agent/telemetry",
                 headers=_headers(agent_token),
                 json={
+                    "mac": _DEVICE_MACS["192.168.1.93"],
                     "ip": "192.168.1.93",
                     "telemetry": {
                         "hashrate_hs": 0,
@@ -922,12 +1150,13 @@ class TestTelemetryQuarantine:
             client.post(
                 "/api/agent/register",
                 headers=_headers(agent_token),
-                json={"devices": [{"ip": ip}]},
+                json={"devices": [{"mac": _DEVICE_MACS[ip], "ip": ip}]},
             )
             accepted = client.post(
                 "/api/agent/telemetry",
                 headers=_headers(agent_token),
                 json={
+                    "mac": _DEVICE_MACS[ip],
                     "ip": ip,
                     "telemetry": {"hashrate_hs": 5e12, "temperature": 62},
                 },
@@ -939,7 +1168,7 @@ class TestTelemetryQuarantine:
             )
             last_seen_before = device["last_seen"]
 
-            info = official_esp_miner_info(hashRate="N/A")
+            info = official_esp_miner_info(hashRate="N/A", macAddr=_DEVICE_MACS[ip])
             with patch.object(
                 agent_mod, "_probe_axeos", return_value=info
             ), patch.object(agent_mod, "_extract_axeos_telemetry", None):
@@ -952,7 +1181,7 @@ class TestTelemetryQuarantine:
             rejected = client.post(
                 "/api/agent/telemetry",
                 headers=_headers(agent_token),
-                json={"ip": ip, "telemetry": telemetry},
+                json={"mac": _DEVICE_MACS[ip], "ip": ip, "telemetry": telemetry},
             )
 
         assert rejected.status_code == 422
@@ -976,7 +1205,11 @@ class TestTelemetryQuarantine:
             registered = client.post(
                 "/api/agent/register",
                 headers=_headers(agent_token),
-                json={"devices": [{"ip": "192.168.1.94"}]},
+                json={
+                    "devices": [
+                        {"mac": _DEVICE_MACS["192.168.1.94"], "ip": "192.168.1.94"}
+                    ]
+                },
             )
             assert registered.status_code == 201, registered.get_json()
             assert registered.get_json()["count"] == 1
@@ -984,6 +1217,7 @@ class TestTelemetryQuarantine:
                 "/api/agent/telemetry",
                 headers=_headers(agent_token),
                 json={
+                    "mac": _DEVICE_MACS["192.168.1.94"],
                     "ip": "192.168.1.94",
                     "telemetry": {"hashrate_hs": 5e12, "temperature": 62.0},
                 },
@@ -993,6 +1227,7 @@ class TestTelemetryQuarantine:
                 "/api/agent/telemetry",
                 headers=_headers(agent_token),
                 json={
+                    "mac": _DEVICE_MACS["192.168.1.94"],
                     "ip": "192.168.1.94",
                     "telemetry": {"hashrate_hs": 0, "temperature": 151},
                 },
@@ -1015,7 +1250,11 @@ class TestTelemetryQuarantine:
             client.post(
                 "/api/agent/telemetry",
                 headers=_headers(agent_token),
-                json={"ip": "192.168.1.94", "telemetry": {"hashrate_hs": 4e12}},
+                json={
+                    "mac": _DEVICE_MACS["192.168.1.94"],
+                    "ip": "192.168.1.94",
+                    "telemetry": {"hashrate_hs": 4e12},
+                },
             )
         assert registry.get_telemetry_quarantines(tenant_id="acme") == {}
 
@@ -1028,10 +1267,24 @@ class TestEmptyHeartbeatAccepted:
         that never produced a measurement, not IDLE (the old fake-online).
         """
         with patch("axe_fleet.routes._registry", registry):
-            client.post("/api/agent/register", headers=_headers(agent_token),
-                        json={"devices": [{"ip": "192.168.1.80"}]})
-            resp = client.post("/api/agent/telemetry", headers=_headers(agent_token),
-                               json={"ip": "192.168.1.80", "telemetry": {}})
+            client.post(
+                "/api/agent/register",
+                headers=_headers(agent_token),
+                json={
+                    "devices": [
+                        {"mac": _DEVICE_MACS["192.168.1.80"], "ip": "192.168.1.80"}
+                    ]
+                },
+            )
+            resp = client.post(
+                "/api/agent/telemetry",
+                headers=_headers(agent_token),
+                json={
+                    "mac": _DEVICE_MACS["192.168.1.80"],
+                    "ip": "192.168.1.80",
+                    "telemetry": {},
+                },
+            )
             assert resp.status_code == 200
             assert resp.get_json()["status"] == "OFFLINE"
         dev = registry.get_device_by_ip("192.168.1.80", tenant_id="acme")
@@ -1054,8 +1307,15 @@ class TestCommandPayloadCarriesIp:
 
     def test_pull_commands_include_ip_address(self, client, agent_token, registry):
         with patch("axe_fleet.routes._registry", registry):
-            client.post("/api/agent/register", headers=_headers(agent_token),
-                        json={"devices": [{"ip": "192.168.1.50"}]})
+            client.post(
+                "/api/agent/register",
+                headers=_headers(agent_token),
+                json={
+                    "devices": [
+                        {"mac": _DEVICE_MACS["192.168.1.50"], "ip": "192.168.1.50"}
+                    ]
+                },
+            )
             dev = registry.get_device_by_ip("192.168.1.50", tenant_id="acme")
             registry.save_agent_telemetry(
                 dev["id"], {"hashrate_hs": 1}, tenant_id="acme"
@@ -1091,39 +1351,62 @@ class TestHeartbeatKeepsCacheHashrate:
         shared_state.axe_telemetry_cache.clear()
         try:
             ip = "192.168.1.91"
-            client.post("/api/agent/register", headers=_headers(agent_token),
-                        json={"devices": [{"ip": ip}]})
-            client.post("/api/agent/telemetry", headers=_headers(agent_token),
-                        json={"ip": ip, "telemetry": {"hashrate_hs": 7e12}})
+            client.post(
+                "/api/agent/register",
+                headers=_headers(agent_token),
+                json={"devices": [{"mac": _DEVICE_MACS[ip], "ip": ip}]},
+            )
+            client.post(
+                "/api/agent/telemetry",
+                headers=_headers(agent_token),
+                json={
+                    "mac": _DEVICE_MACS[ip],
+                    "ip": ip,
+                    "telemetry": {"hashrate_hs": 7e12},
+                },
+            )
             # Poll hiccup → agent pushes {} heartbeat.
-            client.post("/api/agent/telemetry", headers=_headers(agent_token),
-                        json={"ip": ip, "telemetry": {}})
+            client.post(
+                "/api/agent/telemetry",
+                headers=_headers(agent_token),
+                json={"mac": _DEVICE_MACS[ip], "ip": ip, "telemetry": {}},
+            )
             entry = shared_state.axe_telemetry_cache.get(
                 app_module._axe_registry.get_device_by_ip(ip, tenant_id="acme")["id"])
             assert entry["hashrate_hs"] == 7e12, "heartbeat wiped real hashrate!"
             assert entry["hashrate"] == 7e12
-            assert entry["status"] == "IDLE"   # freshness flag still updates
+            assert (
+                entry["status"] == "ONLINE"
+            )  # fresh measured state survives heartbeat
         finally:
             for d in app_module._axe_registry.list_devices():
                 app_module._axe_registry.remove_device(
                     d["id"], tenant_id=d.get("tenant_id") or "default")
             shared_state.axe_telemetry_cache.clear()
 
-    def test_heartbeat_for_unknown_device_creates_idle_marker(self, client, agent_token):
-        """Heartbeat with no prior data still marks the device present+IDLE
-        (no hashrate invented, no crash)."""
+    def test_heartbeat_for_registered_device_without_measurement_stays_offline(
+        self, client, agent_token
+    ):
+        """A registered identity with no measurement remains OFFLINE.
+        Heartbeat proves presence without inventing hashrate or health."""
         import app as app_module
         from services import state as shared_state
         shared_state.axe_telemetry_cache.clear()
         try:
             ip = "192.168.1.92"
-            client.post("/api/agent/register", headers=_headers(agent_token),
-                        json={"devices": [{"ip": ip}]})
-            client.post("/api/agent/telemetry", headers=_headers(agent_token),
-                        json={"ip": ip, "telemetry": {}})
+            client.post(
+                "/api/agent/register",
+                headers=_headers(agent_token),
+                json={"devices": [{"mac": _DEVICE_MACS[ip], "ip": ip}]},
+            )
+            client.post(
+                "/api/agent/telemetry",
+                headers=_headers(agent_token),
+                json={"mac": _DEVICE_MACS[ip], "ip": ip, "telemetry": {}},
+            )
             entry = shared_state.axe_telemetry_cache.get(
                 app_module._axe_registry.get_device_by_ip(ip, tenant_id="acme")["id"])
-            assert entry["status"] == "IDLE"
+            assert entry["status"] == "OFFLINE"
             assert entry.get("hashrate_hs") is None
         finally:
             for d in app_module._axe_registry.list_devices():
@@ -1138,10 +1421,21 @@ class TestCapabilitiesByType:
 
     def test_cgminer_device_has_no_identify_cap(self, client, agent_token, registry):
         with patch("axe_fleet.routes._registry", registry):
-            client.post("/api/agent/register", headers=_headers(agent_token),
-                        json={"devices": [{"ip": "192.168.1.55", "type": "cgminer",
-                                           "model": "Antminer S19",
-                                           "firmware": "Braiins OS+"}]})
+            client.post(
+                "/api/agent/register",
+                headers=_headers(agent_token),
+                json={
+                    "devices": [
+                        {
+                            "mac": _DEVICE_MACS["192.168.1.55"],
+                            "ip": "192.168.1.55",
+                            "type": "cgminer",
+                            "model": "Antminer S19",
+                            "firmware": "Braiins OS+",
+                        }
+                    ]
+                },
+            )
         dev = registry.get_device_by_ip("192.168.1.55", tenant_id="acme")
         caps = dev["capabilities"]
         assert caps["restart"] is True
@@ -1150,10 +1444,21 @@ class TestCapabilitiesByType:
 
     def test_bitaxe_device_keeps_identify_cap(self, client, agent_token, registry):
         with patch("axe_fleet.routes._registry", registry):
-            client.post("/api/agent/register", headers=_headers(agent_token),
-                        json={"devices": [{"ip": "192.168.1.56", "type": "bitaxe",
-                                           "model": "Gamma 900",
-                                           "firmware": "AxeOS 2.13.0"}]})
+            client.post(
+                "/api/agent/register",
+                headers=_headers(agent_token),
+                json={
+                    "devices": [
+                        {
+                            "mac": _DEVICE_MACS["192.168.1.56"],
+                            "ip": "192.168.1.56",
+                            "type": "bitaxe",
+                            "model": "Gamma 900",
+                            "firmware": "AxeOS 2.13.0",
+                        }
+                    ]
+                },
+            )
         dev = registry.get_device_by_ip("192.168.1.56", tenant_id="acme")
         caps = dev["capabilities"]
         assert caps["restart"] is True
@@ -1161,23 +1466,51 @@ class TestCapabilitiesByType:
         assert caps["configure"] is True
 
     def test_upsert_refresh_updates_caps_when_type_arrives(self, client, agent_token, registry):
-        """A device first seen via telemetry-only upsert (no type) must get
+        """A MAC-verified device registered without type must get
         honest caps once a later register carries type=cgminer — otherwise
         the cgminer card would keep an identify button that always fails."""
         with patch("axe_fleet.routes._registry", registry), \
                 patch("axe_fleet.routes._can_add_worker", return_value=True):
-            # Telemetry-only upsert: no type → conservative (identify True).
-            client.post("/api/agent/telemetry", headers=_headers(agent_token),
-                        json={"ip": "192.168.1.57",
-                              "telemetry": {"hashrate_hs": 1e9, "model": "Antminer S19"}})
+            # Explicit registration establishes identity; no type yet.
+            created = client.post(
+                "/api/agent/register",
+                headers=_headers(agent_token),
+                json={
+                    "devices": [
+                        {"ip": "192.168.1.57", "mac": _DEVICE_MACS["192.168.1.57"]}
+                    ]
+                },
+            )
+            assert created.status_code == 201
+            assert created.get_json()["count"] == 1
+            client.post(
+                "/api/agent/telemetry",
+                headers=_headers(agent_token),
+                json={
+                    "mac": _DEVICE_MACS["192.168.1.57"],
+                    "ip": "192.168.1.57",
+                    "telemetry": {"hashrate_hs": 1e9, "model": "Antminer S19"},
+                },
+            )
         dev = registry.get_device_by_ip("192.168.1.57", tenant_id="acme")
         assert dev["capabilities"]["identify"] is True  # unknown type
         # Register now reports cgminer → caps must be recomputed.
         with patch("axe_fleet.routes._registry", registry):
-            client.post("/api/agent/register", headers=_headers(agent_token),
-                        json={"devices": [{"ip": "192.168.1.57", "type": "cgminer",
-                                           "model": "Antminer S19",
-                                           "firmware": "Braiins OS+"}]})
+            client.post(
+                "/api/agent/register",
+                headers=_headers(agent_token),
+                json={
+                    "devices": [
+                        {
+                            "mac": _DEVICE_MACS["192.168.1.57"],
+                            "ip": "192.168.1.57",
+                            "type": "cgminer",
+                            "model": "Antminer S19",
+                            "firmware": "Braiins OS+",
+                        }
+                    ]
+                },
+            )
         dev = registry.get_device_by_ip("192.168.1.57", tenant_id="acme")
         assert dev["capabilities"]["identify"] is False
         assert dev["capabilities"]["restart"] is True
@@ -1190,10 +1523,28 @@ class TestAgentManagedLatencySkip:
 
     def _seed_agent_device(self, client, agent_token, registry):
         with patch("axe_fleet.routes._registry", registry):
-            client.post("/api/agent/register", headers=_headers(agent_token),
-                        json={"devices": [{"ip": "192.168.1.60", "model": "Gamma"}]})
-            client.post("/api/agent/telemetry", headers=_headers(agent_token),
-                        json={"ip": "192.168.1.60", "telemetry": {"hashrate_hs": 1e9}})
+            client.post(
+                "/api/agent/register",
+                headers=_headers(agent_token),
+                json={
+                    "devices": [
+                        {
+                            "mac": _DEVICE_MACS["192.168.1.60"],
+                            "ip": "192.168.1.60",
+                            "model": "Gamma",
+                        }
+                    ]
+                },
+            )
+            client.post(
+                "/api/agent/telemetry",
+                headers=_headers(agent_token),
+                json={
+                    "mac": _DEVICE_MACS["192.168.1.60"],
+                    "ip": "192.168.1.60",
+                    "telemetry": {"hashrate_hs": 1e9},
+                },
+            )
         return registry.get_device_by_ip("192.168.1.60", tenant_id="acme")
 
     def test_health_skips_probe_for_agent_managed(self, client, agent_token, registry):
@@ -1222,8 +1573,15 @@ class TestTombstoneNoZombies:
 
     def test_removed_device_not_in_list(self, client, agent_token, registry):
         with patch("axe_fleet.routes._registry", registry):
-            client.post("/api/agent/register", headers=_headers(agent_token),
-                        json={"devices": [{"ip": "192.168.1.70"}]})
+            client.post(
+                "/api/agent/register",
+                headers=_headers(agent_token),
+                json={
+                    "devices": [
+                        {"mac": _DEVICE_MACS["192.168.1.70"], "ip": "192.168.1.70"}
+                    ]
+                },
+            )
         dev = registry.get_device_by_ip("192.168.1.70", tenant_id="acme")
         assert registry.remove_device(dev["id"], tenant_id="acme") is True
         assert registry.get_device_by_ip("192.168.1.70", tenant_id="acme") == {}
@@ -1232,14 +1590,28 @@ class TestTombstoneNoZombies:
     def test_agent_register_refuses_tombstoned_ip(self, client, agent_token, registry):
         with patch("axe_fleet.routes._registry", registry), \
                 patch("axe_fleet.routes._can_add_worker", return_value=True):
-            client.post("/api/agent/register", headers=_headers(agent_token),
-                        json={"devices": [{"ip": "192.168.1.71"}]})
+            client.post(
+                "/api/agent/register",
+                headers=_headers(agent_token),
+                json={
+                    "devices": [
+                        {"mac": _DEVICE_MACS["192.168.1.71"], "ip": "192.168.1.71"}
+                    ]
+                },
+            )
         dev = registry.get_device_by_ip("192.168.1.71", tenant_id="acme")
         registry.remove_device(dev["id"], tenant_id="acme")
         with patch("axe_fleet.routes._registry", registry), \
                 patch("axe_fleet.routes._can_add_worker", return_value=True):
-            resp = client.post("/api/agent/register", headers=_headers(agent_token),
-                               json={"devices": [{"ip": "192.168.1.71"}]})
+            resp = client.post(
+                "/api/agent/register",
+                headers=_headers(agent_token),
+                json={
+                    "devices": [
+                        {"mac": _DEVICE_MACS["192.168.1.71"], "ip": "192.168.1.71"}
+                    ]
+                },
+            )
         data = resp.get_json()
         assert data["count"] == 0
         assert any(b["ip"] == "192.168.1.71" and "removed" in b.get("error", "")
@@ -1250,14 +1622,28 @@ class TestTombstoneNoZombies:
     def test_telemetry_for_tombstoned_ip_410(self, client, agent_token, registry):
         with patch("axe_fleet.routes._registry", registry), \
                 patch("axe_fleet.routes._can_add_worker", return_value=True):
-            client.post("/api/agent/register", headers=_headers(agent_token),
-                        json={"devices": [{"ip": "192.168.1.72"}]})
+            client.post(
+                "/api/agent/register",
+                headers=_headers(agent_token),
+                json={
+                    "devices": [
+                        {"mac": _DEVICE_MACS["192.168.1.72"], "ip": "192.168.1.72"}
+                    ]
+                },
+            )
         dev = registry.get_device_by_ip("192.168.1.72", tenant_id="acme")
         registry.remove_device(dev["id"], tenant_id="acme")
         with patch("axe_fleet.routes._registry", registry), \
                 patch("axe_fleet.routes._can_add_worker", return_value=True):
-            resp = client.post("/api/agent/telemetry", headers=_headers(agent_token),
-                               json={"ip": "192.168.1.72", "telemetry": {"hashrate_hs": 1e9}})
+            resp = client.post(
+                "/api/agent/telemetry",
+                headers=_headers(agent_token),
+                json={
+                    "mac": _DEVICE_MACS["192.168.1.72"],
+                    "ip": "192.168.1.72",
+                    "telemetry": {"hashrate_hs": 1e9},
+                },
+            )
         assert resp.status_code == 410
         assert resp.get_json()["removed"] is True
         assert registry.get_device_by_ip("192.168.1.72", tenant_id="acme") == {}
@@ -1285,7 +1671,6 @@ class TestTombstoneNoZombies:
             registry.get_recent_telemetry(dev["id"], tenant_id="acme")[0]["payload"]["hashrate_hs"]
             == 1
         )
-
 
     def test_restore_then_agent_register_and_tenant_isolation(
         self, client, agent_token, registry
@@ -1320,7 +1705,7 @@ class TestTombstoneNoZombies:
             blocked = client.post(
                 "/api/agent/register",
                 headers=_headers(agent_token),
-                json={"devices": [{"ip": ip}]},
+                json={"devices": [{"mac": _DEVICE_MACS[ip], "ip": ip}]},
             )
             assert blocked.get_json()["count"] == 0
             steal = client.post(
@@ -1373,7 +1758,6 @@ class TestTombstoneNoZombies:
                 registry.get_device_by_ip(ip, tenant_id="acme")["id"]
                 != registry.get_device_by_ip(ip, tenant_id="brave")["id"]
             )
-
 
     def test_cloud_private_add_requires_restore_then_queues_without_ssrf(
         self, client, agent_token, registry, monkeypatch
@@ -1480,10 +1864,9 @@ class TestTombstoneNoZombies:
             again = client.post(
                 "/api/agent/register",
                 headers=_headers(agent_token),
-                json={"devices": [{"ip": ip}]},
+                json={"devices": [{"mac": _DEVICE_MACS[ip], "ip": ip}]},
             )
         assert again.get_json()["count"] == 1
-
 
     def test_removed_device_frees_plan_slot(self, client, agent_token, registry,
                                             monkeypatch, tmp_path):
@@ -1503,8 +1886,15 @@ class TestTombstoneNoZombies:
         monkeypatch.setattr(tenant_mod, "_db_conn", _same_db)
         with patch("axe_fleet.routes._registry", registry), \
                 patch("axe_fleet.routes._can_add_worker", return_value=True):
-            client.post("/api/agent/register", headers=_headers(agent_token),
-                        json={"devices": [{"ip": "192.168.1.74"}]})
+            client.post(
+                "/api/agent/register",
+                headers=_headers(agent_token),
+                json={
+                    "devices": [
+                        {"mac": _DEVICE_MACS["192.168.1.74"], "ip": "192.168.1.74"}
+                    ]
+                },
+            )
         assert tenant_mod.count_tenant_workers("acme") == 1
         dev = registry.get_device_by_ip("192.168.1.74", tenant_id="acme")
         registry.remove_device(dev["id"], tenant_id="acme")
@@ -1513,7 +1903,9 @@ class TestTombstoneNoZombies:
     def test_gc_purges_old_tombstones_and_telemetry(self, registry):
         """Soft-deleted rows older than the GC window are physically purged
         (row + telemetry) so the tombstone guard never grows the DB forever."""
-        dev = registry.upsert_agent_device("192.168.1.75", tenant_id="acme")
+        dev = registry.upsert_agent_device(
+            "192.168.1.75", tenant_id="acme", info={"mac": "02:00:00:00:01:75"}
+        )
         registry.save_telemetry(dev["id"], {"hashrate_hs": 1e9}, tenant_id="acme")
         registry.record_telemetry_quarantine(
             dev["id"], ["temperature"], ["not_finite"], tenant_id="acme"

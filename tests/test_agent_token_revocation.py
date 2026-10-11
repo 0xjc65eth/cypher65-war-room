@@ -43,6 +43,17 @@ def _tid(prefix="revoke"):
     return f"{prefix}-{uuid.uuid4().hex[:8]}"
 
 
+# Explicit synthetic MAC evidence for nominal fixtures; production never infers MAC from IP.
+_DEVICE_MACS = {
+    "192.168.1.50": "02:00:00:00:01:50",
+    "192.168.1.51": "02:00:00:00:01:51",
+    "192.168.1.52": "02:00:00:00:01:52",
+    "192.168.1.55": "02:00:00:00:01:55",
+    "192.168.1.60": "02:00:00:00:01:60",
+    "10.8.0.12": "02:00:00:00:08:12",
+}
+
+
 @pytest.fixture
 def client(monkeypatch):
     _app.config["TESTING"] = True
@@ -84,7 +95,9 @@ def _user_token(tenant):
 def _use_agent(client, token, ip="192.168.1.50"):
     """Exercita o token como o agente real: um POST em rota de agente."""
     return client.post(
-        "/api/agent/register", headers=_headers(token), json={"devices": [{"ip": ip}]}
+        "/api/agent/register",
+        headers=_headers(token),
+        json={"devices": [{"mac": _DEVICE_MACS[ip], "ip": ip}]},
     )
 
 

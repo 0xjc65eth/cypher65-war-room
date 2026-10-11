@@ -76,7 +76,7 @@ def test_removed_device_does_not_crash_poll_loop_or_return_on_rescan(
 ):
     devices = [
         {"ip": "192.168.1.50", "type": "bitaxe", "mac": "02:00:00:00:01:50"},
-        {"ip": "192.168.1.60", "type": "cgminer"},
+        {"ip": "192.168.1.60", "type": "cgminer", "mac": "02:00:00:00:01:60"},
     ]
     polls = []
     pulls = []
@@ -138,7 +138,7 @@ def test_removed_device_does_not_crash_poll_loop_or_return_on_rescan(
 def test_main_loop_skips_macless_bitaxe_while_polling_verified_peer(monkeypatch):
     devices = [
         {"ip": "192.168.1.50", "type": "bitaxe"},
-        {"ip": "192.168.1.60", "type": "cgminer"},
+        {"ip": "192.168.1.60", "type": "cgminer", "mac": "02:00:00:00:01:60"},
     ]
     polled = []
     pushed = []

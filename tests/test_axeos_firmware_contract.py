@@ -332,11 +332,14 @@ class TestDiagnoseRejectsGenericJson:
         assert result.get("reachable") is False
 
 
-@pytest.mark.parametrize("kind", ["bitaxe", "braiins"])
+@pytest.mark.parametrize("kind", ["bitaxe", "braiins", "cgminer"])
 def test_unverified_macless_identity_is_not_polled(kind):
     """The fixture repairs must never remove the real agent's identity guard."""
     device = {"ip": "192.168.1.50", "type": kind}
-    with patch.object(agent_mod, "_probe_axeos") as probe:
+    with patch.object(agent_mod, "_probe_axeos") as probe, patch.object(
+        agent_mod, "_cgminer_cmd"
+    ) as cgminer:
         assert agent_mod._identity_unresolved(device) is True
         assert agent_mod._poll_telemetry(device) == {}
     probe.assert_not_called()
+    cgminer.assert_not_called()

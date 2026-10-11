@@ -70,6 +70,7 @@ from .registry import (
     DeviceRegistry,
     TelemetryIdempotencyConflict,
     DeviceIdentityConflict,
+    DeviceRemoved,
     normalize_device_mac,
 )
 
@@ -524,6 +525,9 @@ def add_device(tenant_id: str = ""):
     # request for DETECT_TIMEOUT × probes, past the Playwright actionTimeout).
     try:
         device = _registry.add_device(ip, name or ip, tenant_id=tenant_id)
+    except DeviceIdentityConflict as exc:
+        emit_event("manual_add.failed", tenant_id=tenant_id, reason="identity_conflict")
+        return jsonify({"success": False, "code": exc.code, "error": str(exc)}), 409
     except Exception as e:
         emit_event(
             "manual_add.failed", tenant_id=tenant_id, reason="registration_error"
@@ -607,11 +611,25 @@ def add_device(tenant_id: str = ""):
                         "firmware_version": version,
                         "status": status,
                     },
+                    tenant_id=tenant_id,
+                    active_only=True,
+                    identity_mac=device.get("mac_address"),
+                    expected_ip=ip,
                 )
                 # Re-fetch so the response carries the enriched fields
                 enriched = _registry.get_device(device["id"], tenant_id=tenant_id)
                 if enriched:
                     device = enriched
+            except DeviceIdentityConflict as exc:
+                emit_event(
+                    "manual_add.failed",
+                    tenant_id=tenant_id,
+                    reason="identity_changed_during_probe",
+                )
+                return (
+                    jsonify({"success": False, "code": exc.code, "error": str(exc)}),
+                    409,
+                )
             except Exception:
                 pass  # enrichment is best-effort; base device is still valid
 
@@ -4089,25 +4107,42 @@ def agent_heartbeat(agent_tenant_id: str = ""):
 @agent_bp.route("/register", methods=["POST"])
 @_require_agent
 def agent_register_devices(agent_tenant_id: str = ""):
-    """Register devices discovered by the agent (upsert by IP+tenant).
+    """Register devices by valid tenant-scoped MAC; IP is their locator.
     Body: {"devices": [{"ip": ..., "name": ..., "model": ...,
            "firmware": ..., "version": ..., "hostname": ...,
            "type": "bitaxe"|"cgminer", "mac": ...}, ...]}
     Returns the registered device dicts."""
     data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        return jsonify({"error": "object payload required"}), 400
     devices = data.get("devices") or []
     if not isinstance(devices, list) or not devices:
         return jsonify({"error": "devices array required"}), 400
     out = []
     blocked = []
     for d in devices:
-        ip = (d.get("ip") or "").strip()
-        if not ip:
+        if not isinstance(d, dict) or not isinstance(d.get("ip"), str):
+            blocked.append(
+                {"error": "device object with ip required", "code": "INVALID_DEVICE"}
+            )
             continue
-        # Plan worker cap: only NEW devices consume a slot (an upsert refresh
-        # of an already-registered device must never be rejected). Mirrors the
-        # manual POST /devices gate — the agent path must not bypass the plan.
-        existing = _registry.get_device_by_ip(ip, tenant_id=agent_tenant_id)
+        ip = d["ip"].strip()
+        if not ip:
+            blocked.append({"error": "ip required", "code": "INVALID_DEVICE"})
+            continue
+        try:
+            existing = _registry.find_device_for_identity(
+                ip, d.get("mac"), agent_tenant_id
+            )
+        except DeviceIdentityConflict as exc:
+            blocked.append({"ip": ip, "error": str(exc), "code": exc.code})
+            _log_audit(
+                agent_tenant_id,
+                "agent.register_blocked",
+                target=ip,
+                details={"reason": exc.code},
+            )
+            continue
         if not existing and not _can_add_worker(agent_tenant_id):
             plan = _get_tenant_plan(agent_tenant_id)
             blocked.append(
@@ -4125,22 +4160,32 @@ def agent_register_devices(agent_tenant_id: str = ""):
                 details={"reason": "plan_worker_limit"},
             )
             continue
-        dev = _registry.upsert_agent_device(
-            ip,
-            name=(d.get("name") or "").strip(),
-            tenant_id=agent_tenant_id,
-            info={
-                "model": d.get("model"),
-                "firmware": d.get("firmware"),
-                "version": d.get("version"),
-                "hostname": d.get("hostname"),
-                "mac": d.get("mac"),
-                "manufacturer": d.get("manufacturer"),
-                # type drives capabilities (bitaxe restart/identify via :80;
-                # cgminer restart via :4028, no identify).
-                "type": d.get("type"),
-            },
-        )
+        try:
+            dev = _registry.upsert_agent_device(
+                ip,
+                name=(d.get("name") or "").strip(),
+                tenant_id=agent_tenant_id,
+                info={
+                    "model": d.get("model"),
+                    "firmware": d.get("firmware"),
+                    "version": d.get("version"),
+                    "hostname": d.get("hostname"),
+                    "mac": d.get("mac"),
+                    "manufacturer": d.get("manufacturer"),
+                    # type drives capabilities (bitaxe restart/identify via :80;
+                    # cgminer restart via :4028, no identify).
+                    "type": d.get("type"),
+                },
+            )
+        except DeviceIdentityConflict as exc:
+            blocked.append({"ip": ip, "error": str(exc), "code": exc.code})
+            _log_audit(
+                agent_tenant_id,
+                "agent.register_blocked",
+                target=ip,
+                details={"reason": exc.code},
+            )
+            continue
         if not dev:
             # Tombstone: operator removed this IP — the agent must NOT
             # resurrect it. Report it as blocked so the agent drops it from
@@ -4173,15 +4218,25 @@ def agent_register_devices(agent_tenant_id: str = ""):
     )
 
 
+def _agent_identity_error(exc, tenant_id):
+    _log_audit(tenant_id, "agent.telemetry_blocked", details={"reason": exc.code})
+    removed = isinstance(exc, DeviceRemoved)
+    return jsonify(
+        {"success": False, "code": exc.code, "error": str(exc), "removed": removed}
+    ), (410 if removed else 409)
+
+
 @agent_bp.route("/telemetry", methods=["POST"])
 @_require_agent
 def agent_telemetry(agent_tenant_id: str = ""):
     """Push telemetry for one device (agent polling result).
-    Body: {"ip": ..., "telemetry": {...}} — telemetry uses the SAME
+    Body: {"ip": ..., "mac": ..., "telemetry": {...}} — telemetry uses the SAME
     normalized shape as the registry's extract_telemetry (hashrate_hs,
     temperature, fan_rpm, power_watts, best_diff, shares_*, ...)."""
     data = request.get_json(silent=True) or {}
-    ip = (data.get("ip") or "").strip()
+    if not isinstance(data, dict) or not isinstance(data.get("ip"), str):
+        return jsonify({"error": "object with ip required"}), 400
+    ip = data["ip"].strip()
     tel = data.get("telemetry")
     idempotency_key = data.get("idempotency_key", "")
     # Require the explicit key: `telemetry: {}` (empty) is legal (a device
@@ -4199,16 +4254,42 @@ def agent_telemetry(agent_tenant_id: str = ""):
             jsonify({"error": "invalid idempotency_key or missing sample timestamp"}),
             400,
         )
-    device = _registry.get_device_by_ip(ip, tenant_id=agent_tenant_id)
+    identity_mac = data.get("mac")
+    try:
+        device = _registry.find_device_for_identity(ip, identity_mac, agent_tenant_id)
+        if not device or device["ip_address"] != ip:
+            raise DeviceIdentityConflict(
+                "register the identity and current IP locator before telemetry"
+            )
+        if "device_id" in data and data["device_id"] != device["id"]:
+            raise DeviceIdentityConflict("device_id contradicts registered identity")
+        if "device_id" in tel and tel["device_id"] != device["id"]:
+            raise DeviceIdentityConflict(
+                "sample device_id contradicts registered identity"
+            )
+        if "mac" in tel and normalize_device_mac(tel["mac"]) != normalize_device_mac(
+            identity_mac
+        ):
+            raise DeviceIdentityConflict("sample MAC contradicts envelope identity")
+    except DeviceIdentityConflict as exc:
+        return _agent_identity_error(exc, agent_tenant_id)
     errors = validate_agent_telemetry(tel)
     if errors:
         reasons = sorted({error["reason"] for error in errors})
         fields = sorted({error["field"] for error in errors})
         is_new_quarantine = False
         if device:
-            is_new_quarantine = _registry.record_telemetry_quarantine(
-                device["id"], fields, reasons, tenant_id=agent_tenant_id
-            )
+            try:
+                is_new_quarantine = _registry.record_telemetry_quarantine(
+                    device["id"],
+                    fields,
+                    reasons,
+                    tenant_id=agent_tenant_id,
+                    identity_mac=identity_mac,
+                    expected_ip=ip,
+                )
+            except DeviceIdentityConflict as exc:
+                return _agent_identity_error(exc, agent_tenant_id)
         if is_new_quarantine:
             log.warning(
                 "[agent.telemetry_quarantined] tenant=%s ip=%s fields=%s reasons=%s",
@@ -4236,54 +4317,6 @@ def agent_telemetry(agent_tenant_id: str = ""):
             ),
             422,
         )
-    if not device:
-        # Agent reported a device it registered earlier but the row is gone
-        # (e.g. server DB reset). Re-upsert with the telemetry as identity —
-        # but respect the plan worker cap so the telemetry path can't bypass
-        # the limit that register enforces.
-        if not _can_add_worker(agent_tenant_id):
-            plan = _get_tenant_plan(agent_tenant_id)
-            _log_audit(
-                agent_tenant_id,
-                "agent.telemetry_blocked",
-                target=ip,
-                details={"reason": "plan_worker_limit"},
-            )
-            return (
-                jsonify(
-                    {
-                        "success": False,
-                        "error": "plan worker limit reached",
-                        "message": f"O plano {plan['plan']} permite no máximo {plan['max_workers']} workers. Remova um device ou aumente o limite.",
-                        "plan": plan["plan"],
-                        "max_workers": plan["max_workers"],
-                    }
-                ),
-                403,
-            )
-        device = _registry.upsert_agent_device(
-            ip, tenant_id=agent_tenant_id, info={"model": tel.get("model")}
-        )
-        if not device:
-            # Tombstoned: the operator removed this device. Acknowledge
-            # with 410 so the agent stops pushing it (it can never come
-            # back via the agent path — only an explicit operator add).
-            _log_audit(
-                agent_tenant_id,
-                "agent.telemetry_blocked",
-                target=ip,
-                details={"reason": "device_removed"},
-            )
-            return (
-                jsonify(
-                    {
-                        "success": False,
-                        "error": "device removed by operator",
-                        "removed": True,
-                    }
-                ),
-                410,
-            )
     # Echo the PERSISTED status (the registry decides ONLINE/IDLE/PAUSED/
     # STALE/OFFLINE honestly — an empty heartbeat is presence, not health;
     # re-deriving from the raw payload here would fake an IDLE for a miner
@@ -4294,7 +4327,11 @@ def agent_telemetry(agent_tenant_id: str = ""):
             tel,
             tenant_id=agent_tenant_id,
             idempotency_key=idempotency_key,
+            identity_mac=identity_mac,
+            expected_ip=ip,
         )
+    except DeviceIdentityConflict as exc:
+        return _agent_identity_error(exc, agent_tenant_id)
     except TelemetryIdempotencyConflict:
         return (
             jsonify({"success": False, "error": "idempotency key payload conflict"}),

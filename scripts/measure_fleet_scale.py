@@ -249,7 +249,12 @@ def seed_workload(registry: Any, count: int, mode: str, observed_at: int) -> dic
             ),
             f"Synthetic {index:04d}",
             tenant_id=TENANT,
-            info={"type": "bitaxe", "firmware": "AxeOS", "model": "synthetic"},
+            info={
+                "type": "bitaxe",
+                "firmware": "AxeOS",
+                "model": "synthetic",
+                "mac": f"02:00:00:00:{index // 256:02X}:{index % 256:02X}",
+            },
         )
         _check(bool(device.get("id")), "agent registration failed")
         ts = (
@@ -291,7 +296,10 @@ def seed_workload(registry: Any, count: int, mode: str, observed_at: int) -> dic
             "last_known_hr": HASHRATE_HS if state == "stale" else None,
         }
     sentinel = registry.upsert_agent_device(
-        "203.0.113.1", "Other tenant sentinel", tenant_id=OTHER_TENANT
+        "203.0.113.1",
+        "Other tenant sentinel",
+        tenant_id=OTHER_TENANT,
+        info={"mac": "02:FF:00:00:00:01"},
     )
     registry.save_agent_telemetry(
         sentinel["id"],

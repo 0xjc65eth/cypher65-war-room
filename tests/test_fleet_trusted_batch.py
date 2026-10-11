@@ -53,7 +53,9 @@ def test_fleet_routes_never_fallback_to_per_device_telemetry(fleet_context, endp
     registry, client = fleet_context
     devices = [
         registry.upsert_agent_device(
-            f"192.0.2.{index}", tenant_id="measure", info={"type": "bitaxe"}
+            f"192.0.2.{index}",
+            tenant_id="measure",
+            info={"mac": f"02:00:00:00:06:{index:02X}", "type": "bitaxe"},
         )
         for index in (10, 11)
     ]
@@ -85,7 +87,9 @@ def test_routes_reuse_latest_trusted_sample_across_heartbeats_and_invalid_rows(
 ):
     registry, client = fleet_context
     device = registry.upsert_agent_device(
-        "192.0.2.90", tenant_id="measure", info={"type": "bitaxe"}
+        "192.0.2.90",
+        tenant_id="measure",
+        info={"mac": "02:00:00:00:06:5A", "type": "bitaxe"},
     )
     now = int(time.time())
     sample_ts = now - 180
@@ -164,16 +168,24 @@ def test_summary_and_health_keep_zero_stale_absent_tenant_and_quarantine_contrac
     registry, client = fleet_context
     now = int(time.time())
     zero = registry.upsert_agent_device(
-        "192.0.2.101", tenant_id="measure", info={"type": "bitaxe"}
+        "192.0.2.101",
+        tenant_id="measure",
+        info={"mac": "02:00:00:00:06:65", "type": "bitaxe"},
     )
     stale = registry.upsert_agent_device(
-        "192.0.2.102", tenant_id="measure", info={"type": "bitaxe"}
+        "192.0.2.102",
+        tenant_id="measure",
+        info={"mac": "02:00:00:00:06:66", "type": "bitaxe"},
     )
     absent = registry.upsert_agent_device(
-        "192.0.2.103", tenant_id="measure", info={"type": "bitaxe"}
+        "192.0.2.103",
+        tenant_id="measure",
+        info={"mac": "02:00:00:00:06:67", "type": "bitaxe"},
     )
     other_tenant = registry.upsert_agent_device(
-        "192.0.2.101", tenant_id="other", info={"type": "bitaxe"}
+        "192.0.2.101",
+        tenant_id="other",
+        info={"mac": "02:00:00:00:06:65", "type": "bitaxe"},
     )
     registry.update_device(
         other_tenant["id"], {"status": "HASHING", "last_seen": now}, tenant_id="other"
@@ -206,6 +218,7 @@ def test_summary_and_health_keep_zero_stale_absent_tenant_and_quarantine_contrac
         },
         json={
             "ip": stale["ip_address"],
+            "mac": stale["mac_address"],
             "telemetry": {"hashrate_hs": 78_000_000, "temperature": 151},
         },
     )
