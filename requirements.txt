@@ -14,7 +14,7 @@ pywebpush>=2.5.0
 # snapshot/history payloads on mobile/slow links, near-zero CPU cost).
 flask-compress==1.25
 # Renders docs/AGENT_SETUP_GUIDE.md at /docs/agent (guide page inside the app).
-markdown==3.10.3
+markdown==3.11
 # Sentry error tracking is OPTIONAL (Issue #176): services/sentry_telemetry
 # imports it lazily and only inits when SENTRY_DSN is set — without the env
 # var (or without this package) the app boots normally, zero overhead.
