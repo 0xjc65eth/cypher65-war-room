@@ -5,7 +5,7 @@ requests==2.34.2
 python-dotenv==1.2.3
 pyjwt==2.15.1
 # Direct dependency: authenticated encryption for settings and remote backups.
-cryptography==50.0.1
+cryptography==50.0.2
 # pywebpush is optional (Web Push notifications). services/push_notifier.py
 # imports it lazily and degrades gracefully when it is not installed, so a
 # minimal deploy can omit it safely.
