@@ -62,6 +62,19 @@ def test_unknown_protocol_has_no_mutable_capabilities(info):
     )
 
 
+@pytest.mark.parametrize("firmware", [None, "", "unverified"])
+def test_bitaxe_type_alone_does_not_grant_axeos_only_capabilities(firmware):
+    caps = _caps_for_type({"type": "bitaxe", "firmware": firmware})
+    assert caps["restart"] is True
+    assert caps["identify"] is True
+    assert not any(caps[name] for name in ("pause", "resume", "configure"))
+
+
+def test_known_axeos_firmware_preserves_existing_optional_capabilities():
+    caps = _caps_for_type({"type": "bitaxe", "firmware": "AxeOS"})
+    assert all(caps[name] for name in ("pause", "resume", "configure"))
+
+
 @pytest.mark.parametrize(
     "changes",
     [

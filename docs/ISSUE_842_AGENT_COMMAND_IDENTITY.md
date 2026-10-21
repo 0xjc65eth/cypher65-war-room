@@ -119,3 +119,36 @@ distinction and run the complete required CI rather than lowering thresholds.
 Next: complete independent cross-review, publish draft only, run exact-head CI
 and full coverage, address findings, obtain GitHub approval, then separately
 plan authorized physical validation. No issue closure or operational enablement.
+
+## Exact-head CI follow-up (63c7449, then local correction)
+
+The published draft PR #849 did not pass its first full CI. Two independent
+Python jobs reported six failures (4489 passed, three skipped): five old clock
+fixtures in discovery/main-loop tests lacked monotonic, and an aggregate contract
+detected pause/resume/configure advertised for Bitaxe type without AxeOS firmware
+evidence. The static gate also rejected registry formatting. These are actual
+failures, not attributed to the environment or hidden behind the targeted suite.
+
+Follow-up restores the conservative firmware prerequisite for optional AxeOS
+capabilities and adds four explicit regressions. The five nominal clock cases
+now supply real monotonic alongside their fake sleep; no runtime clock fallback
+or assertion weakening was introduced. Focused rerun: **63 PASS**, 3.81s.
+The exact CI formatter Black25.1.0 (Python3.13) passes all107 configured files;
+the earlier local Black26.5.1 was not the same formatter. Flake8 and monkeypatch
+target guard pass. CI gates/configuration were not changed.
+
+A broader diagnostic including the separately excluded singular agent directory
+also reports existing B310 on agent/agent.py urlopen. This is not new dispatch
+code and is not claimed fixed; the exact configured CI scan remains the release
+gate. Full-suite collection initially failed because local Hypothesis was absent.
+An initial temporary CPython3.13 wheel could not load under3.14; the matching
+CPython3.14 dependency was installed in /private/tmp only, not the user's venv.
+The complete rerun is recorded separately; do not treat a collection error as PASS.
+
+Final local follow-up: **4498 PASS /4 SKIPPED**, 644 warnings,206.91s.
+The unchanged CI denominator (app/helpers/axe_fleet/services/core/admin_routes)
+reached **85.71%**, passing the explicit80% gate. This does not erase the earlier
+57.40% diagnostic across three complete modules or certify excluded code/native
+effects. Logs: full-followup-ci-final.log and coverage-followup-ci-final.xml.
+The exact configured Bandit scan also passed. Publish the follow-up and wait for
+new exact-head remote CI; this local pass is not independent GitHub approval.

@@ -85,7 +85,7 @@ def _caps_for_type(info: dict) -> dict:
       protocol. The protocol metadata is not a boolean capability."""
     dev_type = str(info.get("type") or "").lower()
     is_cgminer = dev_type == "cgminer"
-    is_axeos = dev_type == "bitaxe"
+    is_axeos = dev_type == "bitaxe" and "axe" in str(info.get("firmware") or "").lower()
     known = dev_type in {"bitaxe", "cgminer", "braiins"}
     return {
         "telemetry": True,
@@ -117,7 +117,8 @@ class DeviceRegistry:
         """Create axe_fleet tables if they don't exist + run migrations."""
         conn = self._get_db()
         c = conn.cursor()
-        c.execute("""CREATE TABLE IF NOT EXISTS axe_devices (
+        c.execute(
+            """CREATE TABLE IF NOT EXISTS axe_devices (
                 id TEXT PRIMARY KEY,
                 name TEXT NOT NULL,
                 model TEXT DEFAULT '',
@@ -134,15 +135,18 @@ class DeviceRegistry:
                 capabilities TEXT DEFAULT '{}',
                 added_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL
-            )""")
-        c.execute("""CREATE TABLE IF NOT EXISTS axe_telemetry (
+            )"""
+        )
+        c.execute(
+            """CREATE TABLE IF NOT EXISTS axe_telemetry (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 ts INTEGER NOT NULL,
                 device_id TEXT NOT NULL,
                 payload TEXT NOT NULL,
                 idempotency_key TEXT,
                 FOREIGN KEY (device_id) REFERENCES axe_devices(id)
-            )""")
+            )"""
+        )
         # ── Multi-tenant migration: add tenant_id columns ──
         self._migrate_add_tenant_id(c)
         self._migrate_telemetry_idempotency(c)
@@ -155,19 +159,22 @@ class DeviceRegistry:
         self._migrate_add_removed_at(c)
         # ── Canonical physical identity aliases (MAC is tenant-scoped; IP is
         #    only a locator). Alias rows survive DHCP changes and tombstones. ──
-        c.execute("""CREATE TABLE IF NOT EXISTS axe_device_identity_aliases (
+        c.execute(
+            """CREATE TABLE IF NOT EXISTS axe_device_identity_aliases (
                 tenant_id TEXT NOT NULL,
                 mac_normalized TEXT NOT NULL,
                 device_id TEXT NOT NULL,
                 created_at INTEGER NOT NULL,
                 PRIMARY KEY (tenant_id, mac_normalized)
-            )""")
+            )"""
+        )
         c.execute(
             "CREATE INDEX IF NOT EXISTS idx_axe_device_identity_device "
             "ON axe_device_identity_aliases(tenant_id, device_id)"
         )
         # ── Agent command queue (restart/identify routed through the agent) ──
-        c.execute("""CREATE TABLE IF NOT EXISTS axe_agent_commands (
+        c.execute(
+            """CREATE TABLE IF NOT EXISTS axe_agent_commands (
                 id TEXT PRIMARY KEY,
                 tenant_id TEXT DEFAULT 'default',
                 device_id TEXT NOT NULL,
@@ -178,15 +185,18 @@ class DeviceRegistry:
                 pulled_at INTEGER DEFAULT 0,
                 acked_at INTEGER DEFAULT 0,
                 result TEXT DEFAULT ''
-            )""")
-        c.execute("""CREATE TABLE IF NOT EXISTS axe_telemetry_quarantine (
+            )"""
+        )
+        c.execute(
+            """CREATE TABLE IF NOT EXISTS axe_telemetry_quarantine (
                 tenant_id TEXT NOT NULL,
                 device_id TEXT NOT NULL,
                 ts INTEGER NOT NULL,
                 fields TEXT NOT NULL DEFAULT '[]',
                 reasons TEXT NOT NULL DEFAULT '[]',
                 PRIMARY KEY (tenant_id, device_id)
-            )""")
+            )"""
+        )
         conn.commit()
         conn.close()
 
@@ -223,9 +233,11 @@ class DeviceRegistry:
         columns = {row[1] for row in c.fetchall()}
         if "idempotency_key" not in columns:
             c.execute("ALTER TABLE axe_telemetry ADD COLUMN idempotency_key TEXT")
-        c.execute("""CREATE UNIQUE INDEX IF NOT EXISTS uq_axe_telemetry_idempotency
+        c.execute(
+            """CREATE UNIQUE INDEX IF NOT EXISTS uq_axe_telemetry_idempotency
             ON axe_telemetry(tenant_id, device_id, idempotency_key)
-            WHERE idempotency_key IS NOT NULL""")
+            WHERE idempotency_key IS NOT NULL"""
+        )
 
     def _migrate_add_agent_managed(self, c):
         """Add agent_managed column to axe_devices if missing (SaaS agent
