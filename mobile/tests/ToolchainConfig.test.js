@@ -20,6 +20,40 @@ describe('mobile toolchain contract', () => {
     expect(pkg.scripts.lint).not.toContain('eslint');
   });
 
+  test.each([
+    ['@expo/metro-runtime', '~57.0.17', 'dependencies'],
+    ['expo', '~57.0.31', 'dependencies'],
+    ['expo-constants', '~57.0.22', 'dependencies'],
+    ['expo-notifications', '~57.0.23', 'dependencies'],
+    ['expo-splash-screen', '~57.0.10', 'dependencies'],
+    ['jest-expo', '~57.0.6', 'devDependencies'],
+  ])('keeps the reviewed Expo 57 patch %s installed from its lock entry', (name, range, group) => {
+    const pkg = readJson('package.json');
+    const lock = readJson('package-lock.json');
+    const installed = readJson(`node_modules/${name}/package.json`);
+    const entry = lock.packages[`node_modules/${name}`];
+
+    expect(pkg[group][name]).toBe(range);
+    expect(lock.packages[''][group][name]).toBe(range);
+    expect(entry.version).toBe(range.slice(1));
+    expect(installed.version).toBe(entry.version);
+  });
+
+  test('does not hide Expo compatibility findings or change the React peer matrix', () => {
+    const pkg = readJson('package.json');
+    expect(pkg.expo?.install?.exclude).toBeUndefined();
+    expect(pkg.dependencies.react).toBe('19.2.3');
+    expect(pkg.dependencies['react-dom']).toBe(pkg.dependencies.react);
+    expect(pkg.devDependencies['react-test-renderer']).toBe(pkg.dependencies.react);
+  });
+
+  test('retains Babel 7 and the compatible Stryker 9.6.1 runner pair', () => {
+    const pkg = readJson('package.json');
+    expect(pkg.devDependencies['@babel/core']).toMatch(/^\^7\./);
+    expect(pkg.devDependencies['@stryker-mutator/core']).toBe('9.6.1');
+    expect(pkg.devDependencies['@stryker-mutator/jest-runner']).toBe('9.6.1');
+  });
+
   test('all configured app assets exist and splash uses the supported plugin', () => {
     const previousEnvironment = process.env.CYPHER65_APP_ENV;
     process.env.CYPHER65_APP_ENV = 'production';
