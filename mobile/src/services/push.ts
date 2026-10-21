@@ -3,6 +3,7 @@ import * as Device from 'expo-device';
 import { Platform } from 'react-native';
 import { registerPushToken } from '../api/client';
 import type { PushPreferences } from '../types';
+import { captureSession, isCurrentSession, type SessionLease } from './sessionLease';
 
 export const DEFAULT_PUSH_CATEGORIES: Record<string, boolean> = {
   temperature: true,
@@ -38,14 +39,21 @@ export const getPushToken = async (): Promise<string | null> => {
   return token;
 };
 
-export const registerForPushNotifications = async (): Promise<PushPreferences | null> => {
+/**
+ * Register only for the account that began the permission/token workflow.
+ * @example await registerForPushNotifications(captureSession());
+ */
+export const registerForPushNotifications = async (
+  lease: SessionLease = captureSession()
+): Promise<PushPreferences | null> => {
+  if (!lease.token || !isCurrentSession(lease)) return null;
   const granted = await requestPushPermissions();
-  if (!granted) {
+  if (!granted || !isCurrentSession(lease)) {
     return null;
   }
 
   const token = await getPushToken();
-  if (!token) {
+  if (!token || !isCurrentSession(lease)) {
     return null;
   }
 
@@ -56,20 +64,26 @@ export const registerForPushNotifications = async (): Promise<PushPreferences | 
   };
 
   await registerPushToken(preferences);
-  return preferences;
+  return isCurrentSession(lease) ? preferences : null;
 };
 
+/**
+ * Keep delayed preference updates bound to their original session.
+ * @example await updatePushCategories(pushToken, categories, captureSession());
+ */
 export const updatePushCategories = async (
   token: string,
-  categories: Record<string, boolean>
+  categories: Record<string, boolean>,
+  lease: SessionLease = captureSession()
 ): Promise<PushPreferences | null> => {
+  if (!lease.token || !isCurrentSession(lease)) return null;
   const preferences: PushPreferences = {
     token,
     platform: Platform.OS === 'ios' ? 'ios' : 'android',
     categories,
   };
   await registerPushToken(preferences);
-  return preferences;
+  return isCurrentSession(lease) ? preferences : null;
 };
 
 export const configureNotificationHandler = () => {
