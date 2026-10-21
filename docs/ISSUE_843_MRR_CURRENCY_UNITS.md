@@ -69,6 +69,29 @@ not erase the earlier failure or replace remote exact-head CI/independent review
 Logs: full-final-global.log and coverage-final-global.xml. Temporary compatible
 Hypothesis was supplied outside the user's venv to run the complete suite.
 
+Final compatibility challenge: the new MRR-only algorithm prerequisite initially
+also hid the existing normalized Braiins contract economics in the shared view.
+A real-source regression reproduced it; the guard is now scoped to MRR while an
+explicit Braiins response retains its existing provider-average/P-L contract.
+JS-core1694 plus the new regression pass. The unchanged existing Braiins detail
+browser test passes2/2 (desktop/mobile) after the fix. The new currency/unit spec
+is added to the existing CI E2E command; no previous test or gate was removed.
+Changed executable Python-line diagnostic:69/70,98.57%; this is additional
+information, not a substitute for the whole-suite85.74% coverage gate.
+
+A wider legacy rentals.spec run also encountered a live/unconfigured-provider CTA
+failure. That diagnostic began before the shared-view fix and is not presented
+as an all-green final browser suite. Its cause/baseline comparison must be kept
+separate from the synthetic currency and Braiins regressions above.
+
+On final source the new spec passed10/10 again (1.6m). Its final log SHA256 is
+fac0d272296432108201fdc4660d0fc949b471d0558a7a5005779815e286c010.
+The old broad run ended15PASS/3FAIL/2SKIP: one confirmed pre-fix Braiins guard
+regression (fixed and2/2green), plus two CTA failures during navigation.
+The same CTA test on exact master9d4123e passed2/2,25.9s; this does not prove a
+deterministic baseline defect. Keep it recorded as an unresolved intermittent
+navigation observation, not silently removed or declared fixed.
+
 Public metadata is not a quote: no FX, fee, duration, capacity or executable
 profitability guarantee was added. No new external call or background process.
 

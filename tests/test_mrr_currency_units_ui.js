@@ -41,4 +41,14 @@ for (const currency of ['LTC', 'ETH', 'DOGE', 'BCH']) {
   assert.ok(!elements.get('rentals-detail-perf').innerHTML.includes('1111111.11 sats/TH/h'));
   assert.ok(!elements.get('rentals-detail-perf').innerHTML.includes('% vs mkt'));
 }
-console.log('PASS MRR original-currency and unit guards use the real source');
+sandbox.authFetch = async () => ({ ok: true, json: async () => ({
+  success: true, provider: 'braiins', detail: {
+    price: { paid: '0.5', currency: 'BTC' }, length: 1, rig: { name: 'Braiins contract' },
+    hashrate: { advertised: { hash: 100, type: 'ph' }, average: { hash: 95, type: 'ph', percent: 95 } },
+    perf: { avg_th: 95000, percent: 95, delivered_thh: 95000, cost_sats_per_thh: 526.3 },
+  }, pl: { available: true, pl_sats: -48218750 }, market: { available: false },
+}) });
+await api.openRentalDetail('B843', 'braiins');
+assert.ok(elements.get('rentals-detail-perf').innerHTML.includes('526.30 sats/TH/h'), 'Braiins normalized contract still has provider-average cost');
+assert.ok(elements.get('rentals-detail-perf').innerHTML.includes('-48218750 sats'), 'Braiins P/L is not gated by an MRR-only raw rig type');
+console.log('PASS MRR original-currency and unit guards plus Braiins compatibility use the real source');

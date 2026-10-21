@@ -11728,7 +11728,9 @@ function renderAccount(acct) {
       const perfEl = document.getElementById('rentals-detail-perf');
       if (perfEl) {
         const adv = hr.advertised, avg = hr.average;
-        const modelEligible = d.rig && typeof d.rig.type === 'string' && d.rig.type.trim().toLowerCase() === 'sha256';
+        // Braiins supplies a normalized Bitcoin contract, not an MRR rig record.
+        const modelEligible = (provider === 'braiins' && data.provider === 'braiins') ||
+          (d.rig && typeof d.rig.type === 'string' && d.rig.type.trim().toLowerCase() === 'sha256');
         const advTh = modelEligible && adv ? _mrToTh(adv.hash, adv.type) : null;
         const avgTh = modelEligible && avg ? _mrToTh(avg.hash, avg.type) : null;
         const pct = avg && avg.percent != null ? parseFloat(avg.percent)
