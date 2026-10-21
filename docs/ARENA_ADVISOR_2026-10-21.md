@@ -64,8 +64,8 @@ Accessed 2026-10-21; documented capabilities are not tested integrations.
 | Feature/reference | CYPHER65 gap | Decision/effort | Validation |
 | --- | --- | --- | --- |
 | [AxeOS OpenAPI, ESP-Miner v2.14.2](https://raw.githubusercontent.com/bitaxeorg/ESP-Miner/v2.14.2/main/http_server/openapi.yaml): GH/s, multiple windows, fan RPM vs percent | Physical version coverage, not missing parser | Reuse existing normalization; Low | Pinned fixtures then explicitly authorized hardware; GPLv3 code not copied |
-| [Braiins Manager v2 documentation](https://manager.braiins.com/api/docs/v2/description/authentication): fleet API and async management | Manager-cloud integration not verified; not equivalent to local BOS REST | Assess read-only adapter; Medium | Auth/pagination/rate/tenant contracts before opt-in credential test; root could not reopen URL |
-| [Braiins Hashpower API](https://hashpower.braiins.com/api/): configurable units/fees | Current quote defaults do not prove duration/capacity/all-in cost | Evidence envelope before ranking; Medium | Explicit unit/currency/fee/age and unknown states; dynamic docs were not text-readable by root |
+| [Braiins Manager v2 documentation](https://manager.braiins.com/api/docs/v2/description/authentication): fleet API and async management | Manager-cloud integration not verified; not equivalent to local BOS REST | Assess read-only adapter; Medium | Root subsequently read the introduction through Exa; auth/pagination/rate/tenant contracts precede opt-in credential tests |
+| [Braiins Hashpower API](https://hashpower.braiins.com/api/): configurable units/fees | Current quote defaults do not prove duration/capacity/all-in cost | Evidence envelope before ranking; Medium | Root subsequently read settings/fees through Exa; explicit unit/currency/fee/age and unknown states remain mandatory |
 | [MRR API v2](https://www.miningrigrentals.com/apidocv2): currencies/scales and historical retention caveats | #843 normalization; pruned0% must not prove zero delivery | Correct contract before opportunity labels; Medium | Non-BTC/unknown-unit/retention fixtures, no purchases |
 
 No feature-availability, benchmark superiority, license compatibility or physical
@@ -109,3 +109,70 @@ At most three actionable experiments, not achieved10x claims:
 Next: publish remaining reviewed drafts, inspect exact-head CI, repair #844/#845
 in separate branches, then #843 and physical/native evidence. Resume #836 ->
 #838 -> #837 after P1 gates. Do not close issues, merge or deploy from this report.
+
+## Research refresh — evidence-first API control planes
+
+I used Exa to review 10 sources across 2 workstreams (Manager contracts and
+Hashpower pricing), plus direct MRR documentation retrieval. This is the sum of
+requested search results, not ten independent validations: Manager section URLs
+repeat one reference, and the Academy HTML/Markdown variants are duplicates.
+The unrelated third-party PyPI MCP wrapper was excluded as authority.
+
+Key insight: an acknowledgement is a state transition, not proof of effect, and
+a price is incomplete without its model/units/fee provenance. The official
+[Manager v2 conventions](https://manager.braiins.com/api/docs/v2/description/conventions)
+document permission-scoped keys, idempotent intents and asynchronous terminal
+status polling. Quality: vendor-authored operational reference; authoritative
+for documented behavior, not an independently tested integration. This supports
+the #842 reconciliation boundary, not enabling physical controls.
+
+The [Hashpower reference](https://hashpower.braiins.com/api/) requires interpreting
+prices using settings and reading the caller-visible fee schedule. Quality:
+official schema/reference, current retrieval; example responses are not real
+account quotes. The [Academy API guide](https://academy.braiins.com/braiins-hashpower/api)
+distinguishes read-only tokens and warns that the interactive console retains
+authentication in browser storage. Quality: official integration guide, not
+license/eligibility or execution certification. No token was entered.
+
+The product implication is an inspectable evidence envelope before any ranking:
+source, currency, scale, observation/window, fee and availability state. Reuse
+the three experiments above; no fourth feature, invented10x result, purchased
+service or live automation was introduced.
+
+Resumo executivo: a vantagem prática vem de tornar explícito o que o sistema
+sabe, não sabe e ainda precisa confirmar. As fontes sustentam contratos de
+integração e testes; não comprovam suporte físico, oportunidade ou lucro.
+
+## Follow-up — 2026-10-22 Europe/Brussels
+
+Earlier paragraphs retain the initial checkpoint; the observations below are
+the later state, not replacements for failed evidence.
+
+- Draft PRs #846 (math), #847 (session), #848 (redirect security), #849
+  (agent identity/replay) and #850 (Expo patch closure) were published/attached.
+  Each still requires exact-head CI and independent GitHub approval.
+- #847 clean normal npm ci in a fresh clone passed;191 tests/25suites, TypeScript,
+  strict lint and Forge/braces passed again. Native Keychain/restart/signing
+  evidence remains NOT RUN.
+- #842 first remote CI failed6 Python cases plus formatting. Follow-up6aed088
+  fixes missing clock fixtures and preserves firmware-dependent capabilities.
+  Full local suite4498 PASS/4 SKIP,85.71% configured CI coverage; earlier57.40%
+  selected-module coverage remains recorded as FAIL. New remote CI pending.
+- #843 full local suite4504 PASS/4 SKIP,85.74% configured CI coverage; rental
+  module87.8%. Synthetic currency browser10/10; independent Braiins compatibility
+  challenge reproduced and fixed a shared-view regression. Publication and final
+  browser evidence are tracked in its own checkpoint; do not claim all acceptance.
+- #845 online Doctor21/21,119 tests, strict lint/TS and three exports PASS. Its
+  isolated audit still fails the HIGH fixed separately in #848.
+- Local composition ONLY of #847/#848/#850 (no PR/base merge or deploy) passed
+  normal npm ci/tree, Forge/braces/redirect tests, online SDK check/Doctor21/21,
+  high/critical audit gate (22moderates remain),199 tests, strict lint/TS and
+  iOS/Android/web exports. The only manual composition conflict kept the six new
+  SDK patches plus expo-crypto in manifest/lock. This is not exact-head PR CI.
+  Evidence: /private/tmp/cypher65-mobile-composed.r8hTPa/validation.log;
+  SHA256 c25c19a402717534710b73ad63328cf04a189d5662bbabb43f62d27ef55b171a.
+- User checkout and partial #836 remain preserved. Research skills required
+  primary-source qualification and deduplication; motion guidance required
+  immediate privacy removal and no decorative animation for numeric fixes.
+  No GitHub approval, issue closure, merge, deploy, account payment or ASIC
+  command (including hardware dry-run) was performed.
