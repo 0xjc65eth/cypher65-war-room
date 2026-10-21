@@ -5829,6 +5829,9 @@ for (const temperature of [-41, 151, Infinity, NaN, null, undefined, true, false
 //  RESULTS
 // ═══════════════════════════════════════════════════════════════════════════
 
+// Issue #843: rental contract regressions run through the existing CI gate.
+await import('./test_mrr_currency_units_ui.js');
+
 console.log(`\n${'═'.repeat(50)}`);
 if (failed === 0) {
   console.log(`✅ ALL ${passed} TESTS PASSED`);
