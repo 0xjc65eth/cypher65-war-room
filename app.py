@@ -1717,6 +1717,11 @@ _axe_registry = DeviceRegistry(get_db)
 _axe_registry.ensure_tables()
 _init_axe_routes(_axe_registry)
 
+# Issue #836: a dedicated allowlisted, read-only projection, not /api/snapshot.
+from routes.mini_war_room import create_mini_war_room_blueprint
+
+app.register_blueprint(create_mini_war_room_blueprint(lambda: _axe_registry))
+
 # ── Fleet snapshot cache: write-through + boot seed ──────────────────────
 # The /api/snapshot fleet block is assembled from axe_telemetry_cache, which
 # used to be fed ONLY by the server-side poll — a poll that SKIPS

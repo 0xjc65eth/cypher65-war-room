@@ -47,6 +47,17 @@ self.addEventListener('fetch', (event) => {
   if (event.request.method !== 'GET') return;
   if (!event.request.url.startsWith(self.location.origin)) return;
 
+  // Issue #836: neither serve nor retain private monitor responses offline.
+  let privatePath;
+  try {
+    // Match Flask's decoded route and merge-slashes redirects before any
+    // cache lookup. The Cache API does not enforce HTTP no-store for us.
+    privatePath = decodeURIComponent(new URL(event.request.url).pathname).replace(/\/{2,}/g, '/');
+  } catch {
+    return; // Malformed URL: network only, never a private cache fallback.
+  }
+  if (privatePath === '/api/mini-war-room' || privatePath === '/mini-war-room') return;
+
   event.respondWith(
     fetch(event.request)
       .then((response) => {
