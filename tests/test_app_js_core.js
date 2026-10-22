@@ -5831,6 +5831,8 @@ for (const temperature of [-41, 151, Infinity, NaN, null, undefined, true, false
 
 // Issue #843: rental contract regressions run through the existing CI gate.
 await import('./test_mrr_currency_units_ui.js');
+const rentalXss = spawnSync(process.execPath, ['tests/test_mrr_currency_units_xss.js'], { stdio: 'inherit' });
+assertEqual('original provider currency cannot inject HTML into rental cards', rentalXss.status, 0);
 
 console.log(`\n${'═'.repeat(50)}`);
 if (failed === 0) {

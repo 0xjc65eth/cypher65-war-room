@@ -92,6 +92,48 @@ The same CTA test on exact master9d4123e passed2/2,25.9s; this does not prove a
 deterministic baseline defect. Keep it recorded as an unresolved intermittent
 navigation observation, not silently removed or declared fixed.
 
+## Independent security / numeric follow-up
+
+A fresh independent reviewer found a new P1 in the draft: original provider
+currency was formatted as text but interpolated without escaping into rental
+card HTML. Numeric character entities could survive uppercasing in an event
+handler. The existing detail table already escaped text; the card did not.
+The card sink now applies the canonical escapeHtml and the bundle is rebuilt.
+The reviewer authored an original canonical-renderer regression, using real
+30-core-escape.js and46-rentals.js; RED1FAIL/2PASS, then GREEN3PASS. No payload
+was executed, browser account accessed or production exposure claimed.
+
+The XSS regression runs in a child process inside the existing JS-core gate so
+its node:test callbacks cannot be skipped by that gate's explicit process.exit.
+Current JS-core1695 assertions plus3renderer tests PASS. A literal SVG-currency
+browser case confirms external currency stays text without injecting an element.
+Current browser matrix: **12 PASS**,11.2s, desktop/mobile, synthetic APIs only.
+
+Root also reproduced unrepresentable hashrate-duration work yielding Infinity
+and false zero cost. Explicit finite work/unit-cost helpers now guard MRR
+detail/history/analysis/rankings/alerts/portfolio and browser fallback. Positive
+underflow is not a measured zero; measured zero hashrate remains zero. Derived
+percent overflow is unavailable. Regression-first numeric matrix:5FAIL/47PASS
+before fix; expanded rental plus numeric suite226PASS after fix. Full-suite
+follow-up is recorded separately; no blanket all-arithmetic certification.
+
+Complete Python follow-up: **4510 PASS /4 SKIP**,642warnings,147.62s;
+configured CI coverage **85.76% PASS** against80. Logs full-security-final.log
+(SHA25632e95671aef5e102b942a42dbc06f33c6a6870750dccf233e6ef731da9569707)
+and coverage-security-final.xml
+(SHA25612caa2dddae9fe10567810339e589a1b79151ffaaf0c42cf0df25cd0d790582b).
+Exact CI Black/Flake8/Bandit, monkeypatch guard, DOM guards, bundle and JS syntax
+also pass. The independent reviewer found no remaining P0/P1 in that delta;
+this is not a GitHub approval or a waiver of new exact-head CI.
+
+The same review identified a lower-severity short Braiins-series boundary:
+duration is rounded for display, but valid backend delivered work is not.
+Root reproduced the hidden-cost case before correction. The shared view now
+uses finite normalized Braiins work instead of discarding it when displayed
+duration rounds to zero. Canonical-fragment regression passes; no claim about
+actual provider sampling cadence or real short contracts is made. MRR raw work
+continues to use strict finite duration/product guards.
+
 Public metadata is not a quote: no FX, fee, duration, capacity or executable
 profitability guarantee was added. No new external call or background process.
 

@@ -1335,8 +1335,8 @@ def _mrr_analysis_row(
     start = r.get("start")
     end = r.get("end")
     ended = bool(r.get("ended"))
-    advertised_thh = (adv_th * lenh) if (adv_th and lenh) else None
-    delivered_thh = (avg_th * lenh) if (avg_th and lenh) else None
+    advertised_thh = _mrr_work_thh(adv_th, lenh)
+    delivered_thh = _mrr_work_thh(avg_th, lenh)
 
     start_invalid = _is_epoch_date(start)
     end_invalid = _is_epoch_date(end)
@@ -1370,11 +1370,7 @@ def _mrr_analysis_row(
     refund_pending = expected_refund if expected_refund else None
 
     # Unit costs + spread + loss.
-    cost_sats_per_thh = (
-        (paid_sats / advertised_thh)
-        if (paid_sats is not None and advertised_thh)
-        else None
-    )
+    cost_sats_per_thh = _mrr_unit_cost(paid_sats, advertised_thh)
     fair_value = (market * advertised_thh) if (market and advertised_thh) else None
     spread_sats = (
         (paid_sats - fair_value) if (paid_sats is not None and fair_value) else None
@@ -1384,11 +1380,7 @@ def _mrr_analysis_row(
         if (spread_sats is not None and fair_value)
         else None
     )
-    effective_cost = (
-        (paid_sats / delivered_thh)
-        if (paid_sats is not None and delivered_thh)
-        else None
-    )
+    effective_cost = _mrr_unit_cost(paid_sats, delivered_thh)
     delivered_value = (market * delivered_thh) if (market and delivered_thh) else None
     loss_sats = (
         (paid_sats - (refund_sats or 0) - delivered_value)
@@ -1992,6 +1984,30 @@ def _mrr_nonnegative_number(value: Any) -> Optional[float]:
     return number if math.isfinite(number) and number >= 0 else None
 
 
+def _mrr_work_thh(hashrate: Any, duration: Any) -> Optional[float]:
+    """Keep overflow/underflow and invalid duration distinct from observed zero."""
+    rate = _mrr_nonnegative_number(hashrate)
+    hours = _mrr_nonnegative_number(duration)
+    if rate is None or hours is None or hours <= 0:
+        return None
+    work = rate * hours
+    if not math.isfinite(work) or (rate > 0 and work == 0):
+        return None
+    return work
+
+
+def _mrr_unit_cost(paid_sats: Any, work: Any) -> Optional[float]:
+    """Reject unrepresentable costs instead of displaying infinity or free work."""
+    paid = _mrr_nonnegative_number(paid_sats)
+    delivered = _mrr_nonnegative_number(work)
+    if paid is None or delivered is None or delivered <= 0:
+        return None
+    cost = paid / delivered
+    if not math.isfinite(cost) or (paid > 0 and cost == 0):
+        return None
+    return cost
+
+
 def _mrr_payment(price: Any) -> Dict[str, Any]:
     """Preserve provider payment denomination; never infer a currency or FX rate."""
     price = price if isinstance(price, dict) else {}
@@ -2050,13 +2066,13 @@ def _normalize_rental(rv: Dict[str, Any]) -> Dict[str, Any]:
         ),
         "bitcoin_model_eligible": model_eligible,
         "algorithm": rig.get("type"),
-        "hashrate_percent": _num(average.get("percent")),
+        "hashrate_percent": _mrr_nonnegative_number(average.get("percent")),
         "price_paid_btc": payment["btc"],
         "price_paid_amount": payment["amount"],
         "price_currency": payment["currency"],
         "price_source": "mrr_api_v2",
         "price_observed_at": None,
-        "length_hours": _num(rv.get("length")),
+        "length_hours": _mrr_nonnegative_number(rv.get("length")),
         "extended_hours": _num(rv.get("extended")),
         "start": rv.get("start"),
         "end": rv.get("end"),
@@ -3043,17 +3059,15 @@ def compute_mrr_perf(detail: Dict[str, Any]) -> Dict[str, Any]:
         if model_eligible
         else None
     )
-    pct = _num(average.get("percent"))
+    pct = _mrr_nonnegative_number(average.get("percent"))
     if pct is None and avg_th is not None and adv_th:
-        pct = (avg_th / adv_th * 100.0) if adv_th else None
+        pct = _mrr_nonnegative_number(avg_th / adv_th * 100.0)
     price = detail.get("price") or {}
     payment = _mrr_payment(price)
     paid_sats = payment["sats"]
-    length_h = _num(detail.get("length"))
-    delivered_thh = (avg_th * length_h) if (avg_th is not None and length_h) else None
-    cost_sats_per_thh = None
-    if paid_sats is not None and delivered_thh:
-        cost_sats_per_thh = paid_sats / delivered_thh
+    length_h = _mrr_nonnegative_number(detail.get("length"))
+    delivered_thh = _mrr_work_thh(avg_th, length_h)
+    cost_sats_per_thh = _mrr_unit_cost(paid_sats, delivered_thh)
     return {
         "percent": pct,
         "bitcoin_model_eligible": model_eligible,
@@ -3268,7 +3282,7 @@ def compute_provider_rankings(
                 priced_count += 1
             avg_th = _num(r.get("hashrate_average_th"))
             lenh = _num(r.get("length_hours"))
-            delivered = (avg_th * lenh) if (avg_th and lenh) else None
+            delivered = _mrr_work_thh(avg_th, lenh)
             # Historical-P/L fix: rank providers on hashrate observed at each
             # rental's time (snapshot lookup, current as last resort).
             pl = compute_rental_pl(
@@ -3280,8 +3294,9 @@ def compute_provider_rankings(
             )
             if pl.get("pl_pct") is not None:
                 pl_pcts.append(pl["pl_pct"])
-            if delivered and paid is not None:
-                costs.append((paid * 1e8) / delivered)
+            cost = _mrr_unit_cost(paid * 1e8 if paid is not None else None, delivered)
+            if cost is not None:
+                costs.append(cost)
         out.append(
             {
                 "provider": provider,
@@ -4282,12 +4297,10 @@ def evaluate_rental_pl_alerts(
         avg_th = _num(r.get("hashrate_average_th"))
         length_h = _num(r.get("length_hours"))
         paid = _mrr_paid_btc(r)
-        delivered = (avg_th * length_h) if (avg_th and length_h) else None
+        delivered = _mrr_work_thh(avg_th, length_h)
         paid_sats = (paid * 1e8) if paid is not None else None
         delivery_pct = _num(r.get("hashrate_percent"))
-        cost = (
-            (paid_sats / delivered) if (paid_sats is not None and delivered) else None
-        )
+        cost = _mrr_unit_cost(paid_sats, delivered)
 
         pl: Optional[Dict] = None
         fired = False
@@ -4692,10 +4705,12 @@ def evaluate_market_overpay_alerts(
         if paid is None or not adv_th or not length_h or length_h <= 0:
             continue  # can't derive the agreed price — never guess
         paid_sats = paid * 1e8
-        agreed_thh = adv_th * length_h
-        if agreed_thh <= 0:
+        agreed_thh = _mrr_work_thh(adv_th, length_h)
+        if not agreed_thh:
             continue
-        cost_sats_per_thh = paid_sats / agreed_thh
+        cost_sats_per_thh = _mrr_unit_cost(paid_sats, agreed_thh)
+        if cost_sats_per_thh is None:
+            continue
         # Market at purchase: nearest historical snapshot (cached per day),
         # live quote ONLY as last resort — lazy so a covered day never hits
         # the network per rental.
@@ -5108,18 +5123,14 @@ def _rental_to_history_row(
     adv_th = r.get("hashrate_advertised_th")
     pct = r.get("hashrate_percent")
     if pct is None and avg_th is not None and adv_th:
-        pct = (avg_th / adv_th * 100.0) if adv_th else None
+        pct = _mrr_nonnegative_number(avg_th / adv_th * 100.0)
     paid_sats = None
     paid = _mrr_paid_btc(r)
     if paid is not None:
         paid_sats = paid * 1e8
     length_h = r.get("length_hours")
-    delivered_thh = (avg_th * length_h) if (avg_th is not None and length_h) else None
-    cost = (
-        (paid_sats / delivered_thh)
-        if (paid_sats is not None and delivered_thh)
-        else None
-    )
+    delivered_thh = _mrr_work_thh(avg_th, length_h)
+    cost = _mrr_unit_cost(paid_sats, delivered_thh)
     # Historical-P/L fix: persist the network hashrate OBSERVED at the rental's
     # time (nearest snapshot, fallback current) so past rentals are priced
     # against the network they actually mined in — not today's hashrate.
@@ -5789,11 +5800,7 @@ def compute_portfolio_summary(
                     priced_count += 1
                 avg_th = r.get("hashrate_average_th")
                 lenh = r.get("length_hours")
-                d = (
-                    (float(avg_th) * float(lenh))
-                    if (avg_th is not None and lenh)
-                    else None
-                )
+                d = _mrr_work_thh(avg_th, lenh)
                 if d:
                     delivered += d
                     if paid_sats is not None:

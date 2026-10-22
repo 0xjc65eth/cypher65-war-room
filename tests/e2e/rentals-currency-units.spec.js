@@ -9,6 +9,7 @@ for (const scenario of [
   { name: 'currency missing', currency: null, unit: 'th', algorithm: 'sha256', paid: '—' },
   { name: 'unit unknown', currency: 'BTC', unit: 'unverified', algorithm: 'sha256', paid: '10000 sats' },
   { name: 'algorithm unverified', currency: 'BTC', unit: 'th', algorithm: 'scrypt', paid: '10000 sats' },
+  { name: 'currency literal HTML', currency: '<SVG DATA-PROVIDER-CURRENCY>', unit: 'th', algorithm: 'sha256', paid: '0,0001 <SVG DATA-PROVIDER-CURRENCY>' },
 ]) {
   test(scenario.name + ' never fabricates BTC model economics', async ({ page }) => {
     const mutationRequests = [];
@@ -41,6 +42,7 @@ for (const scenario of [
     await page.goto('/');
     await page.waitForSelector('#sidebar', { timeout: 25000 });
     await page.locator('.sidebar__link[data-module="rentals"]').evaluate(el => el.click());
+    await expect(page.locator('#rentals-list [data-provider-currency]')).toHaveCount(0);
     await page.locator('#rentals-list .rentals-item[data-rental-id="843"]').click();
     await expect(page.locator('#rentals-detail')).toBeVisible();
     const paidRow = page.locator('#rentals-detail-grid .rentals-detail__row').filter({ hasText: 'Pago' });

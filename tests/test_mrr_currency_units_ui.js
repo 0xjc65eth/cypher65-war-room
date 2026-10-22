@@ -14,7 +14,7 @@ const document = {
 };
 const sandbox = { document, window: {}, console, rentalsAuthRejected: () => false, escapeHtml: String, fmt: { hashrate: n => n + ' H/s' }, setTimeout, clearTimeout, URLSearchParams };
 vm.createContext(sandbox);
-vm.runInContext(fs.readFileSync('static/src/46-rentals.js', 'utf8') + '\n globalThis.rentalTest = { _mrToTh, _rentalPriceStr, openRentalDetail };', sandbox);
+vm.runInContext(fs.readFileSync('static/src/46-rentals.js', 'utf8') + '\n globalThis.rentalTest = { _mrToTh, _rentalPriceStr, _rentalWorkThh, _rentalUnitCost, openRentalDetail };', sandbox);
 const api = sandbox.rentalTest;
 assert.equal(api._mrToTh(1, 'eh'), 1e6);
 assert.equal(api._mrToTh(1, 'hash'), 1e-12);
@@ -22,6 +22,12 @@ assert.equal(api._mrToTh(1, ''), null);
 assert.equal(api._mrToTh(true, 'th'), null);
 assert.equal(api._mrToTh(-1, 'th'), null);
 assert.equal(api._mrToTh(Infinity, 'eh'), null);
+assert.equal(api._rentalWorkThh(1e308, 2), null);
+assert.equal(api._rentalWorkThh(1e-308, 1e-308), null);
+assert.equal(api._rentalWorkThh(0, 2), 0);
+assert.equal(api._rentalWorkThh(1, -1), null);
+assert.equal(api._rentalUnitCost(10000, 1e-308), null);
+assert.equal(api._rentalUnitCost(0, 2), 0);
 assert.equal(api._rentalPriceStr({ price_paid_btc: 1, price_currency: 'LTC', price_paid_amount: 2 }), '2 LTC');
 assert.equal(api._rentalPriceStr({ price_paid_btc: 1, price_currency: 'LTC' }), '—');
 assert.equal(api._rentalPriceStr({ price_paid_btc: 0, price_currency: 'BTC' }), '0 sats');
@@ -51,4 +57,13 @@ sandbox.authFetch = async () => ({ ok: true, json: async () => ({
 await api.openRentalDetail('B843', 'braiins');
 assert.ok(elements.get('rentals-detail-perf').innerHTML.includes('526.30 sats/TH/h'), 'Braiins normalized contract still has provider-average cost');
 assert.ok(elements.get('rentals-detail-perf').innerHTML.includes('-48218750 sats'), 'Braiins P/L is not gated by an MRR-only raw rig type');
+sandbox.authFetch = async () => ({ ok: true, json: async () => ({
+  success: true, provider: 'braiins', detail: {
+    price: { paid: '0.5', currency: 'BTC' }, length: 0, rig: { name: 'Short sampled contract' },
+    hashrate: { advertised: { hash: 100, type: 'ph' }, average: { hash: 95, type: 'ph', percent: 95 } },
+    perf: { avg_th: 95000, percent: 95, delivered_thh: 250, cost_sats_per_thh: 200000 },
+  }, pl: { available: true, pl_sats: -49999999 }, market: { available: false },
+}) });
+await api.openRentalDetail('short843', 'braiins');
+assert.ok(elements.get('rentals-detail-perf').innerHTML.includes('200000.00 sats/TH/h'), 'rounded display duration cannot discard verified Braiins work');
 console.log('PASS MRR original-currency and unit guards plus Braiins compatibility use the real source');

@@ -194,3 +194,43 @@ def test_history_series_keeps_unknown_spend_distinct_from_verified_zero(
     expected = 0 if currency == "BTC" else None
     assert series["points"][0]["spent_sats"] == expected
     assert series["totals"]["spent_sats"] == expected
+
+
+@pytest.mark.parametrize(
+    ("hashrate", "length"),
+    [
+        ("1e308", "2"),
+        ("1e-308", "1e-308"),
+        ("1e-308", "2"),
+        ("100", "-1"),
+        ("100", "Infinity"),
+    ],
+)
+def test_extreme_work_and_cost_do_not_emit_infinity_or_false_free_work(
+    monkeypatch, hashrate, length
+):
+    monkeypatch.setattr(rp, "_resolve_network_hashrate_for_rental", lambda *_: 1e20)
+    raw = raw_rental()
+    raw["hashrate"]["advertised"]["hash"] = hashrate
+    raw["hashrate"]["average"]["hash"] = hashrate
+    raw["length"] = length
+    perf = rp.compute_mrr_perf(raw)
+    assert perf["cost_sats_per_thh"] is None
+    json.dumps(perf, allow_nan=False)
+    history = rp._rental_to_history_row(rp._normalize_rental(raw))
+    assert history["cost_sats_per_thh"] is None
+    json.dumps(history, allow_nan=False)
+
+
+def test_unrepresentable_derived_delivery_percentage_is_unavailable(monkeypatch):
+    monkeypatch.setattr(rp, "_resolve_network_hashrate_for_rental", lambda *_: 1e20)
+    raw = raw_rental()
+    raw["hashrate"]["advertised"]["hash"] = "1e-308"
+    raw["hashrate"]["average"]["hash"] = "1e308"
+    raw["hashrate"]["average"].pop("percent")
+    perf = rp.compute_mrr_perf(raw)
+    assert perf["percent"] is None
+    json.dumps(perf, allow_nan=False)
+    history = rp._rental_to_history_row(rp._normalize_rental(raw))
+    assert history["percent"] is None
+    json.dumps(history, allow_nan=False)

@@ -10069,6 +10069,20 @@ function renderAccount(acct) {
     return converted != null && isFinite(converted) ? converted : null;
   }
 
+  /** Keep unrepresentable work unavailable; a measured zero rate remains zero. */
+  function _rentalWorkThh(rate, hours) {
+    if (!Number.isFinite(rate) || !Number.isFinite(hours) || rate < 0 || hours <= 0) return null;
+    const work = rate * hours;
+    return Number.isFinite(work) && !(rate > 0 && work === 0) ? work : null;
+  }
+
+  /** Do not render numeric overflow or underflow as an infinite or free cost. */
+  function _rentalUnitCost(paid, work) {
+    if (!Number.isFinite(paid) || !Number.isFinite(work) || paid < 0 || work <= 0) return null;
+    const cost = paid / work;
+    return Number.isFinite(cost) && !(paid > 0 && cost === 0) ? cost : null;
+  }
+
   /** Return sats only for explicitly BTC-denominated raw provider payments. */
   function _rentalPaymentSats(price) {
     if (!price || typeof price.currency !== 'string' || price.currency.trim().toUpperCase() !== 'BTC') return null;
@@ -10995,7 +11009,7 @@ function renderAccount(acct) {
       '</div>' +
       '<div class="rentals-item__stats">' +
         '<div class="rentals-item__stat"><span class="rentals-item__stat-label">HASHRATE</span><span class="rentals-item__stat-value">' + _rentalHashrateStr(r) + '</span></div>' +
-        '<div class="rentals-item__stat"><span class="rentals-item__stat-label">PAID</span><span class="rentals-item__stat-value">' + _rentalPriceStr(r) + '</span></div>' +
+        '<div class="rentals-item__stat"><span class="rentals-item__stat-label">PAID</span><span class="rentals-item__stat-value">' + escapeHtml(_rentalPriceStr(r)) + '</span></div>' +
         '<div class="rentals-item__stat"><span class="rentals-item__stat-label">LENGTH</span><span class="rentals-item__stat-value">' + (r && r.length_hours != null ? Number(r.length_hours).toFixed(1) + 'h' : '—') + '</span></div>' +
       '</div>' +
       '<div class="rentals-item__status">' + escapeHtml(st) + '</div>' +
@@ -11737,16 +11751,19 @@ function renderAccount(acct) {
           : (avgTh && advTh ? (avgTh / advTh) * 100 : null);
         const lenH = d.length != null ? parseFloat(d.length) : 0;
         const paidSats = _rentalPaymentSats(d.price);
-        const costPerThHour = (paidSats != null && avgTh && lenH) ? paidSats / (avgTh * lenH) : null;
-        const delivered = (avgTh && lenH) ? avgTh * lenH : null;
+        const perf = data.perf || d.perf || {};
+        // Braiins duration is rounded for display; its series work is not.
+        const delivered = provider === 'braiins' && data.provider === 'braiins' &&
+          Number.isFinite(perf.delivered_thh) && perf.delivered_thh >= 0
+          ? perf.delivered_thh : _rentalWorkThh(avgTh, lenH);
+        const costPerThHour = _rentalUnitCost(paidSats, delivered);
         // Backend pre-computes analytics for BOTH providers (Braiins from the
         // speed series, MRR from the raw detail) — prefer those so the banner
         // renders even when the series is empty or sparse.
-        const perf = data.perf || d.perf || {};
         const avgThFinal = avgTh == null ? null : (Object.prototype.hasOwnProperty.call(perf, 'avg_th') ? perf.avg_th : avgTh);
         const pctFinal = perf.percent != null ? perf.percent : pct;
-        const costFinal = paidSats == null || avgTh == null ? null : (Object.prototype.hasOwnProperty.call(perf, 'cost_sats_per_thh') ? perf.cost_sats_per_thh : costPerThHour);
-        const deliveredFinal = avgTh == null ? null : (Object.prototype.hasOwnProperty.call(perf, 'delivered_thh') ? perf.delivered_thh : delivered);
+        const costFinal = paidSats == null || !delivered ? null : (Object.prototype.hasOwnProperty.call(perf, 'cost_sats_per_thh') ? (Number.isFinite(perf.cost_sats_per_thh) ? perf.cost_sats_per_thh : null) : costPerThHour);
+        const deliveredFinal = delivered == null ? null : (Object.prototype.hasOwnProperty.call(perf, 'delivered_thh') ? (Number.isFinite(perf.delivered_thh) ? perf.delivered_thh : null) : delivered);
         let cls = '', verdict = '—';
         if (pctFinal != null) {
           cls = pctFinal >= 95 ? 'is-good' : (pctFinal >= 80 ? 'is-warn' : 'is-bad');
@@ -11766,10 +11783,10 @@ function renderAccount(acct) {
         // more than the hashrate produced at current difficulty.
         const pl = data.pl || {};
         let yieldVal = '—', plVal = '—', plCls = '', plTitle = '';
-        if (paidSats != null && avgTh != null && pl.expected_yield_sats_per_thh != null) {
+        if (paidSats != null && delivered != null && Number.isFinite(pl.expected_yield_sats_per_thh)) {
           yieldVal = Number(pl.expected_yield_sats_per_thh).toFixed(2) + ' st/TH·h';
         }
-        if (paidSats != null && avgTh != null && pl.available !== false && pl.pl_sats != null) {
+        if (paidSats != null && delivered != null && pl.available !== false && Number.isFinite(pl.pl_sats)) {
           const sign = pl.pl_sats >= 0 ? '+' : '';
           plVal = sign + Number(pl.pl_sats).toFixed(0) + ' sats';
           plCls = pl.pl_sats >= 0 ? 'is-good' : 'is-bad';
