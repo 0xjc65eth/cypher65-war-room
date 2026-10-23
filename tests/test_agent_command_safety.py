@@ -69,7 +69,9 @@ def _pull(client, token, registry):
     from unittest.mock import patch
 
     with patch("axe_fleet.routes._registry", registry):
-        return client.post("/api/agent/commands/pull", headers=_headers(token), json={})
+        return client.post(
+            "/api/agent/commands/pull", headers=_headers(token), json={"command_protocol": 1}
+        )
 
 
 def _command_row(registry, command_id):

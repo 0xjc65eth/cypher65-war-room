@@ -2,50 +2,61 @@ import { useEffect, useState, useCallback } from 'react';
 import { fetchDevices, fetchDevice, refreshDevice, fetchFleetSummary } from '../api/client';
 import { useAppStore } from '../store';
 import type { Device } from '../types';
+import { useSessionScope } from './useSessionScope';
 
+/**
+ * Read fleet data only while this render's session and mount remain active.
+ * @example const { devices, refresh } = useFleet();
+ */
 export const useFleet = () => {
   const { devices, setDevices, fleetSummary, setFleetSummary } = useAppStore();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const scope = useSessionScope();
 
   const load = useCallback(async () => {
+    if (!scope.isActive()) return;
     setLoading(true);
     setError(null);
     try {
       const [devicesData, summaryData] = await Promise.all([fetchDevices(), fetchFleetSummary()]);
+      if (!scope.isActive()) return;
       setDevices(devicesData.devices);
       setFleetSummary(summaryData);
     } catch (err) {
-      setError((err as Error).message);
+      if (scope.isActive()) setError((err as Error).message);
     } finally {
-      setLoading(false);
+      if (scope.isActive()) setLoading(false);
     }
-  }, [setDevices, setFleetSummary]);
+  }, [setDevices, setFleetSummary, scope]);
 
   const refresh = useCallback(
     async (deviceId: string) => {
+      if (!scope.isActive()) return { success: false, error: 'A sessão mudou. Entre novamente.' };
       try {
         const result = await refreshDevice(deviceId);
+        if (!scope.isActive()) return { success: false, error: 'A sessão mudou. Entre novamente.' };
         if (result.success) {
-          setDevices(devices.map((d) => (d.id === deviceId ? result.device : d)));
+          useAppStore.getState().updateDevice(result.device);
         }
         return result;
       } catch (err) {
-        return { success: false, error: (err as Error).message };
+        return { success: false, error: scope.isActive() ? (err as Error).message : 'A sessão mudou. Entre novamente.' };
       }
     },
-    [devices, setDevices]
+    [scope]
   );
 
   const getDevice = useCallback(async (deviceId: string): Promise<Device | null> => {
+    if (!scope.isActive()) return null;
     try {
       const result = await fetchDevice(deviceId);
-      return result.device ?? null;
+      return scope.isActive() ? result.device ?? null : null;
     } catch (err) {
-      setError((err as Error).message);
+      if (scope.isActive()) setError((err as Error).message);
       return null;
     }
-  }, []);
+  }, [scope]);
 
   useEffect(() => {
     load();

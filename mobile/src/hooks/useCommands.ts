@@ -5,6 +5,7 @@ import {
   fetchCommandHistory,
   fetchDeviceCommandStatus,
 } from '../api/client';
+import { useSessionScope } from './useSessionScope';
 
 type CommandPhase =
   | 'idle'
@@ -21,6 +22,11 @@ const RECONCILIATION_INTERVAL_MS = 2000;
 const wait = (milliseconds: number) =>
   new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
 
+/**
+ * Bind confirmation, dispatch and reconciliation to the originating session.
+ * Changing accounts stops observation; it cannot undo a remote command.
+ * @example const { sendCommand, phase } = useCommands(deviceId);
+ */
 export const useCommands = (deviceId: string) => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -32,6 +38,7 @@ export const useCommands = (deviceId: string) => {
   const mounted = useRef(true);
   const inFlight = useRef(false);
   const activeIdempotencyKey = useRef<string | null>(null);
+  const scope = useSessionScope();
 
   useEffect(() => () => {
     mounted.current = false;
@@ -39,21 +46,21 @@ export const useCommands = (deviceId: string) => {
   }, []);
 
   const reconcile = useCallback(async (id: string, currentGeneration: number) => {
-    if (!mounted.current || generation.current !== currentGeneration) return;
+    if (!scope.isActive() || !mounted.current || generation.current !== currentGeneration) return;
     setReconciling(true);
     try {
       for (let attempt = 0; attempt < RECONCILIATION_ATTEMPTS; attempt += 1) {
-        if (!mounted.current || generation.current !== currentGeneration) return;
+        if (!scope.isActive() || !mounted.current || generation.current !== currentGeneration) return;
         let status: Awaited<ReturnType<typeof fetchDeviceCommandStatus>>;
         try {
           status = await fetchDeviceCommandStatus(deviceId, id);
         } catch (err) {
-          if (!mounted.current || generation.current !== currentGeneration) return;
+          if (!scope.isActive() || !mounted.current || generation.current !== currentGeneration) return;
           if (attempt === RECONCILIATION_ATTEMPTS - 1) throw err;
           await wait(Math.min(RECONCILIATION_INTERVAL_MS * (attempt + 1), 10000));
           continue;
         }
-        if (!mounted.current || generation.current !== currentGeneration) return;
+        if (!scope.isActive() || !mounted.current || generation.current !== currentGeneration) return;
         const nextPhase = (status?.phase ||
           (status?.reconciliation?.state === 'confirmed' ? 'verified' : 'reconnecting')) as CommandPhase;
         setPhase(nextPhase);
@@ -72,22 +79,22 @@ export const useCommands = (deviceId: string) => {
         }
         await wait(RECONCILIATION_INTERVAL_MS);
       }
-      if (mounted.current && generation.current === currentGeneration) {
+      if (scope.isActive() && mounted.current && generation.current === currentGeneration) {
         setPhase('unknown');
         setError('Reconciliation timed out without verified device state');
       }
     } catch (err) {
-      if (mounted.current && generation.current === currentGeneration) {
+      if (scope.isActive() && mounted.current && generation.current === currentGeneration) {
         setPhase('unknown');
         setError((err as Error).message);
       }
     } finally {
-      if (mounted.current && generation.current === currentGeneration) {
+      if (scope.isActive() && mounted.current && generation.current === currentGeneration) {
         setReconciling(false);
         inFlight.current = false;
       }
     }
-  }, [deviceId]);
+  }, [deviceId, scope]);
 
   const sendCommand = useCallback(
     async (
@@ -95,6 +102,9 @@ export const useCommands = (deviceId: string) => {
       parameters: Record<string, unknown> = {},
       humanConfirmation?: string
     ) => {
+      if (!scope.isActive() || !mounted.current) {
+        return { success: false, error: 'A sessão mudou. Entre novamente.' };
+      }
       if (inFlight.current) {
         return { success: false, error: 'A command is already being verified' };
       }
@@ -118,7 +128,7 @@ export const useCommands = (deviceId: string) => {
             parameters,
             humanConfirmation
           );
-          if (!mounted.current || generation.current !== currentGeneration) {
+          if (!scope.isActive() || !mounted.current || generation.current !== currentGeneration) {
             return { success: false, error: 'Command view is no longer active' };
           }
           confirmationToken = confirmation?.confirmation_token;
@@ -131,7 +141,7 @@ export const useCommands = (deviceId: string) => {
           Boolean(confirmationToken),
           idempotencyKey
         );
-        if (!mounted.current || generation.current !== currentGeneration) {
+        if (!scope.isActive() || !mounted.current || generation.current !== currentGeneration) {
           return { success: false, error: 'Command view is no longer active' };
         }
         if (!result?.success) {
@@ -155,32 +165,34 @@ export const useCommands = (deviceId: string) => {
         }
         return { success: true, data: result };
       } catch (err) {
-        const message = (err as Error).message;
-        if (mounted.current && generation.current === currentGeneration) {
+        const message = scope.isActive() ? (err as Error).message : 'A sessão mudou. Entre novamente.';
+        if (scope.isActive() && mounted.current && generation.current === currentGeneration) {
           setError(message);
         }
         return { success: false, error: message };
       } finally {
-        if (mounted.current && generation.current === currentGeneration) {
+        if (scope.isActive() && mounted.current && generation.current === currentGeneration) {
           setLoading(false);
           if (!startedReconciliation) inFlight.current = false;
         }
       }
     },
-    [deviceId, reconcile]
+    [deviceId, reconcile, scope]
   );
 
   const getHistory = useCallback(async () => {
+    if (!scope.isActive() || !mounted.current) return [];
     const currentGeneration = generation.current;
     try {
-      return await fetchCommandHistory(deviceId);
+      const history = await fetchCommandHistory(deviceId);
+      return scope.isActive() && mounted.current && generation.current === currentGeneration ? history : [];
     } catch (err) {
-      if (mounted.current && generation.current === currentGeneration) {
+      if (scope.isActive() && mounted.current && generation.current === currentGeneration) {
         setError((err as Error).message);
       }
       return [];
     }
-  }, [deviceId]);
+  }, [deviceId, scope]);
 
   return {
     sendCommand,
