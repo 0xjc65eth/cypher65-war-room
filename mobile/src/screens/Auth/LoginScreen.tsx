@@ -11,8 +11,7 @@ import {
   Platform,
   ScrollView,
 } from 'react-native';
-import * as SecureStore from 'expo-secure-store';
-import { authenticateWithBiometrics, isBiometricAvailable } from '../../services/biometrics';
+import { isBiometricAvailable } from '../../services/biometrics';
 import { useAuth } from '../../hooks/useAuth';
 import { theme } from '../../theme';
 
@@ -21,7 +20,7 @@ export const LoginScreen = () => {
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [biometricAvailable, setBiometricAvailable] = useState(false);
-  const { login, loading, setToken } = useAuth();
+  const { login, loading, unlock, authNotice } = useAuth();
 
   React.useEffect(() => {
     isBiometricAvailable().then(setBiometricAvailable).catch(() => setBiometricAvailable(false));
@@ -48,21 +47,10 @@ export const LoginScreen = () => {
   };
 
   const handleBiometric = async () => {
-    const auth = await authenticateWithBiometrics('Unlock CYPHER65 with biometrics');
+    const auth = await unlock();
     if (!auth.success) {
-      Alert.alert('Unlock failed', auth.error || 'Biometric check failed');
+      Alert.alert('Falha ao desbloquear', auth.error || 'Entre novamente com suas credenciais.');
       return;
-    }
-
-    // Attempt to restore a previously saved session. If a token is cached,
-    // reuse it; otherwise biometric unlock alone is not enough to authenticate.
-    // In a production app, the token should be encrypted with a key protected
-    // by the biometric result (e.g., via Keychain/Keystore).
-    const token = await SecureStore.getItemAsync('cypher65_token');
-    if (token) {
-      setToken(token);
-    } else {
-      Alert.alert('No saved session', 'Please log in with your credentials first.');
     }
   };
 
@@ -74,6 +62,7 @@ export const LoginScreen = () => {
       <ScrollView contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled">
         <Text style={styles.heading}>CYPHER65</Text>
         <Text style={styles.subheading}>War Room</Text>
+        {authNotice && <Text accessibilityRole="alert" style={styles.hint}>{authNotice}</Text>}
 
         <TextInput
           style={styles.input}
