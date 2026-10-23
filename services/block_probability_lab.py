@@ -28,6 +28,86 @@ from datetime import datetime, timezone
 from typing import Dict, Any, Iterable, List, Optional
 
 BLOCK_INTERVAL_S = 600.0
+MAX_BLOCK_COUNT = 10_000
+MAX_TAIL_TERMS = 10_000
+
+
+def poisson_block_count_tail(mean: float, minimum_blocks: int) -> Dict[str, Any]:
+    """Return ``P(X >= minimum_blocks)`` for a constant-rate Poisson count.
+
+    Example: ``poisson_block_count_tail(1.0, 2)`` returns approximately
+    0.26424111765711533. Inputs are finite nonnegative int/float means and
+    integer counts in [0, 10000], excluding booleans and numeric strings.
+    Invalid inputs are INVALID_INPUT; larger counts are UNSUPPORTED_COUNT.
+    A positive probability below binary64 range is UNDERFLOW with no value,
+    never a solved zero. Zero mean and count zero remain exact solved cases.
+
+    Sum the upper tail directly below the count threshold; otherwise sum
+    the lower finite CDF and complement it, where cancellation is harmless.
+    Log-scaled seeds avoid intermediate factorial/power overflow and mass
+    underflow. Each call uses at most MAX_TAIL_TERMS recurrence terms; no
+    loop scales with the mean. No distributional approximation or provider
+    data is used.
+    """
+    result = {
+        "minimum_blocks": None,
+        "probability_at_least": None,
+        "status": "INVALID_INPUT",
+    }
+    if isinstance(minimum_blocks, bool) or not isinstance(minimum_blocks, int):
+        return result
+    if minimum_blocks < 0:
+        return result
+    if minimum_blocks > MAX_BLOCK_COUNT:
+        return {**result, "status": "UNSUPPORTED_COUNT"}
+    result["minimum_blocks"] = minimum_blocks
+    if isinstance(mean, bool) or not isinstance(mean, (int, float)):
+        return result
+    try:
+        rate = float(mean)
+    except OverflowError:
+        return result
+    if not math.isfinite(rate) or rate < 0:
+        return result
+    if minimum_blocks == 0 or rate == 0:
+        probability = 1.0 if minimum_blocks == 0 else 0.0
+    elif minimum_blocks == 1:
+        probability = -math.expm1(-rate)
+    elif rate < minimum_blocks:
+        term = 1.0
+        terms = [term]
+        total = term
+        for offset in range(1, MAX_TAIL_TERMS):
+            term *= rate / (minimum_blocks + offset)
+            terms.append(term)
+            total += term
+            next_ratio = rate / (minimum_blocks + offset + 1)
+            # Ratios decrease, so the remaining series is bounded by this
+            # geometric tail. Stop at binary64 summation resolution.
+            remainder_bound = term * next_ratio / (1 - next_ratio)
+            if remainder_bound <= total * 1e-16:
+                break
+        else:
+            return {**result, "status": "NUMERIC_UNAVAILABLE"}
+        log_mass = (
+            -rate + minimum_blocks * math.log(rate) - math.lgamma(minimum_blocks + 1)
+        )
+        probability = math.exp(log_mass + math.log(math.fsum(terms)))
+        if probability == 0:
+            return {**result, "status": "UNDERFLOW"}
+    else:
+        count = minimum_blocks - 1
+        term = 1.0
+        terms = [term]
+        for index in range(count, 0, -1):
+            term *= index / rate
+            terms.append(term)
+            if term == 0:
+                break
+        log_mass = -rate + count * math.log(rate) - math.lgamma(count + 1)
+        cumulative = math.exp(log_mass + math.log(math.fsum(terms)))
+        probability = 1.0 - cumulative
+    return {**result, "status": "SOLVED", "probability_at_least": probability}
 
 
 def _finite_or_default(value: float, default: float = 0.0) -> float:
@@ -82,7 +162,9 @@ def _poisson(user_hr: float, net_hr: float, seconds: float) -> Dict[str, Any]:
     mean_interval = (net_hr / user_hr) * BLOCK_INTERVAL_S
     return {
         "lambda": lambda_rate,
-        "probability_at_least_one": -math.expm1(-lambda_rate),
+        "probability_at_least_one": poisson_block_count_tail(lambda_rate, 1)[
+            "probability_at_least"
+        ],
         "probability_zero": prob_zero,
         "expected_blocks": lambda_rate,
         "expected_time_to_block_seconds": (
