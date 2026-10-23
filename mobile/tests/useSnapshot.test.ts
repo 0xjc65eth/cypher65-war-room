@@ -47,7 +47,10 @@ describe('useSnapshot', () => {
       expect(useAppStore.getState().snapshot).toEqual({ ts: 123, worker: {} });
       expect(useAppStore.getState().alerts).toHaveLength(1);
     });
-    expect(offline.cacheSnapshot).toHaveBeenCalledWith({ ts: 123, worker: {} });
+    expect(offline.cacheSnapshot).toHaveBeenCalledWith(
+      { ts: 123, worker: {} },
+      { revision: useAppStore.getState().authRevision, token: useAppStore.getState().auth.token }
+    );
   });
 
   it('treats a non-array alerts payload as empty', async () => {
@@ -71,7 +74,7 @@ describe('useSnapshot', () => {
     await waitFor(() => {
       expect(useAppStore.getState().snapshot).toEqual({ ts: 9 });
     });
-    expect(result.current.error).toMatch(/Offline mode/);
+    expect(result.current.error).toMatch(/Modo offline/);
   });
 
   it('surfaces the raw error when there is no cache', async () => {

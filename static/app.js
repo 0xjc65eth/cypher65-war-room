@@ -10042,12 +10042,12 @@ function renderAccount(acct) {
     wrap.hidden = false;
     const spend = p.spend || {};
     const income = p.income || {};
-    set('rentals-port-total', spend.spent_sats ? Number(spend.spent_sats).toLocaleString('en-US') + ' sats' : '—');
+    set('rentals-port-total', spend.spent_sats != null ? Number(spend.spent_sats).toLocaleString('en-US') + ' sats' + (spend.price_state === 'partial' ? ' · parcial (BTC)' : '') : '—');
     set('rentals-port-avg-cost', spend.avg_cost_sats_per_thh != null ? Number(spend.avg_cost_sats_per_thh).toFixed(1) + ' st/TH·h' : '—');
     set('rentals-port-avg-delivery', spend.avg_delivery_pct != null ? Number(spend.avg_delivery_pct).toFixed(1) + '%' : '—');
     set('rentals-port-delivered', spend.delivered_thh ? Number(spend.delivered_thh).toLocaleString('en-US') + ' TH·h' : '—');
     // Owner side: what rigs leased OUT earned (sats from renters).
-    set('rentals-port-income', income.count && income.spent_sats ? Number(income.spent_sats).toLocaleString('en-US') + ' sats' : '—');
+    set('rentals-port-income', income.count && income.spent_sats != null ? Number(income.spent_sats).toLocaleString('en-US') + ' sats' + (income.price_state === 'partial' ? ' · parcial (BTC)' : '') : '—');
     const split = p.split || {};
     const parts = [];
     if (split.mrr) parts.push('MRR ' + split.mrr);
@@ -10056,19 +10056,51 @@ function renderAccount(acct) {
   }
 
   // Mirror of services/rental_performance._hash_to_th — MRR reports hashrate
-  // as {hash, type} where the raw hash is in the type unit (ph/mh/gh/th).
-  // Unknown units (e.g. raw 'hash') return null: an honest '—' beats a
+  // as {hash, type} where the raw hash is in the declared hash..EH unit.
+  // Unknown units return null: an honest '—' beats a
   // nonsense astronomical number in the AVG/ADVERTISED cell.
   function _mrToTh(v, unit) {
-    if (v === null || v === undefined || v === '') return null;
+    if ((typeof v !== 'number' && typeof v !== 'string') || String(v).trim() === '') return null;
     const n = Number(v);
-    if (!isFinite(n)) return null;
-    const u = String(unit || '').toLowerCase();
-    if (u === 'ph') return n * 1000;
-    if (u === 'th') return n;
-    if (u === 'gh') return n / 1000;
-    if (u === 'mh') return n / 1e6;
-    return null;
+    if (!isFinite(n) || n < 0 || typeof unit !== 'string') return null;
+    const factors = { hash: 1e-12, kh: 1e-9, mh: 1e-6, gh: 1e-3, th: 1, ph: 1e3, eh: 1e6 };
+    const factor = factors[unit.trim().toLowerCase()];
+    const converted = factor == null ? null : n * factor;
+    return converted != null && isFinite(converted) ? converted : null;
+  }
+
+  /** Keep unrepresentable work unavailable; a measured zero rate remains zero. */
+  function _rentalWorkThh(rate, hours) {
+    if (!Number.isFinite(rate) || !Number.isFinite(hours) || rate < 0 || hours <= 0) return null;
+    const work = rate * hours;
+    return Number.isFinite(work) && !(rate > 0 && work === 0) ? work : null;
+  }
+
+  /** Do not render numeric overflow or underflow as an infinite or free cost. */
+  function _rentalUnitCost(paid, work) {
+    if (!Number.isFinite(paid) || !Number.isFinite(work) || paid < 0 || work <= 0) return null;
+    const cost = paid / work;
+    return Number.isFinite(cost) && !(paid > 0 && cost === 0) ? cost : null;
+  }
+
+  /** Return sats only for explicitly BTC-denominated raw provider payments. */
+  function _rentalPaymentSats(price) {
+    if (!price || typeof price.currency !== 'string' || price.currency.trim().toUpperCase() !== 'BTC') return null;
+    if ((typeof price.paid !== 'number' && typeof price.paid !== 'string') || String(price.paid).trim() === '') return null;
+    const amount = Number(price.paid);
+    const sats = amount * 1e8;
+    return isFinite(amount) && amount >= 0 && isFinite(sats) ? sats : null;
+  }
+
+  /** Display original currency without inventing an FX conversion; null stays unknown. */
+  function _rentalRawPriceStr(price) {
+    const sats = _rentalPaymentSats(price);
+    if (sats != null) return sats.toFixed(0) + ' sats';
+    if (!price || typeof price.currency !== 'string' || !price.currency.trim() ||
+        (typeof price.paid !== 'number' && typeof price.paid !== 'string') || String(price.paid).trim() === '') return '—';
+    const amount = Number(price.paid);
+    return isFinite(amount) && amount >= 0
+      ? amount.toLocaleString('pt-BR', { maximumSignificantDigits: 10 }) + ' ' + price.currency.trim().toUpperCase() : '—';
   }
 
   function _rentalStatus(r) {
@@ -10089,8 +10121,12 @@ function renderAccount(acct) {
   }
 
   function _rentalPriceStr(r) {
-    if (!r || r.price_paid_btc == null) return '—';
-    return (r.price_paid_btc * 1e8).toFixed(0) + ' sats';
+    if (!r) return '—';
+    if (Object.prototype.hasOwnProperty.call(r, 'price_currency')) {
+      const btc = typeof r.price_currency === 'string' && r.price_currency.trim().toUpperCase() === 'BTC';
+      return _rentalRawPriceStr({ paid: r.price_paid_amount != null ? r.price_paid_amount : (btc ? r.price_paid_btc : null), currency: r.price_currency });
+    }
+    return _rentalRawPriceStr({ paid: r.price_paid_btc, currency: 'BTC' });
   }
 
   // CFO: rig trust — is this rig blacklisted (manual OR auto-excluded) or a
@@ -10494,6 +10530,8 @@ function renderAccount(acct) {
         (t.rentals != null ? t.rentals + ' aluguéis · ' : '') +
         (t.spent_sats != null ? Number(t.spent_sats).toLocaleString('en-US') + ' sats gastos · ' : '') +
         'P/L total ' + plTxt;
+      if (t.price_state === 'partial') m += ' · gastos parciais (BTC)';
+      if (t.price_state === 'unavailable') m += ' · gastos em BTC indisponíveis';
       // Issue #146: when the self-mining EV entered the account, surface the
       // consolidated total + the honest ESTIMATE note (EV, not realized).
       if (t.own_ev_sats != null) {
@@ -10971,7 +11009,7 @@ function renderAccount(acct) {
       '</div>' +
       '<div class="rentals-item__stats">' +
         '<div class="rentals-item__stat"><span class="rentals-item__stat-label">HASHRATE</span><span class="rentals-item__stat-value">' + _rentalHashrateStr(r) + '</span></div>' +
-        '<div class="rentals-item__stat"><span class="rentals-item__stat-label">PAID</span><span class="rentals-item__stat-value">' + _rentalPriceStr(r) + '</span></div>' +
+        '<div class="rentals-item__stat"><span class="rentals-item__stat-label">PAID</span><span class="rentals-item__stat-value">' + escapeHtml(_rentalPriceStr(r)) + '</span></div>' +
         '<div class="rentals-item__stat"><span class="rentals-item__stat-label">LENGTH</span><span class="rentals-item__stat-value">' + (r && r.length_hours != null ? Number(r.length_hours).toFixed(1) + 'h' : '—') + '</span></div>' +
       '</div>' +
       '<div class="rentals-item__status">' + escapeHtml(st) + '</div>' +
@@ -11691,7 +11729,7 @@ function renderAccount(acct) {
         ['Renter', d.renter || '—'],
         ['Advertised', hr.advertised ? (hr.advertised.nice || hr.advertised.hash || '—') : '—'],
         ['Average', hr.average ? (hr.average.nice || '—') + (hr.average.percent != null ? ' (' + hr.average.percent + '%)' : '') : '—'],
-        ['Paid', d.price && d.price.paid != null ? (Number(d.price.paid) * 1e8).toFixed(0) + ' sats' : '—'],
+        ['Pago', _rentalRawPriceStr(d.price)],
         ['Length', d.length != null ? d.length + 'h' : '—'],
         ['Rig', d.rig && d.rig.name ? d.rig.name : '—'],
         ['Region', d.rig && d.rig.region ? d.rig.region : '—'],
@@ -11704,22 +11742,28 @@ function renderAccount(acct) {
       const perfEl = document.getElementById('rentals-detail-perf');
       if (perfEl) {
         const adv = hr.advertised, avg = hr.average;
-        const advTh = adv ? _mrToTh(adv.hash, adv.type) : null;
-        const avgTh = avg ? _mrToTh(avg.hash, avg.type) : null;
+        // Braiins supplies a normalized Bitcoin contract, not an MRR rig record.
+        const modelEligible = (provider === 'braiins' && data.provider === 'braiins') ||
+          (d.rig && typeof d.rig.type === 'string' && d.rig.type.trim().toLowerCase() === 'sha256');
+        const advTh = modelEligible && adv ? _mrToTh(adv.hash, adv.type) : null;
+        const avgTh = modelEligible && avg ? _mrToTh(avg.hash, avg.type) : null;
         const pct = avg && avg.percent != null ? parseFloat(avg.percent)
           : (avgTh && advTh ? (avgTh / advTh) * 100 : null);
         const lenH = d.length != null ? parseFloat(d.length) : 0;
-        const paidSats = d.price && d.price.paid != null ? parseFloat(d.price.paid) * 1e8 : null;
-        const costPerThHour = (paidSats != null && avgTh && lenH) ? paidSats / (avgTh * lenH) : null;
-        const delivered = (avgTh && lenH) ? avgTh * lenH : null;
+        const paidSats = _rentalPaymentSats(d.price);
+        const perf = data.perf || d.perf || {};
+        // Braiins duration is rounded for display; its series work is not.
+        const delivered = provider === 'braiins' && data.provider === 'braiins' &&
+          Number.isFinite(perf.delivered_thh) && perf.delivered_thh >= 0
+          ? perf.delivered_thh : _rentalWorkThh(avgTh, lenH);
+        const costPerThHour = _rentalUnitCost(paidSats, delivered);
         // Backend pre-computes analytics for BOTH providers (Braiins from the
         // speed series, MRR from the raw detail) — prefer those so the banner
         // renders even when the series is empty or sparse.
-        const perf = data.perf || d.perf || {};
-        const avgThFinal = perf.avg_th != null ? perf.avg_th : avgTh;
+        const avgThFinal = avgTh == null ? null : (Object.prototype.hasOwnProperty.call(perf, 'avg_th') ? perf.avg_th : avgTh);
         const pctFinal = perf.percent != null ? perf.percent : pct;
-        const costFinal = perf.cost_sats_per_thh != null ? perf.cost_sats_per_thh : costPerThHour;
-        const deliveredFinal = perf.delivered_thh != null ? perf.delivered_thh : delivered;
+        const costFinal = paidSats == null || !delivered ? null : (Object.prototype.hasOwnProperty.call(perf, 'cost_sats_per_thh') ? (Number.isFinite(perf.cost_sats_per_thh) ? perf.cost_sats_per_thh : null) : costPerThHour);
+        const deliveredFinal = delivered == null ? null : (Object.prototype.hasOwnProperty.call(perf, 'delivered_thh') ? (Number.isFinite(perf.delivered_thh) ? perf.delivered_thh : null) : delivered);
         let cls = '', verdict = '—';
         if (pctFinal != null) {
           cls = pctFinal >= 95 ? 'is-good' : (pctFinal >= 80 ? 'is-warn' : 'is-bad');
@@ -11739,10 +11783,10 @@ function renderAccount(acct) {
         // more than the hashrate produced at current difficulty.
         const pl = data.pl || {};
         let yieldVal = '—', plVal = '—', plCls = '', plTitle = '';
-        if (pl.expected_yield_sats_per_thh != null) {
+        if (paidSats != null && delivered != null && Number.isFinite(pl.expected_yield_sats_per_thh)) {
           yieldVal = Number(pl.expected_yield_sats_per_thh).toFixed(2) + ' st/TH·h';
         }
-        if (pl.pl_sats != null) {
+        if (paidSats != null && delivered != null && pl.available !== false && Number.isFinite(pl.pl_sats)) {
           const sign = pl.pl_sats >= 0 ? '+' : '';
           plVal = sign + Number(pl.pl_sats).toFixed(0) + ' sats';
           plCls = pl.pl_sats >= 0 ? 'is-good' : 'is-bad';
@@ -11752,7 +11796,7 @@ function renderAccount(acct) {
         }
         const cells = [
           { l: 'PERFORMANCE', v: verdict, c: cls },
-          { l: 'AVG / ADVERTISED', v: avgThFinal ? fmt.hashrate(avgThFinal * 1e12) + ' / ' + fmt.hashrate((advTh || 0) * 1e12) : '—', c: '' },
+          { l: 'AVG / ADVERTISED', v: (avgThFinal != null ? fmt.hashrate(avgThFinal * 1e12) : '—') + ' / ' + (advTh != null ? fmt.hashrate(advTh * 1e12) : '—'), c: '' },
           { l: 'COST (PROVIDER AVG)', v: costFinal != null ? costFinal.toFixed(2) + ' sats/TH/h' : '—', c: '', t: 'Unit cost uses provider-reported average hashrate and duration; destination-pool observations are separate sampled evidence and may have an unknown averaging window.' },
           { l: 'YIELD (exp)', v: yieldVal, c: '', t: 'expected GROSS yield of 1 TH·h at the current network hashrate (before pool fee)' },
           { l: 'DELIVERED', v: deliveredFinal != null ? deliveredFinal.toFixed(0) + ' TH·h' : '—', c: '' },

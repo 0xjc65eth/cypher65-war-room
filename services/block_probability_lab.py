@@ -31,9 +31,13 @@ BLOCK_INTERVAL_S = 600.0
 
 
 def _finite_or_default(value: float, default: float = 0.0) -> float:
+    """Normalize numeric inputs without admitting booleans, NaN or Infinity."""
+    if isinstance(value, bool):
+        return default
     try:
-        return float(value)
-    except (TypeError, ValueError):
+        number = float(value)
+        return number if math.isfinite(number) else default
+    except (TypeError, ValueError, OverflowError):
         return default
 
 
@@ -45,40 +49,48 @@ def _poisson(user_hr: float, net_hr: float, seconds: float) -> Dict[str, Any]:
     expected_blocks = lambda
     expected_time = 600 * net_hr / user_hr
     """
+    no_data = {
+        "lambda": 0.0,
+        "probability_at_least_one": 0.0,
+        "probability_zero": 1.0,
+        "expected_blocks": 0.0,
+        "expected_time_to_block_seconds": None,
+        "status": "NO_DATA",
+    }
     if user_hr <= 0 or net_hr <= 0 or seconds <= 0:
-        return {
-            "lambda": 0.0,
-            "probability_at_least_one": 0.0,
-            "probability_zero": 1.0,
-            "expected_blocks": 0.0,
-            "expected_time_to_block_seconds": None,
-        }
+        return no_data
     if not (
         math.isfinite(user_hr) and math.isfinite(net_hr) and math.isfinite(seconds)
     ):
-        return {
-            "lambda": 0.0,
-            "probability_at_least_one": 0.0,
-            "probability_zero": 1.0,
-            "expected_blocks": 0.0,
-            "expected_time_to_block_seconds": None,
-        }
+        return no_data
     lambda_rate = (user_hr / net_hr) * (seconds / BLOCK_INTERVAL_S)
-    if not math.isfinite(lambda_rate):
-        return {
-            "lambda": 0.0,
-            "probability_at_least_one": 0.0,
-            "probability_zero": 1.0,
-            "expected_blocks": 0.0,
-            "expected_time_to_block_seconds": None,
-        }
+    # Preserve representable results when an intermediate ratio over/underflows.
+    if not math.isfinite(lambda_rate) or lambda_rate <= 0:
+        try:
+            lambda_rate = math.exp(
+                math.log(user_hr)
+                - math.log(net_hr)
+                + math.log(seconds)
+                - math.log(BLOCK_INTERVAL_S)
+            )
+        except OverflowError:
+            return no_data
+    if not math.isfinite(lambda_rate) or lambda_rate <= 0:
+        return no_data
     prob_zero = math.exp(-lambda_rate)
+    # Divide first: 600 * net_hr overflows even for equal finite rates.
+    mean_interval = (net_hr / user_hr) * BLOCK_INTERVAL_S
     return {
         "lambda": lambda_rate,
-        "probability_at_least_one": 1.0 - prob_zero,
+        "probability_at_least_one": -math.expm1(-lambda_rate),
         "probability_zero": prob_zero,
         "expected_blocks": lambda_rate,
-        "expected_time_to_block_seconds": (BLOCK_INTERVAL_S * net_hr) / user_hr,
+        "expected_time_to_block_seconds": (
+            mean_interval
+            if math.isfinite(mean_interval) and mean_interval > 0
+            else None
+        ),
+        "status": "SOLVED",
     }
 
 
@@ -156,7 +168,8 @@ def target_probability_solver(
     """
     user_hr = _finite_or_default(user_hr)
     net_hr = _finite_or_default(net_hr)
-    window = _finite_or_default(window_seconds, 600.0)
+    window = _finite_or_default(window_seconds)
+    target_p = _finite_or_default(target_p)
 
     if target_p <= 0 or target_p >= 1:
         return {
@@ -183,29 +196,27 @@ def target_probability_solver(
     # always produces the requested probability, with no binomial/Poisson
     # divergence.
     try:
-        window_for_rate = window / BLOCK_INTERVAL_S
-        if window_for_rate <= 0:
-            raise ValueError("window_for_rate <= 0")
-        import math as _math
-
-        lambda_for_target = -_math.log(1.0 - target_p)
-        share_of_network_required = lambda_for_target / window_for_rate
+        lambda_for_target = -math.log1p(-target_p)
+        share_of_network_required = lambda_for_target * BLOCK_INTERVAL_S / window
         required_user_hashrate = share_of_network_required * net_hr
+        if not (
+            math.isfinite(share_of_network_required)
+            and share_of_network_required > 0
+            and math.isfinite(required_user_hashrate)
+            and required_user_hashrate > 0
+        ):
+            raise ValueError("target result is not representable")
         return {
             "target_probability": target_p,
             "status": "SOLVED",
             "share_of_network_required": share_of_network_required,
             "required_user_hashrate": required_user_hashrate,
-            "share_of_network_required_str": (
-                _format_hr(share_of_network_required)
-                if share_of_network_required
-                else None
-            ),
+            "share_of_network_required_str": f"{share_of_network_required:.6g}×",
             "required_user_hashrate_str": (
                 _format_hr(required_user_hashrate) if required_user_hashrate else None
             ),
         }
-    except (OverflowError, ValueError, ZeroDivisionError, ZeroDivisionError):
+    except (OverflowError, ValueError, ZeroDivisionError):
         return {
             "target_probability": target_p,
             "status": "SOLVER_FAILED",
@@ -223,7 +234,7 @@ def probability_horizons(
     """Epoch / window probability for one duration (the solver's window)."""
     user_hr = _finite_or_default(user_hr)
     network_hr = _finite_or_default(network_hr)
-    seconds = _finite_or_default(duration_seconds, 86400.0)
+    seconds = _finite_or_default(duration_seconds)
     if (
         user_hr <= 0
         or network_hr <= 0
@@ -240,9 +251,7 @@ def probability_horizons(
             "expected_time_to_block_seconds": None,
             "status": "NO_DATA",
         }
-    result = _poisson(user_hr, network_hr, seconds)
-    result["status"] = "SOLVED"
-    return result
+    return _poisson(user_hr, network_hr, seconds)
 
 
 def hashpower_network_what_if(
@@ -267,22 +276,26 @@ def hashpower_network_what_if(
             "network_hashrate": base_network_hr,
             "probability_at_least_one": base["probability_at_least_one"],
             "expected_time_to_block_seconds": base["expected_time_to_block_seconds"],
+            "status": base["status"],
         },
         "scenarios": [],
         "note": "What-if on network hashrate (static user share). Not a forecast.",
     }
     for s in scenarios or []:
-        nr = _finite_or_default(s.get("network_hashrate"), base_network_hr)
+        nr = _finite_or_default(s.get("network_hashrate"))
         p = _poisson(base_user_hr, nr, window)
+        multiplier = nr / base_network_hr if nr > 0 else None
+        if multiplier is not None and not math.isfinite(multiplier):
+            multiplier = None
         out["scenarios"].append(
             {
                 "network_hashrate": nr,
                 "network_hashrate_str": _format_hr(nr),
-                "multiplier": nr / base_network_hr if base_network_hr else None,
+                "multiplier": multiplier,
                 "probability_at_least_one": p["probability_at_least_one"],
                 "probability_at_least_one_pct": p["probability_at_least_one"] * 100.0,
                 "expected_time_to_block_seconds": p["expected_time_to_block_seconds"],
-                "status": "SOLVED",
+                "status": p["status"],
             }
         )
     return out
@@ -299,6 +312,8 @@ def historical_best_share(
     best = _finite_or_default(best_diff_raw, 0.0)
     net = _finite_or_default(network_difficulty, 0.0)
     ratio = (best / net) if (best > 0 and net > 0) else None
+    if ratio is not None and not math.isfinite(ratio):
+        ratio = None
     return {
         "best_share": best,
         "network_difficulty": net,
@@ -318,13 +333,15 @@ def solo_model_summary(
     of 'expected time'), never a countdown."""
     user_hr = _finite_or_default(user_hr)
     network_hr = _finite_or_default(network_hr)
-    seconds = _finite_or_default(duration_seconds, 86400.0)
+    seconds = _finite_or_default(duration_seconds)
     if share_of_network is None and user_hr > 0 and network_hr > 0:
         share_of_network = user_hr / network_hr
+    share_of_network = _finite_or_default(share_of_network, -1.0)
+    if share_of_network < 0:
+        share_of_network = None
     result = _poisson(user_hr, network_hr, seconds)
     # Probability of at least one block over n independent windows of equal
     # length (e.g. 1 window, 7 days) - honest 'what are the odds'.
-    result["status"] = "NO_DATA" if (user_hr <= 0 or network_hr <= 0) else "SOLVED"
     result["share_of_network"] = share_of_network
     return result
 
@@ -557,27 +574,19 @@ def evidence_state_from_inputs(
 
 
 def target_probability_for_p1_in_window(window_seconds: float) -> Dict[str, Any]:
-    """Precomputed target hashrate needed to reach P(>=1) = 10% in the
-    given window, so the UI can show a single reachable target without
-    solving each time. Uses the exact binomial/Poisson inversion."""
-    window = _finite_or_default(window_seconds, 600.0)
-    p1 = 0.10
-    # solve for share of network where 1 - (1-p)^n = p1, with p = share * (window/600)
-    # and n = window. Invert: p = 1 - (1-p1)^(1/n).
-    try:
-        n = max(1.0, window)
-        p = 1.0 - (1.0 - p1) ** (1.0 / n)
-        share_of_network = p / (window / BLOCK_INTERVAL_S)
-        return {
-            "target": 0.10,
-            "window_seconds": window,
-            "share_of_network_required": share_of_network,
-            "user_hashrate_required": None,
-            "note": "share-of-network required; multiply by network hashrate for user hashrate",
-        }
-    except (OverflowError, ValueError, ZeroDivisionError):
-        return {
-            "target": 0.10,
-            "window_seconds": window,
-            "status": "SOLVER_FAILED",
-        }
+    """Return the 10% target ratio under the forward model's same Poisson law.
+
+    Example: a 600-second window requires ``-log(0.9)`` of the supplied
+    network hashrate. This is a scenario, not a feasible purchase or deadline.
+    """
+    window = _finite_or_default(window_seconds)
+    # Unit rates expose only the ratio; no network sample or fallback is added.
+    solved = target_probability_solver(1.0, 1.0, 0.10, window)
+    return {
+        "target": 0.10,
+        "window_seconds": window,
+        "status": solved["status"],
+        "share_of_network_required": solved["share_of_network_required"],
+        "user_hashrate_required": None,
+        "note": "share-of-network required; multiply by network hashrate for user hashrate",
+    }
