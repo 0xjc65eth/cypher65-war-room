@@ -61,7 +61,7 @@ def _mrr_rental(**over):
         "rig": {
             "id": "376882",
             "name": "A02 165TH",
-            "type": "sha256ab",
+            "type": "sha256",  # Official MRR v2 rental contract, Issue #843.
             "status": {"status": "available", "rented": False, "online": True},
             "online": True,
             "region": "eu-de",
@@ -1131,7 +1131,7 @@ def test_hash_to_th_units():
     assert rp._hash_to_th("159.32", "th") == 159.32  # already TH
     assert rp._hash_to_th("500", "gh") == 0.5  # 500 GH = 0.5 TH
     assert rp._hash_to_th("1", "mh") == 1e-6  # 1 MH = 1e-6 TH
-    assert rp._hash_to_th("7", "") == 7.0  # unknown unit → raw
+    assert rp._hash_to_th("7", "") is None  # Issue #843: unknown unit is unavailable.
     assert rp._hash_to_th(None, "ph") is None
     assert rp._hash_to_th("nope", "ph") is None
 
