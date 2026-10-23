@@ -1,48 +1,60 @@
-import { useEffect, useState } from 'react';
-import * as SecureStore from 'expo-secure-store';
+import { useEffect } from 'react';
 import { useAppStore } from '../store';
 import { login as apiLogin, logoutRemote } from '../api/client';
+import { beginAuthentication, completeLogin, endSession, hydrateSession, unlockSavedSession } from '../services/authSession';
+import { assertSession, captureSession, isCurrentSession, type SessionLease } from '../services/sessionLease';
+import { authenticateWithBiometrics } from '../services/biometrics';
 
-const TOKEN_KEY = 'cypher65_token';
-
+/**
+ * Coordinate session-bound bootstrap/login/logout without stale native writes.
+ * @example const { login, logout, loading } = useAuth();
+ */
 export const useAuth = () => {
-  const { auth, setToken, logout: logoutStore } = useAppStore();
-  const [loading, setLoading] = useState(true);
+  const { auth, authReady, authPending, authNotice } = useAppStore();
+  const viewSession = captureSession();
 
   useEffect(() => {
-    const loadToken = async () => {
-      try {
-        const token = await SecureStore.getItemAsync(TOKEN_KEY);
-        setToken(token ?? null);
-      } catch {
-        setToken(null);
-      } finally {
-        setLoading(false);
-      }
-    };
-    loadToken();
-  }, [setToken]);
+    void hydrateSession();
+  }, []);
 
   const login = async (username: string, password: string) => {
+    let intent: SessionLease | undefined;
     try {
+      assertSession(viewSession);
+      intent = beginAuthentication();
       const response = await apiLogin({ username, password });
-      await SecureStore.setItemAsync(TOKEN_KEY, response.token);
-      setToken(response.token);
+      await completeLogin(response.token, intent);
       return { success: true };
     } catch (error) {
+      if (intent && isCurrentSession(intent)) useAppStore.setState({
+        authNotice: 'Não foi possível entrar. Verifique suas credenciais e a conexão.',
+      });
       return { success: false, error: (error as Error).message };
+    } finally {
+      if (intent && isCurrentSession(intent)) useAppStore.setState({ authPending: false });
     }
   };
 
   const logout = async () => {
+    assertSession(viewSession);
+    const old = captureSession();
+    const deletion = endSession(old);
     try {
-      await logoutRemote();
+      if (old.token) await logoutRemote(old.token);
     } catch {
-      // ignore
+      // Remote revocation failure does not authorize keeping the local session.
     }
-    await SecureStore.deleteItemAsync(TOKEN_KEY);
-    logoutStore();
+    const removed = await deletion;
+    return { success: removed, ...(!removed && { error: 'Saída local concluída; não foi possível remover a credencial salva.' }) };
   };
 
-  return { ...auth, loading, login, logout, setToken };
+  const unlock = async () => {
+    try {
+      assertSession(viewSession);
+      return await unlockSavedSession(() => authenticateWithBiometrics('Desbloquear CYPHER65'));
+    } catch {
+      return { success: false, error: 'A sessão mudou. Entre novamente.' };
+    }
+  };
+  return { ...auth, loading: !authReady || authPending, authPending, authNotice, login, logout, unlock };
 };

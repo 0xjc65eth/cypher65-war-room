@@ -2,10 +2,10 @@
 # Audit C6: exact pins so deploys reproduce the tested environment.
 flask==3.1.3
 requests==2.34.2
-python-dotenv==1.2.3
+python-dotenv==1.2.4
 pyjwt==2.15.1
 # Direct dependency: authenticated encryption for settings and remote backups.
-cryptography==50.0.1
+cryptography==50.0.2
 # pywebpush is optional (Web Push notifications). services/push_notifier.py
 # imports it lazily and degrades gracefully when it is not installed, so a
 # minimal deploy can omit it safely.
@@ -14,8 +14,8 @@ pywebpush>=2.5.0
 # snapshot/history payloads on mobile/slow links, near-zero CPU cost).
 flask-compress==1.25
 # Renders docs/AGENT_SETUP_GUIDE.md at /docs/agent (guide page inside the app).
-markdown==3.10.3
+markdown==3.11.1
 # Sentry error tracking is OPTIONAL (Issue #176): services/sentry_telemetry
 # imports it lazily and only inits when SENTRY_DSN is set — without the env
 # var (or without this package) the app boots normally, zero overhead.
-sentry-sdk>=2.71.0
+sentry-sdk>=2.72.0

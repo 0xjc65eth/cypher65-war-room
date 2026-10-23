@@ -19,3 +19,10 @@ jest.mock('@react-native-async-storage/async-storage', () => {
     },
   };
 });
+
+// Real SHA-256 semantics for owner-binding tests; not native module proof.
+jest.mock('expo-crypto', () => ({
+  CryptoDigestAlgorithm: { SHA256: 'SHA-256' },
+  digestStringAsync: jest.fn(async (_algorithm, value) =>
+    require('node:crypto').createHash('sha256').update(value).digest('hex')),
+}));

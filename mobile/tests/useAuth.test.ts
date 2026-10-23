@@ -18,7 +18,7 @@ jest.mock('../src/api/client', () => ({
 describe('useAuth', () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    useAppStore.setState({ auth: { token: null, isAuthenticated: false } });
+    useAppStore.setState(useAppStore.getInitialState(), true);
     (SecureStore.getItemAsync as jest.Mock).mockResolvedValue(null);
   });
 
