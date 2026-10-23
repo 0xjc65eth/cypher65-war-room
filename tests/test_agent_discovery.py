@@ -152,7 +152,11 @@ def test_explicit_offline_stays_unknown_until_cgminer(monkeypatch):
     monkeypatch.setattr(agent, "_post", post)
     monkeypatch.setattr(agent, "_post_retry", post)
     monkeypatch.setattr(
-        agent, "time", SimpleNamespace(time=agent.time.time, sleep=sleep)
+        agent,
+        "time",
+        SimpleNamespace(
+            time=agent.time.time, monotonic=agent.time.monotonic, sleep=sleep
+        ),
     )
     with pytest.raises(StopLoop):
         agent.main()
@@ -201,7 +205,11 @@ def test_blocked_ips_are_not_reintroduced(monkeypatch):
     monkeypatch.setattr(agent, "_post", post)
     monkeypatch.setattr(agent, "_post_retry", post)
     monkeypatch.setattr(
-        agent, "time", SimpleNamespace(time=agent.time.time, sleep=sleep)
+        agent,
+        "time",
+        SimpleNamespace(
+            time=agent.time.time, monotonic=agent.time.monotonic, sleep=sleep
+        ),
     )
     with pytest.raises(StopLoop):
         agent.main()

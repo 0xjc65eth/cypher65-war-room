@@ -122,7 +122,7 @@ def _caps_supported_commands(caps) -> list:
     into READ-ONLY; a list passes through (older serializers); junk → []
     (the honest 'no commands' state)."""
     if isinstance(caps, dict):
-        return [k for k, v in caps.items() if v]
+        return [k for k, v in caps.items() if v is True]
     if isinstance(caps, list):
         return [c for c in caps if isinstance(c, str)]
     return []
@@ -4376,6 +4376,11 @@ def _valid_agent_probe_target(target) -> bool:
 def agent_pull_commands(agent_tenant_id: str = ""):
     """Pull queued commands (restart/identify) for this tenant's devices.
     Returns [] when nothing is pending."""
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"error": "object payload required"}), 400
+    protocol = data.get("command_protocol")
+    identity_capable = type(protocol) is int and protocol == 1
     cmds = _registry.pending_agent_commands(tenant_id=agent_tenant_id)
     pulled = []
     now = int(time.time())
@@ -4390,7 +4395,12 @@ def agent_pull_commands(agent_tenant_id: str = ""):
             age = now - int(c.get("created_at") or 0)
         except (TypeError, ValueError, OverflowError):
             age = AGENT_COMMAND_TTL_S + 1
-        if age < 0 or age > AGENT_COMMAND_TTL_S:
+        if c.get("status") == "pulled" and command != "probe":
+            # Delivery may have happened before a process/ACK failure. Never
+            # confuse absent acknowledgement with permission to repeat an effect.
+            reason = "delivery_outcome_unknown"
+            terminal_status = "unknown"
+        elif age < 0 or age > AGENT_COMMAND_TTL_S:
             reason = "command_expired"
             terminal_status = "expired"
         elif command == "probe":
@@ -4421,6 +4431,10 @@ def agent_pull_commands(agent_tenant_id: str = ""):
                 continue
         elif not can_execute_physical_command():
             reason = "deployment_policy_disabled"
+        elif not identity_capable:
+            # Old agents ignore new envelope fields. Leave pending until an
+            # upgraded consumer arrives or the operator's intent expires.
+            continue
         elif not dev:
             reason = "device_missing"
         elif not int(dev.get("agent_managed", 0) or 0):
@@ -4434,6 +4448,12 @@ def agent_pull_commands(agent_tenant_id: str = ""):
             reason = "device_ip_missing"
         elif command not in _caps_supported_commands(dev.get("capabilities")):
             reason = "command_capability_missing"
+        elif not normalize_device_mac(dev.get("mac_address")) or (
+            not isinstance(dev.get("capabilities"), dict)
+            or dev["capabilities"].get("agent_protocol")
+            not in {"bitaxe", "cgminer", "braiins"}
+        ):
+            reason = "command_identity_unavailable"
 
         if reason:
             _registry.terminalize_agent_command(
@@ -4466,6 +4486,10 @@ def agent_pull_commands(agent_tenant_id: str = ""):
                     "ip_address": (dev or {}).get("ip_address", ""),
                     "command": c["command"],
                     "params": c.get("params", {}),
+                    "command_protocol": 1,
+                    "expires_at": int(c["created_at"]) + AGENT_COMMAND_TTL_S,
+                    "expected_mac": normalize_device_mac(dev.get("mac_address")),
+                    "expected_type": dev["capabilities"]["agent_protocol"],
                 }
             )
     return jsonify({"success": True, "commands": pulled})

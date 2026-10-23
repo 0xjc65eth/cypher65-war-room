@@ -81,20 +81,20 @@ def _caps_for_type(info: dict) -> dict:
       /api/system/miningPause|miningResume), configure for AxeOS.
     - cgminer-family: restart over JSON-over-TCP :4028, NO identify/pause/
       resume (the cgminer API has no such commands).
-    - type unknown (telemetry-only re-upsert): conservative — restart yes,
-      identify only if the firmware looks like AxeOS."""
+    - type unknown: telemetry only until a fresh discovery establishes the
+      protocol. The protocol metadata is not a boolean capability."""
     dev_type = str(info.get("type") or "").lower()
     is_cgminer = dev_type == "cgminer"
-    is_axeos = (
-        bool(info.get("firmware")) and "axe" in str(info.get("firmware", "")).lower()
-    )
+    is_axeos = dev_type == "bitaxe" and "axe" in str(info.get("firmware") or "").lower()
+    known = dev_type in {"bitaxe", "cgminer", "braiins"}
     return {
         "telemetry": True,
-        "restart": True,
-        "identify": not is_cgminer,
+        "restart": known,
+        "identify": known and not is_cgminer,
         "pause": is_axeos and not is_cgminer,
         "resume": is_axeos and not is_cgminer,
         "configure": is_axeos,
+        "agent_protocol": dev_type if known else "",
     }
 
 
@@ -1817,9 +1817,11 @@ class DeviceRegistry:
     def pending_agent_commands(
         self, tenant_id: str = "default", requeue_after: int = 60
     ) -> list:
-        """Pending commands for a tenant (for the agent's pull). Commands
-        pulled but never acked within `requeue_after` seconds are returned
-        again so a crashed agent doesn't lose the command forever."""
+        """Return pending commands and overdue delivery outcomes for a tenant.
+
+        An overdue physical delivery is returned for terminalization as unknown,
+        never for retransmission. Only read-only probes may be reclaimed.
+        """
         now = int(time.time())
         conn = self._get_db()
         c = conn.cursor()
@@ -1850,7 +1852,7 @@ class DeviceRegistry:
         max_age: int = 300,
         requeue_after: int = 60,
     ) -> bool:
-        """Atomically release a pending/retryable command to an agent.
+        """Atomically claim one delivery; physical commands are never reclaimed.
 
         The age predicate closes the race between listing and marking: an
         expired command can never become executable while a pull is in flight.
@@ -1863,7 +1865,7 @@ class DeviceRegistry:
                 "UPDATE axe_agent_commands SET status='pulled', pulled_at=? "
                 "WHERE id=? AND tenant_id=? AND created_at>=? "
                 "AND (status='pending' OR "
-                "(status='pulled' AND ? - pulled_at > ?))",
+                "(command='probe' AND status='pulled' AND ? - pulled_at > ?))",
                 (
                     now,
                     command_id,
@@ -1889,7 +1891,7 @@ class DeviceRegistry:
         reason: str,
     ) -> bool:
         """Move an undelivered command to an auditable terminal state."""
-        if status not in ("expired", "blocked", "failed"):
+        if status not in ("expired", "blocked", "failed", "unknown"):
             return False
         conn = self._get_db()
         c = conn.cursor()
@@ -1925,7 +1927,7 @@ class DeviceRegistry:
         try:
             c.execute(
                 "UPDATE axe_agent_commands SET status=?, result=?, acked_at=? "
-                "WHERE id=? AND tenant_id=? AND status='pulled'",
+                "WHERE id=? AND tenant_id=? AND status IN ('pulled','unknown')",
                 (
                     "done" if success else "failed",
                     result[:2000],

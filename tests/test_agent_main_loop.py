@@ -122,7 +122,11 @@ def test_removed_device_does_not_crash_poll_loop_or_return_on_rescan(
     monkeypatch.setattr(agent, "_poll_telemetry", poll)
     monkeypatch.setattr(agent, "_post", post)
     monkeypatch.setattr(
-        agent, "time", SimpleNamespace(time=agent.time.time, sleep=sleep)
+        agent,
+        "time",
+        SimpleNamespace(
+            time=agent.time.time, monotonic=agent.time.monotonic, sleep=sleep
+        ),
     )
     with pytest.raises(StopLoop):
         agent.main()
@@ -165,7 +169,11 @@ def test_main_loop_skips_macless_bitaxe_while_polling_verified_peer(monkeypatch)
     )
     monkeypatch.setattr(agent, "_post", post)
     monkeypatch.setattr(
-        agent, "time", SimpleNamespace(time=agent.time.time, sleep=stop)
+        agent,
+        "time",
+        SimpleNamespace(
+            time=agent.time.time, monotonic=agent.time.monotonic, sleep=stop
+        ),
     )
     with pytest.raises(StopLoop):
         agent.main()

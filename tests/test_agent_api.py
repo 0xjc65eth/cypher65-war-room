@@ -546,7 +546,7 @@ class TestAgentCommands:
                 headers=_headers(agent_token),
                 json={
                     "devices": [
-                        {"mac": _DEVICE_MACS["192.168.1.50"], "ip": "192.168.1.50"}
+                        {"mac": _DEVICE_MACS["192.168.1.50"], "ip": "192.168.1.50", "type": "bitaxe"}
                     ]
                 },
             )
@@ -565,7 +565,7 @@ class TestAgentCommands:
 
         with patch("axe_fleet.routes._registry", registry):
             pull = client.post("/api/agent/commands/pull",
-                               headers=_headers(agent_token), json={})
+                               headers=_headers(agent_token), json={"command_protocol": 1})
             assert pull.status_code == 200
             cmds = pull.get_json()["commands"]
             assert len(cmds) == 1
@@ -581,13 +581,13 @@ class TestAgentCommands:
         # Command no longer pending; second pull returns nothing.
         with patch("axe_fleet.routes._registry", registry):
             pull2 = client.post("/api/agent/commands/pull",
-                                headers=_headers(agent_token), json={})
+                                headers=_headers(agent_token), json={"command_protocol": 1})
             assert pull2.get_json()["commands"] == []
 
     def test_pull_isolated_by_tenant(self, client, registry):
         """Tenant A pulling commands must not see tenant B's queue."""
         dev_a = registry.upsert_agent_device(
-            "192.168.1.10", tenant_id="acme", info={"mac": "02:00:00:00:01:10"}
+            "192.168.1.10", tenant_id="acme", info={"mac": "02:00:00:00:01:10", "type": "bitaxe"}
         )
         registry.upsert_agent_device(
             "192.168.1.20", tenant_id="brave", info={"mac": "02:00:00:00:01:20"}
@@ -604,9 +604,9 @@ class TestAgentCommands:
 
         with patch("axe_fleet.routes._registry", registry):
             pull_a = client.post("/api/agent/commands/pull",
-                                 headers=_headers(token_a), json={}).get_json()
+                                 headers=_headers(token_a), json={"command_protocol": 1}).get_json()
             pull_b = client.post("/api/agent/commands/pull",
-                                 headers=_headers(token_b), json={}).get_json()
+                                 headers=_headers(token_b), json={"command_protocol": 1}).get_json()
         assert len(pull_a["commands"]) == 1
         assert pull_b["commands"] == []
 
@@ -617,7 +617,7 @@ class TestAgentCommands:
                                                 tenant_id="acme")
         with patch("axe_fleet.routes._registry", registry):
             pull = client.post("/api/agent/commands/pull",
-                               headers=_headers(agent_token), json={}).get_json()
+                               headers=_headers(agent_token), json={"command_protocol": 1}).get_json()
             cmd_id = pull["commands"][0]["id"]
             ack1 = client.post(f"/api/agent/commands/{cmd_id}/ack",
                                headers=_headers(agent_token),
@@ -1312,7 +1312,7 @@ class TestCommandPayloadCarriesIp:
                 headers=_headers(agent_token),
                 json={
                     "devices": [
-                        {"mac": _DEVICE_MACS["192.168.1.50"], "ip": "192.168.1.50"}
+                        {"mac": _DEVICE_MACS["192.168.1.50"], "ip": "192.168.1.50", "type": "bitaxe"}
                     ]
                 },
             )
@@ -1322,7 +1322,7 @@ class TestCommandPayloadCarriesIp:
             )
             registry.enqueue_agent_command(dev["id"], "restart", tenant_id="acme")
             pull = client.post("/api/agent/commands/pull",
-                               headers=_headers(agent_token), json={})
+                               headers=_headers(agent_token), json={"command_protocol": 1})
             assert pull.status_code == 200
             cmds = pull.get_json()["commands"]
             assert len(cmds) == 1
@@ -1333,7 +1333,7 @@ class TestCommandPayloadCarriesIp:
         with patch("axe_fleet.routes._registry", registry):
             registry.enqueue_agent_command("ghost-device", "restart", tenant_id="acme")
             pull = client.post("/api/agent/commands/pull",
-                               headers=_headers(agent_token), json={})
+                               headers=_headers(agent_token), json={"command_protocol": 1})
             assert pull.status_code == 200
             assert pull.get_json()["commands"] == []
 
@@ -1493,7 +1493,8 @@ class TestCapabilitiesByType:
                 },
             )
         dev = registry.get_device_by_ip("192.168.1.57", tenant_id="acme")
-        assert dev["capabilities"]["identify"] is True  # unknown type
+        assert dev["capabilities"]["identify"] is False  # unknown type is read-only
+        assert dev["capabilities"]["restart"] is False
         # Register now reports cgminer → caps must be recomputed.
         with patch("axe_fleet.routes._registry", registry):
             client.post(

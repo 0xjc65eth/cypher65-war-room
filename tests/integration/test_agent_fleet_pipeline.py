@@ -1,6 +1,7 @@
 """Local E2E: scan → register → telemetry → Fleet list, no physical miner."""
 
 import sqlite3
+import time
 from unittest.mock import patch
 
 import pytest
@@ -129,7 +130,12 @@ def test_scan_register_telemetry_and_fleet_listing(fleet_pipeline, monkeypatch, 
         # Exercise a real command/reboot/error/recovery sequence against only
         # the loopback virtual device, never a physical miner.
         restarted = agent._exec_command(
-            {"ip_address": host, "command": "restart"},
+            {
+                "id": "sim-command-842", "device_id": device["id"],
+                "ip_address": host, "command": "restart", "command_protocol": 1,
+                "expires_at": int(time.time()) + 300,
+                "expected_mac": discovered[0]["mac"], "expected_type": "bitaxe",
+            },
             known={host: {"type": "bitaxe"}},
         )
         assert restarted == (True, "HTTP 200")
