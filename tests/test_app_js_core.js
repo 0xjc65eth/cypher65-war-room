@@ -5829,6 +5829,14 @@ for (const temperature of [-41, 151, Infinity, NaN, null, undefined, true, false
 //  RESULTS
 // ═══════════════════════════════════════════════════════════════════════════
 
+// Issue #836: run async controller tests in an awaited child; importing node:test
+// here would let the legacy process.exit below discard pending test callbacks.
+{
+  const miniTests = spawnSync(process.execPath, ['--test', path.join(__dirname, 'test_mini_war_room_js.js')], { encoding: 'utf8' });
+  assertEqual('Mini War Room production controller suite', miniTests.status, 0);
+  if (miniTests.status !== 0) console.error(miniTests.stdout, miniTests.stderr);
+}
+
 console.log(`\n${'═'.repeat(50)}`);
 if (failed === 0) {
   console.log(`✅ ALL ${passed} TESTS PASSED`);
@@ -5837,4 +5845,7 @@ if (failed === 0) {
   failures.forEach(f => console.log(f));
 }
 
+// Execute the actual Energy Advisor module tests as part of the existing CI gate.
+const energySuite = spawnSync(process.execPath, ['--test', path.join(__dirname, 'test_energy_advisor_js.js')], { stdio: 'inherit' });
+if (energySuite.status !== 0) failed++;
 process.exit(failed > 0 ? 1 : 0);

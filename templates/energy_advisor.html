@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Energy Advisor · CYPHER65</title>
+  <link rel="icon" href="/static/favicon.ico">
+  <link rel="stylesheet" href="/static/energy-advisor.css">
+  <script type="module" src="/static/energy-advisor.js"></script>
+</head>
+<body>
+<main id="energy-app">
+  <header class="energy-header"><div><p class="eyebrow">CYPHER65 / LENTE DE CENÁRIOS</p><h1>Energy Advisor</h1><p>Decida com premissas visíveis. Nenhum comando no equipamento.</p></div><a href="/">Voltar ao painel</a></header>
+  <section class="toolbar" aria-label="Equipamento"><label for="energy-device">Dispositivo<select id="energy-device" disabled><option value="">Carregando…</option></select></label><button id="energy-refresh" type="button">Atualizar evidência</button><span class="badge">Somente leitura</span></section>
+  <p id="energy-state" role="status">Carregando dispositivos…</p><p id="energy-source" class="fine">Fonte: cadastro e telemetria locais. Janela média do firmware não informada.</p>
+  <div class="workspace">
+    <section class="panel" aria-labelledby="energy-input-title"><h2 id="energy-input-title">Suas premissas</h2><p>Dados desta sessão, sem gravação. Tarifa e perfis nunca são estimados pelo sistema.</p>
+      <form id="energy-form">
+        <div class="form-grid"><label for="energy-tariff">Tarifa por kWh<input id="energy-tariff" type="number" min="0" max="10000" step="any" required placeholder="Informe sua tarifa"></label><label for="energy-currency">Moeda<select id="energy-currency" required><option value="">Selecione</option><option>EUR</option><option>USD</option><option>BRL</option><option>GBP</option></select></label>
+        <label for="energy-hours">Horizonte constante (h)<input id="energy-hours" type="number" min="1" max="24" step="1" required placeholder="1 a 24"></label><label for="energy-validity">Revisar tarifa em (min)<input id="energy-validity" type="number" min="1" max="1440" step="1" required placeholder="Validade da confirmação"></label>
+        <label for="energy-max-power">Teto do cenário (W)<input id="energy-max-power" type="number" min="0" max="1000000" step="any" required placeholder="Limite do operador"></label><label for="energy-max-cost">Teto de custo (opcional)<input id="energy-max-cost" type="number" min="0" max="1000000000" step="any" placeholder="Na mesma moeda"></label></div>
+        <p id="energy-identity" class="fine">Modelo e firmware ainda não verificados.</p>
+        <fieldset id="energy-profiles"><legend>Perfis definidos pelo operador</legend><p class="fine">Potência esperada é uma hipótese sua, não medição nem configuração de frequência/tensão. Cada perfil exige revisão explícita.</p><div id="energy-profile-rows"></div><button id="energy-add-profile" type="button">Adicionar perfil</button></fieldset>
+        <button id="energy-evaluate" class="primary" type="submit" disabled>Comparar cenários</button>
+      </form>
+    </section>
+    <div class="evidence-column">
+      <section class="panel evidence" id="energy-evidence" aria-busy="true" aria-labelledby="energy-evidence-title"><h2 id="energy-evidence-title">Evidência medida</h2><div id="energy-baseline" class="metrics"></div><p id="energy-freshness" class="fine">Aguardando uma observação válida.</p></section>
+      <section class="panel" aria-labelledby="energy-solar-title"><h2 id="energy-solar-title">Solar / ponte local</h2><span class="badge">Não configurado</span><p>Sem leitura solar validada. O cenário considera toda a potência pela tarifa informada, sem desconto solar.</p><p class="fine">MQTT / Home Assistant exige agente na sua LAN, identidade, timestamps e proteção contra replay. Não conectamos à sua rede nesta entrega.</p></section>
+    </div>
+  </div>
+  <section class="panel results" id="energy-results" aria-busy="false" aria-labelledby="energy-results-title"><h2 id="energy-results-title">Comparação explicável</h2><p id="energy-result-state" role="status">Informe as premissas para comparar. Nenhum perfil foi aplicado.</p><div id="energy-result-cards" class="scenario-grid"></div></section>
+  <footer><p>Energia modelada = W ÷ 1.000 × horas. Custo modelado = kWh × tarifa. Potência e tarifa constantes; sem impostos adicionais, receitas, fees, capex ou efeitos no hashrate. Não é previsão de consumo, lucro ou recomendação de overclock.</p><p>Compatibilidade cadastral e revisão do operador não certificam segurança física. Não há execução automática nem botão de aplicação.</p></footer>
+  <noscript>Ative JavaScript para consultar a evidência autenticada e comparar cenários. Nenhum valor de exemplo é apresentado como medição.</noscript>
+</main>
+</body>
+</html>

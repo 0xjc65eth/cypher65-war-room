@@ -3,8 +3,7 @@ import { StatusBar } from 'expo-status-bar';
 import { NavigationContainer } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
-import { Text, StyleSheet } from 'react-native';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { Text, View, StyleSheet } from 'react-native';
 import { CommandScreen } from './src/screens/Command/CommandScreen';
 import { FleetScreen } from './src/screens/Fleet/FleetScreen';
 import { DeviceDetailScreen } from './src/screens/Fleet/DeviceDetailScreen';
@@ -18,8 +17,10 @@ import { ErrorBoundary } from './src/components/ErrorBoundary';
 import { theme } from './src/theme';
 import { configureNotificationHandler, registerForPushNotifications } from './src/services/push';
 import { useAuth } from './src/hooks/useAuth';
+import { useAppStore } from './src/store';
+import { captureSession } from './src/services/sessionLease';
+import { SessionBoundary } from './src/components/SessionBoundary';
 
-const queryClient = new QueryClient();
 const Tab = createBottomTabNavigator();
 const Stack = createNativeStackNavigator();
 
@@ -42,15 +43,21 @@ const TabIcon: Record<string, string> = {
 };
 
 const AppContent = () => {
-  const { isAuthenticated, loading } = useAuth();
+  const { isAuthenticated, loading, authPending } = useAuth();
 
   useEffect(() => {
     configureNotificationHandler();
-    registerForPushNotifications().catch(() => {});
-  }, []);
+    if (isAuthenticated) void registerForPushNotifications(captureSession()).catch(() => {});
+  }, [isAuthenticated]);
 
   if (loading) {
-    return <Text style={styles.loading}>Loading…</Text>;
+    return (
+      <View style={styles.loading} accessibilityRole="progressbar" accessibilityLabel={authPending ? 'Entrando' : 'Restaurando sessão'}>
+        <Text style={styles.loadingText}>{authPending ? 'Entrando…' : 'Restaurando sessão…'}</Text>
+        <View style={styles.skeleton} />
+        <View style={styles.skeleton} />
+      </View>
+    );
   }
 
   if (!isAuthenticated) {
@@ -80,14 +87,15 @@ const AppContent = () => {
 };
 
 export default function App() {
+  const revision = useAppStore((state) => state.authRevision);
   return (
     <ErrorBoundary>
-      <QueryClientProvider client={queryClient}>
+      <SessionBoundary key={revision}>
         <NavigationContainer>
           <AppContent />
           <StatusBar style="light" />
         </NavigationContainer>
-      </QueryClientProvider>
+      </SessionBoundary>
     </ErrorBoundary>
   );
 }
@@ -95,11 +103,14 @@ export default function App() {
 const styles = StyleSheet.create({
   loading: {
     flex: 1,
-    textAlign: 'center',
-    textAlignVertical: 'center',
-    color: theme.text.primary,
+    justifyContent: 'center',
+    padding: 24,
     backgroundColor: theme.bg.deep,
   },
+  loadingText: { color: theme.text.primary, textAlign: 'center', marginBottom: 16 },
+  // Static skeleton: auth transitions remove private content immediately.
+  // No motion or delayed exit, including when reduced motion is requested.
+  skeleton: { height: 48, marginBottom: 12, borderRadius: 8, backgroundColor: theme.bg.surface },
   tabBar: {
     backgroundColor: theme.bg.surface,
     borderTopColor: theme.border.subtle,

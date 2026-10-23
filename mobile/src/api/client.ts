@@ -1,5 +1,6 @@
-import axios, { type AxiosError, type AxiosInstance } from 'axios';
-import * as SecureStore from 'expo-secure-store';
+import axios, { type AxiosError, type AxiosInstance, type InternalAxiosRequestConfig } from 'axios';
+import { assertSession, captureSession, isCurrentSession, SessionChangedError, type SessionLease } from '../services/sessionLease';
+import { endSession } from '../services/authSession';
 import Constants from 'expo-constants';
 import { resolveMobileEnvironment } from '../config/environment';
 import type {
@@ -22,19 +23,29 @@ const api: AxiosInstance = axios.create({
   headers: { 'Content-Type': 'application/json' },
 });
 
-api.interceptors.request.use(async (config) => {
-  const token = await SecureStore.getItemAsync('cypher65_token');
-  if (token && config.headers) {
-    config.headers.Authorization = `Bearer ${token}`;
-  }
+const requestSessions = new WeakMap<InternalAxiosRequestConfig, SessionLease>();
+
+api.interceptors.request.use((config) => {
+  const lease = captureSession();
+  requestSessions.set(config, lease);
+  // This interceptor must remain synchronous: a queued credential read could
+  // attach B's token to a request invoked by A. Native reads belong to bootstrap.
+  if (lease.token) config.headers.set('Authorization', `Bearer ${lease.token}`);
+  else config.headers.delete('Authorization');
   return config;
-});
+}, (error: unknown) => { throw error; }, { synchronous: true });
 
 api.interceptors.response.use(
-  (response) => response,
+  (response) => {
+    const lease = requestSessions.get(response.config);
+    if (lease) assertSession(lease);
+    return response;
+  },
   (error: AxiosError) => {
-    if (error.response?.status === 401) {
-      SecureStore.deleteItemAsync('cypher65_token').catch(() => {});
+    const lease = error.config ? requestSessions.get(error.config) : undefined;
+    if (lease && !isCurrentSession(lease)) return Promise.reject(new SessionChangedError());
+    if (lease?.token && error.response?.status === 401 && error.config?.url !== '/auth/login') {
+      void endSession(lease);
     }
     return Promise.reject(error);
   }
@@ -310,7 +321,15 @@ export const login = async (credentials: { username: string; password: string })
   return data as { token: string };
 };
 
-export const logoutRemote = async () => {
-  const { data } = await api.post('/auth/logout', {});
+/**
+ * Revoke exactly the credential captured before local logout, never a new one.
+ * Separate transport intentionally cannot expire or publish into a new session.
+ * @example await logoutRemote(oldSession.token);
+ */
+export const logoutRemote = async (token: string) => {
+  const { data } = await axios.post(`${baseURL}/auth/logout`, {}, {
+    timeout: 15000,
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+  });
   return data;
 };

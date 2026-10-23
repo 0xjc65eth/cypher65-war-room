@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>Mini War Room · CYPHER65</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='mini-war-room.css') }}?v=836-1">
+  <script type="module" src="{{ url_for('static', filename='mini-war-room.js') }}?v=836-1"></script>
+</head>
+<body data-presentation="{{ presentation }}">
+  <main class="mini-shell" id="mini-war-room" aria-labelledby="mini-title" data-mounted="false">
+    <header class="mini-header">
+      <div><p class="mini-brand">CYPHER65 / MONITOR</p><h1 id="mini-title">Mini War Room</h1></div>
+      <span class="mini-readonly">Somente leitura</span>
+    </header>
+    <p id="mini-state" role="status" aria-live="polite">Carregando observações…</p>
+    <p id="mini-coverage">Aguardando dados da frota.</p>
+    <section class="mini-metrics" aria-label="Métricas agregadas da frota" aria-busy="true" id="mini-metrics">
+      <article><h2>Hashrate observado</h2><p class="mini-value" id="mini-hashrate">—</p><p id="mini-hashrate-detail">Última amostra por dispositivo</p></article>
+      <article><h2>Potência observada</h2><p class="mini-value" id="mini-power">—</p><p id="mini-power-detail">Somente dispositivos medidos</p></article>
+      <article><h2>Maior temperatura</h2><p class="mini-value" id="mini-temperature">—</p><p id="mini-temperature-detail">Não é uma previsão de falha</p></article>
+    </section>
+    <footer><p>Fonte: telemetria da frota cadastrada. Janela média: não informada; última observação por dispositivo.</p><p id="mini-time">Nenhuma consulta concluída.</p></footer>
+    <nav class="mini-controls" aria-label="Controles do monitor">
+      <button type="button" id="mini-refresh">Atualizar</button>
+      <button type="button" id="mini-pause" aria-pressed="false">Pausar</button>
+      <a href="/mini-war-room?presentation=obs">Modo OBS</a>
+      <a href="/" target="_blank" rel="noopener noreferrer">Abrir painel</a>
+    </nav>
+    <p class="mini-help">No OBS, autentique o painel no mesmo contexto do navegador. Sem sessão compartilhada, a fonte não terá acesso aos dados. Não coloque credenciais na URL.</p>
+    <noscript>Ative JavaScript para consultar a frota. Nenhum dado offline é mostrado como atual.</noscript>
+  </main>
+</body>
+</html>
