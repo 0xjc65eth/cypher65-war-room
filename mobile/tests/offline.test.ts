@@ -1,4 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { useAppStore } from '../src/store';
 import {
   cacheSnapshot,
   getCachedSnapshot,
@@ -11,6 +12,8 @@ import {
 describe('offline cache and action queue', () => {
   beforeEach(async () => {
     await AsyncStorage.clear();
+    useAppStore.setState(useAppStore.getInitialState(), true);
+    useAppStore.getState().setToken('offline-fixture-owner');
   });
 
   it('round-trips a snapshot and returns null when empty or corrupt', async () => {

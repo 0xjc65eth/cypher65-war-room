@@ -4,6 +4,7 @@ import { useRoute, useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp, NativeStackScreenProps } from '@react-navigation/native-stack';
 import { fetchDevice } from '../../api/client';
 import { useCommands } from '../../hooks/useCommands';
+import { useSessionScope } from '../../hooks/useSessionScope';
 import { MetricCard } from '../../components/MetricCard';
 import { StatusBadge } from '../../components/StatusBadge';
 import { CommandButton } from '../../components/CommandButton';
@@ -20,6 +21,7 @@ export const DeviceDetailScreen = () => {
   const { deviceId } = route.params;
   const [device, setDevice] = useState<DeviceType | null>(null);
   const [loading, setLoading] = useState(true);
+  const scope = useSessionScope();
   const {
     sendCommand,
     loading: commandLoading,
@@ -31,27 +33,30 @@ export const DeviceDetailScreen = () => {
   } = useCommands(deviceId);
 
   const load = useCallback(async () => {
+    if (!scope.isActive()) return;
     setLoading(true);
     try {
       const data = await fetchDevice(deviceId);
+      if (!scope.isActive()) return;
       setDevice(data.device);
     } catch (err) {
-      Alert.alert('Error', (err as Error).message);
+      if (scope.isActive()) Alert.alert('Error', (err as Error).message);
     } finally {
-      setLoading(false);
+      if (scope.isActive()) setLoading(false);
     }
-  }, [deviceId]);
+  }, [deviceId, scope]);
 
   useEffect(() => {
     load();
   }, [load]);
 
   const handleCommand = async (capability: Capability) => {
-    if (!device) return;
+    if (!device || !scope.isActive()) return;
 
     let humanConfirmation: string | undefined;
     if (capability.requires_confirmation) {
       const biometric = await promptCriticalAction(capability.name);
+      if (!scope.isActive()) return;
       if (!biometric.success) {
         Alert.alert('Cancelled', biometric.error || 'Biometric check failed');
         return;
@@ -60,6 +65,7 @@ export const DeviceDetailScreen = () => {
     }
 
     const result = await sendCommand(capability.name, {}, humanConfirmation);
+    if (!scope.isActive()) return;
     if (result.success) {
       if (result.data?.dry_run) {
         Alert.alert('Dry-run complete', `${capability.name} was validated without execution`);

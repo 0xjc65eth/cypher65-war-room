@@ -288,6 +288,10 @@ app.register_blueprint(
 
 # ── Register Axe Fleet blueprint ────────────────────────────────────────────
 app.register_blueprint(axe_fleet_bp, url_prefix="/api/axe-fleet")
+
+# Read-only energy scenarios; never dispatches hardware commands (Issue #837).
+from routes.energy_advisor import create_energy_blueprint
+
 # ── Register Agent API blueprint (SaaS: local agent → cloud dashboard) ───
 app.register_blueprint(agent_bp)
 app.register_blueprint(agent_assets_bp)
@@ -728,6 +732,8 @@ def add_cache_headers(response):
 
 
 from services.db import get_db  # noqa: F401 — re-export (era uma duplicata)
+
+app.register_blueprint(create_energy_blueprint(get_db))
 
 # Inject the real get_db factory into the alerts blueprint so it doesn't need
 # to import the app module at runtime (avoids circular dependency).
@@ -1716,6 +1722,11 @@ _axe_registry = DeviceRegistry(get_db)
 # run here or fleet writes crash on a fresh DB.
 _axe_registry.ensure_tables()
 _init_axe_routes(_axe_registry)
+
+# Issue #836: a dedicated allowlisted, read-only projection, not /api/snapshot.
+from routes.mini_war_room import create_mini_war_room_blueprint
+
+app.register_blueprint(create_mini_war_room_blueprint(lambda: _axe_registry))
 
 # ── Fleet snapshot cache: write-through + boot seed ──────────────────────
 # The /api/snapshot fleet block is assembled from axe_telemetry_cache, which
@@ -5834,16 +5845,24 @@ def api_device_diagnostics(device_id: str, tenant_id: str = ""):
 
 
 def _add_maintenance_record(
-    device_id: str, record_type: str, notes: str, performed_by: str
+    device_id: str,
+    record_type: str,
+    notes: str,
+    performed_by: str,
+    tenant_id: str | None = None,
 ) -> dict:
-    """Persist a maintenance record to the SQLite database."""
+    """Persist explicit ownership, leaving legacy callers unattributed.
+
+    Example: ``_add_maintenance_record(id, "cleaning", "", "", tenant_id="a")``.
+    """
     ts = int(time.time())
     conn = get_db()
     c = conn.cursor()
     c.execute(
-        """INSERT INTO maintenance_records (ts, device_id, type, notes, performed_by)
-           VALUES (?, ?, ?, ?, ?)""",
-        (ts, device_id, record_type, notes, performed_by),
+        """INSERT INTO maintenance_records
+           (ts, device_id, type, notes, performed_by, tenant_id)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        (ts, device_id, record_type, notes, performed_by, tenant_id),
     )
     conn.commit()
     record_id = c.lastrowid
@@ -5927,7 +5946,9 @@ def api_create_device_maintenance(device_id: str, tenant_id: str = ""):
     if not record_type:
         return jsonify({"error": "type is required", "success": False}), 400
 
-    record = _add_maintenance_record(device_id, record_type, notes, performed_by)
+    record = _add_maintenance_record(
+        device_id, record_type, notes, performed_by, tenant_id=tenant_id
+    )
     return (
         jsonify(
             {
@@ -7186,13 +7207,13 @@ def api_rentals_detail(tenant_id: str = ""):
         )
         # Economic P/L — expected gross yield (network hashrate) vs paid:
         # the "did this rental make money?" question, computed server-side.
-        # MRR reports price.paid as a STRING — coerce before the ×1e8 math.
-        _paid = _rental_perf._num((raw.get("price") or {}).get("paid"))
+        # Only an explicitly BTC-denominated provider payment becomes sats.
+        _paid_sats = perf.get("paid_sats")
         # Historical-P/L fix: price the rental against the network hashrate
         # OBSERVED at its time (nearest snapshot, current as last resort).
         pl = _rental_perf.attach_pl(
             perf,
-            (_paid * 1e8) if _paid is not None else None,
+            _paid_sats,
             network_hashrate_hs=_rental_perf._resolve_network_hashrate_for_rental(
                 raw.get("start"), raw.get("end")
             ),

@@ -27,6 +27,7 @@ import {
   addNotificationResponseListener,
 } from '../src/services/push';
 import { registerPushToken } from '../src/api/client';
+import { useAppStore } from '../src/store';
 
 describe('push notification handler', () => {
   it('declares the complete Expo SDK 57 foreground presentation behavior', async () => {
@@ -57,6 +58,7 @@ describe('push notification handler', () => {
   });
 
   it('updates categories through the register endpoint and wires listeners', async () => {
+    useAppStore.getState().setToken('fixture-push-owner');
     (registerPushToken as jest.Mock).mockResolvedValue(undefined);
     const prefs = await updatePushCategories('tok', { ...DEFAULT_PUSH_CATEGORIES, temperature: false });
     expect(prefs?.token).toBe('tok');

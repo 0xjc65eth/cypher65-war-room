@@ -13,6 +13,7 @@ import {
 import axios from 'axios';
 import { AiOperatorResponseError, queryAiOperator } from '../../api/client';
 import { theme } from '../../theme';
+import { useSessionScope } from '../../hooks/useSessionScope';
 
 interface ChatMessage {
   id: string;
@@ -35,6 +36,7 @@ export const AiOperatorScreen = () => {
   const [error, setError] = useState<string | null>(null);
   const listRef = useRef<FlatList<ChatMessage>>(null);
   const sendingRef = useRef(false);
+  const scope = useSessionScope();
 
   const appendMessage = (message: ChatMessage) => {
     setMessages((prev) => [...prev, message]);
@@ -52,6 +54,7 @@ export const AiOperatorScreen = () => {
   };
 
   const sendMessage = async () => {
+    if (!scope.isActive()) return;
     const query = input.trim();
     if (!query || sendingRef.current) return;
     sendingRef.current = true;
@@ -70,6 +73,7 @@ export const AiOperatorScreen = () => {
 
     try {
       const response = await queryAiOperator(userMessage.text);
+      if (!scope.isActive()) return;
 
       const aiResponse: ChatMessage = {
         id: `${Date.now()}_a`,
@@ -79,11 +83,13 @@ export const AiOperatorScreen = () => {
       };
       appendMessage(aiResponse);
     } catch (cause) {
-      setError(errorMessage(cause));
+      if (scope.isActive()) setError(errorMessage(cause));
     } finally {
-      sendingRef.current = false;
-      setSending(false);
-      listRef.current?.scrollToEnd({ animated: true });
+      if (scope.isActive()) {
+        sendingRef.current = false;
+        setSending(false);
+        listRef.current?.scrollToEnd({ animated: true });
+      }
     }
   };
 
