@@ -450,7 +450,7 @@ def test_agent_changed_mac_is_not_sent_as_cached_identity_heartbeat(monkeypatch)
         agent, "_probe_axeos", lambda ip: official_esp_miner_info(macAddr=MAC_B)
     )
     monkeypatch.setattr(agent, "_post", post)
-    monkeypatch.setattr(agent, "time", SimpleNamespace(time=time.time, sleep=stop))
+    monkeypatch.setattr(agent, "time", SimpleNamespace(time=time.time, monotonic=time.monotonic, sleep=stop))
     with pytest.raises(StopLoop):
         agent._run_main()
     assert dev["identity_conflict"]

@@ -1,0 +1,53 @@
+:root { color-scheme: dark; color: #eaeaea; background: #080909; font-family: system-ui, sans-serif; }
+* { box-sizing: border-box; }
+body { margin: 0; padding: 24px; }
+main { max-width: 1200px; margin: auto; }
+h1 { font-size: clamp(1.8rem, 4vw, 2.6rem); margin: 8px 0; }
+h2 { font-size: 1.15rem; margin-top: 0; }
+p { color: #b7b9bd; line-height: 1.6; }
+.eyebrow { font-size: .75rem; letter-spacing: .15em; color: #f7931a; }
+.energy-header, .toolbar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 16px; }
+.toolbar { justify-content: flex-start; margin-top: 24px; border: 1px solid #35373a; padding: 18px; background: #111213; }
+button, input, select, a { min-height: 44px; font: inherit; border: 1px solid #6e737c; border-radius: 2px; background: #1a1b1d; color: #eaeaea; padding: 10px 12px; max-width: 100%; }
+input, select { width: 100%; min-width: 0; }
+button { cursor: pointer; }
+button:hover, a:hover { background: #2b2c2e; }
+button:disabled { opacity: .6; cursor: not-allowed; }
+a { display: inline-flex; align-items: center; text-decoration: none; }
+label { display: grid; gap: 8px; font-size: .88rem; min-width: 0; }
+.toolbar label { min-width: 240px; }
+.toolbar button { align-self: end; }
+.badge { border: 1px solid #6e737c; padding: 5px 10px; font-size: .78rem; display: inline-block; }
+.toolbar .badge { margin-left: auto; }
+#energy-state { color: #eaeaea; font-weight: 600; }
+.fine, footer { font-size: .82rem; overflow-wrap: anywhere; }
+.workspace { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, .85fr); gap: 20px; align-items: start; }
+.panel { padding: 22px; border: 1px solid #35373a; background: #111213; border-radius: 2px; min-width: 0; }
+.evidence-column { display: grid; gap: 20px; }
+.form-grid, .metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+fieldset { border: 1px solid #44474c; margin: 20px 0; padding: 14px; min-width: 0; }
+legend { font-size: .9rem; padding: 0 6px; }
+.profile-row { border-bottom: 1px solid #35373a; padding-bottom: 14px; margin-bottom: 14px; }
+.profile-row .form-grid { gap: 12px; }
+.approval { display: flex; align-items: flex-start; gap: 10px; margin: 14px 0; line-height: 1.5; }
+.approval input { width: 20px; min-height: 24px; margin: 0; flex-shrink: 0; accent-color: #f7931a; }
+.remove-profile { font-size: .82rem; }
+.primary { background: #f7931a; color: #111; border-color: #f7931a; font-weight: 650; }
+.primary:hover { background: #ffad45; }
+.metrics dl { margin: 0; padding: 14px; background: #1a1b1d; min-width: 0; }
+dt { font-size: .8rem; color: #b7b9bd; }
+dd { margin: 10px 0 0; font-size: 1.5rem; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.results { margin-top: 20px; }
+.scenario-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+.scenario { min-width: 0; border: 1px solid #6e737c; padding: 16px; overflow-wrap: anywhere; }
+.scenario h3 { font-size: 1rem; }
+.scenario[data-eligible="true"] { border-color: #f7931a; }
+.scenario .cost { font-size: 1.8rem; color: #eaeaea; margin: 12px 0; font-variant-numeric: tabular-nums; }
+.scenario ul { padding-left: 18px; color: #b7b9bd; font-size: .84rem; line-height: 1.6; }
+.energy-skeleton { min-height: 140px; background: repeating-linear-gradient(#222426 0 24px, #111213 24px 52px); }
+:focus-visible { outline: 3px solid #f7931a; outline-offset: 3px; }
+[data-mounted="true"] .energy-header { animation: energy-enter 180ms cubic-bezier(.22, 1, .36, 1) both; }
+@keyframes energy-enter { from { opacity: 0; transform: translateY(6px); filter: blur(2px); } to { opacity: 1; transform: none; filter: none; } }
+@media (max-width: 760px) { body { padding: 12px; } .workspace, .scenario-grid { grid-template-columns: minmax(0, 1fr); } .toolbar label { min-width: 0; width: 100%; } .toolbar .badge { margin: 0; } .panel { padding: 16px; } }
+@media (max-width: 380px) { .form-grid { grid-template-columns: minmax(0, 1fr); } }
+@media (prefers-reduced-motion: reduce) { [data-mounted="true"] .energy-header { animation: none; } }

@@ -85,7 +85,7 @@ def test_poll_loop_transports_the_discovered_mac_without_inventing_one(
     monkeypatch.setattr(agent, "_poll_telemetry", lambda _: sample)
     monkeypatch.setattr(agent, "_post", post)
     monkeypatch.setattr(
-        agent, "time", SimpleNamespace(time=agent.time.time, sleep=stop)
+        agent, "time", SimpleNamespace(time=agent.time.time, monotonic=agent.time.monotonic, sleep=stop)
     )
     with pytest.raises(StopLoop):
         agent._run_main()

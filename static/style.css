@@ -9,6 +9,13 @@
    sem emoji como ícone (Lucide SVG), sem matrix rain.
    ═══════════════════════════════════════════════════════════════════════ */
 
+/* Issue #838: a real navigation link, outside the dashboard module router. */
+.sidebar__timeline-link { display: flex; align-items: center; gap: 8px; min-height: 44px; max-width: 100%; padding: 12px; color: #eaeaea; background: #1a1b1d; border: 1px solid #43464a; border-radius: 2px; text-decoration: none; font-size: 14px; overflow: hidden; }
+.sidebar__timeline-link svg { flex: 0 0 16px; }
+.sidebar__timeline-label { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sidebar.collapsed .sidebar__timeline-label { display: none; }
+.sidebar__timeline-link:focus-visible { outline: 2px solid #f7931a; outline-offset: 2px; }
+
 /* ── Design Tokens v2 ─────────────────────────────────────────────── */
 :root {
   /* Background hierarchy (monocromática) */
@@ -326,6 +333,8 @@ a:hover { text-decoration: underline; }
 }
 .sidebar__link .icon svg { width: 16px; height: 16px; }
 .sidebar__link .label { font-size: var(--fs-sm); }
+.energy-entry { text-decoration: none; overflow: hidden; }
+.energy-entry .label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* ── Utilitários sr-only (WebAIM) — Issue #246 ────────────────────────
    Ocultam visualmente SEM remover da árvore de acessibilidade: ao
