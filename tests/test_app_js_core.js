@@ -5845,4 +5845,7 @@ if (failed === 0) {
   failures.forEach(f => console.log(f));
 }
 
+// Execute the actual Energy Advisor module tests as part of the existing CI gate.
+const energySuite = spawnSync(process.execPath, ['--test', path.join(__dirname, 'test_energy_advisor_js.js')], { stdio: 'inherit' });
+if (energySuite.status !== 0) failed++;
 process.exit(failed > 0 ? 1 : 0);

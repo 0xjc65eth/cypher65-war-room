@@ -288,6 +288,10 @@ app.register_blueprint(
 
 # ── Register Axe Fleet blueprint ────────────────────────────────────────────
 app.register_blueprint(axe_fleet_bp, url_prefix="/api/axe-fleet")
+
+# Read-only energy scenarios; never dispatches hardware commands (Issue #837).
+from routes.energy_advisor import create_energy_blueprint
+
 # ── Register Agent API blueprint (SaaS: local agent → cloud dashboard) ───
 app.register_blueprint(agent_bp)
 app.register_blueprint(agent_assets_bp)
@@ -728,6 +732,8 @@ def add_cache_headers(response):
 
 
 from services.db import get_db  # noqa: F401 — re-export (era uma duplicata)
+
+app.register_blueprint(create_energy_blueprint(get_db))
 
 # Inject the real get_db factory into the alerts blueprint so it doesn't need
 # to import the app module at runtime (avoids circular dependency).

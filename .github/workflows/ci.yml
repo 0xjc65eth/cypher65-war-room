@@ -214,7 +214,7 @@ jobs:
           source .venv/bin/activate
           python -m pytest tests/ -q --tb=short --junitxml=/tmp/pytest-results.xml \
             --cov=app --cov=helpers --cov=axe_fleet --cov=services --cov=core \
-            --cov=routes.admin_routes --cov=routes.mini_war_room \
+            --cov=routes.admin_routes --cov=routes.energy_advisor \
             --cov-report=term-missing --cov-report=html:/tmp/coverage_html \
             --cov-report=xml:/tmp/coverage.xml \
             --cov-fail-under=80
@@ -430,7 +430,7 @@ jobs:
           npx playwright test tests/e2e/dashboard-telemetry.spec.js tests/e2e/snapshot-ordering.spec.js --project=chromium
           npx playwright test tests/e2e/terminal-console.spec.js tests/e2e/operational-evidence-states.spec.js --project=chromium
           npx playwright test tests/e2e/comparison-evidence.spec.js --project=chromium
-          npx playwright test tests/e2e/mini-war-room.spec.js --project=chromium --project=mobile-chrome
+          npx playwright test tests/e2e/energy-advisor.spec.js --project=chromium --project=mobile-chrome
           npx playwright test tests/e2e/navigation-loading.spec.js \
             tests/e2e/fleet-agentless-manual-add.spec.js tests/e2e/topbar-responsive.spec.js --project=chromium
 
