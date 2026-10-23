@@ -333,6 +333,8 @@ a:hover { text-decoration: underline; }
 }
 .sidebar__link .icon svg { width: 16px; height: 16px; }
 .sidebar__link .label { font-size: var(--fs-sm); }
+.energy-entry { text-decoration: none; overflow: hidden; }
+.energy-entry .label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* ── Utilitários sr-only (WebAIM) — Issue #246 ────────────────────────
    Ocultam visualmente SEM remover da árvore de acessibilidade: ao

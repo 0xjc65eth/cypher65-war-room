@@ -47,11 +47,12 @@ self.addEventListener('fetch', (event) => {
   if (event.request.method !== 'GET') return;
   if (!event.request.url.startsWith(self.location.origin)) return;
 
-  // Issue #838: never retain or recover private history, including Flask aliases.
+  // Private energy evidence must never enter or fall back to offline caches.
   let privatePath;
   try { privatePath = decodeURIComponent(new URL(event.request.url).pathname).replace(/\/{2,}/g, '/'); }
   catch { return; }
-  if (privatePath === '/thermal-timeline' || privatePath === '/api/thermal-timeline' || privatePath.startsWith('/api/thermal-timeline/')) return;
+  if (privatePath.replace(/\/$/, '') === '/energy-advisor' ||
+      privatePath === '/api/energy-advisor' || privatePath.startsWith('/api/energy-advisor/')) return;
 
   event.respondWith(
     fetch(event.request)

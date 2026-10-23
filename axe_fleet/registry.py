@@ -172,6 +172,12 @@ class DeviceRegistry:
             "CREATE INDEX IF NOT EXISTS idx_axe_device_identity_device "
             "ON axe_device_identity_aliases(tenant_id, device_id)"
         )
+        # Shared with the private thermal reader: latest evidence without a
+        # tenant-wide history scan or ambiguous equal-timestamp ordering (#837).
+        c.execute(
+            "CREATE INDEX IF NOT EXISTS idx_axe_telemetry_tenant_device_ts "
+            "ON axe_telemetry(tenant_id, device_id, ts DESC, id DESC)"
+        )
         # ── Agent command queue (restart/identify routed through the agent) ──
         c.execute(
             """CREATE TABLE IF NOT EXISTS axe_agent_commands (
