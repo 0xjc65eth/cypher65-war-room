@@ -1,0 +1,43 @@
+:root { color-scheme: dark; font-family: system-ui, sans-serif; color: #eaeaea; background: #070808; }
+* { box-sizing: border-box; }
+body { margin: 0; padding: 24px; }
+main { max-width: 1200px; margin: auto; }
+.thermal-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 20px; flex-wrap: wrap; }
+.thermal-eyebrow { color: #f7931a; font-size: .75rem; letter-spacing: .14em; }
+h1 { font-size: clamp(1.8rem, 4vw, 2.7rem); margin: 8px 0; }
+h2 { font-size: 1.1rem; }
+p { line-height: 1.55; color: #b7b9bd; }
+.thermal-toolbar { display: flex; align-items: end; gap: 14px; flex-wrap: wrap; padding: 20px; background: #111213; border: 1px solid #35373a; border-radius: 2px; margin-top: 28px; }
+label { display: flex; flex-direction: column; gap: 8px; font-size: .9rem; }
+button, select, a { font: inherit; min-height: 44px; padding: 10px 14px; color: #eaeaea; background: #1a1b1d; border: 1px solid #6e737c; border-radius: 2px; }
+a { text-decoration: none; display: inline-flex; align-items: center; }
+select { max-width: min(100%, 350px); }
+button { cursor: pointer; }
+button:disabled, select:disabled { opacity: .65; cursor: wait; }
+button:hover, a:hover { background: #222426; }
+:focus-visible { outline: 3px solid #f7931a; outline-offset: 3px; }
+.thermal-badge { margin-left: auto; align-self: center; font-size: .8rem; color: #eaeaea; border: 1px solid #6e737c; border-radius: 2px; padding: 6px 12px; }
+#thermal-state { color: #eaeaea; font-weight: 650; margin-bottom: 4px; }
+#thermal-coverage, footer, #thermal-config, #thermal-maintenance { font-size: .85rem; overflow-wrap: anywhere; }
+.thermal-charts { border: 1px solid #35373a; border-radius: 2px; background: #111213; padding: 16px; min-height: 260px; }
+#thermal-focus { margin: 4px 0 12px; font-size: .85rem; }
+.thermal-lane { display: grid; grid-template-columns: 160px minmax(0, 1fr); gap: 14px; align-items: center; border-bottom: 1px solid #2a2c2e; }
+.thermal-lane:last-child { border: 0; }
+.thermal-lane-label { font-size: .85rem; }
+.thermal-lane-label small { display: block; color: #b7b9bd; margin-top: 6px; }
+svg { width: 100%; height: 80px; display: block; }
+.thermal-scrub { padding: 20px 0; }
+.thermal-scrub label { flex-direction: row; justify-content: space-between; flex-wrap: wrap; }
+input[type="range"] { width: 100%; height: 44px; accent-color: #f7931a; }
+.thermal-lens, .thermal-context { padding: 20px; border: 1px solid #35373a; border-radius: 2px; background: #111213; margin-bottom: 20px; }
+.thermal-values { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; }
+.thermal-value { padding: 12px; background: #1a1b1d; border-radius: 2px; min-width: 0; }
+.thermal-value dt { font-size: .8rem; color: #b7b9bd; }
+.thermal-value dd { margin: 12px 0 0; font-size: 1.3rem; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.thermal-context ol { padding-left: 26px; max-height: 380px; overflow: auto; }
+.thermal-context li { padding: 8px; color: #b7b9bd; line-height: 1.6; overflow-wrap: anywhere; }
+[aria-busy="true"] .thermal-charts { background: repeating-linear-gradient(#222426 0 24px, #111213 24px 64px); }
+[data-mounted="true"] .thermal-header { animation: thermal-enter 180ms cubic-bezier(.22, 1, .36, 1) both; }
+@keyframes thermal-enter { from { opacity: 0; transform: translateY(6px); filter: blur(2px); } to { opacity: 1; transform: none; filter: none; } }
+@media (max-width: 720px) { body { padding: 12px; } .thermal-values { grid-template-columns: repeat(2, minmax(0, 1fr)); } .thermal-lane { grid-template-columns: 105px minmax(0, 1fr); gap: 6px; } .thermal-toolbar label { width: 100%; } .thermal-badge { margin-left: 0; } }
+@media (prefers-reduced-motion: reduce) { [data-mounted="true"] .thermal-header { animation: none; } }
