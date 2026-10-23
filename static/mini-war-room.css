@@ -1,0 +1,29 @@
+:root { color-scheme: dark; font-family: system-ui, sans-serif; background: #10151e; color: #eaf2fb; }
+* { box-sizing: border-box; }
+body { margin: 0; padding: 16px; }
+.mini-shell { max-width: 880px; margin: auto; padding: clamp(16px, 4vw, 28px); border: 1px solid #354357; border-radius: 18px; background: #182230; }
+/* Progressive enhancement: the fallback remains visible without the module. */
+.mini-shell[data-mounted="true"] { animation: mini-enter 180ms cubic-bezier(.22, 1, .36, 1) both; }
+@keyframes mini-enter { from { opacity: 0; transform: translateY(6px); filter: blur(2px); } to { opacity: 1; transform: none; filter: none; } }
+.mini-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
+h1 { font-size: clamp(1.35rem, 4vw, 1.8rem); margin: 0; }
+.mini-brand { color: #87c5de; letter-spacing: .12em; font-size: .7rem; margin: 0 0 8px; }
+.mini-readonly { font-size: .8rem; border: 1px solid #60758e; border-radius: 20px; padding: 6px 10px; }
+#mini-state { font-weight: 650; margin: 24px 0 8px; }
+#mini-coverage, footer, .mini-help, article p:not(.mini-value) { color: #c0cedf; font-size: .85rem; line-height: 1.5; overflow-wrap: anywhere; }
+.mini-metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin: 20px 0; }
+article { border: 1px solid #354b62; border-radius: 10px; padding: 14px; min-width: 0; }
+h2 { font-size: .85rem; font-weight: 500; margin: 0; }
+.mini-value { font-size: clamp(1.4rem, 4vw, 2rem); font-variant-numeric: tabular-nums; margin: 14px 0; overflow-wrap: anywhere; }
+/* Static skeleton: loading is explicit without a perpetual shimmer. */
+[aria-busy="true"] .mini-value { color: transparent; background: #314154; border-radius: 5px; }
+.mini-controls { display: flex; gap: 8px; flex-wrap: wrap; margin: 20px 0 12px; }
+button, a { font: inherit; color: #eaf2fb; background: #24364b; border: 1px solid #627c98; border-radius: 8px; padding: 10px 12px; min-height: 44px; text-decoration: none; cursor: pointer; }
+button:disabled { cursor: wait; opacity: .65; }
+button:focus-visible, a:focus-visible { outline: 3px solid #7de2ef; outline-offset: 3px; }
+button:hover, a:hover { background: #304860; }
+body[data-presentation="obs"] { background: transparent; }
+html:has(body[data-presentation="obs"]) { background: transparent; }
+body[data-presentation="obs"] .mini-shell { background: #10151ee8; }
+@media (max-width: 560px) { .mini-metrics { grid-template-columns: 1fr; } body { padding: 8px; } }
+@media (prefers-reduced-motion: reduce) { .mini-shell[data-mounted="true"] { animation: none; } }
