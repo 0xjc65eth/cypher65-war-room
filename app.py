@@ -1723,10 +1723,10 @@ _axe_registry = DeviceRegistry(get_db)
 _axe_registry.ensure_tables()
 _init_axe_routes(_axe_registry)
 
-# Issue #838: bounded local history only; this blueprint never polls hardware.
-from routes.thermal_timeline import create_thermal_blueprint
+# Issue #836: a dedicated allowlisted, read-only projection, not /api/snapshot.
+from routes.mini_war_room import create_mini_war_room_blueprint
 
-app.register_blueprint(create_thermal_blueprint(get_db))
+app.register_blueprint(create_mini_war_room_blueprint(lambda: _axe_registry))
 
 # ── Fleet snapshot cache: write-through + boot seed ──────────────────────
 # The /api/snapshot fleet block is assembled from axe_telemetry_cache, which
@@ -7207,13 +7207,13 @@ def api_rentals_detail(tenant_id: str = ""):
         )
         # Economic P/L — expected gross yield (network hashrate) vs paid:
         # the "did this rental make money?" question, computed server-side.
-        # MRR reports price.paid as a STRING — coerce before the ×1e8 math.
-        _paid = _rental_perf._num((raw.get("price") or {}).get("paid"))
+        # Only an explicitly BTC-denominated provider payment becomes sats.
+        _paid_sats = perf.get("paid_sats")
         # Historical-P/L fix: price the rental against the network hashrate
         # OBSERVED at its time (nearest snapshot, current as last resort).
         pl = _rental_perf.attach_pl(
             perf,
-            (_paid * 1e8) if _paid is not None else None,
+            _paid_sats,
             network_hashrate_hs=_rental_perf._resolve_network_hashrate_for_rental(
                 raw.get("start"), raw.get("end")
             ),

@@ -5829,11 +5829,12 @@ for (const temperature of [-41, 151, Infinity, NaN, null, undefined, true, false
 //  RESULTS
 // ═══════════════════════════════════════════════════════════════════════════
 
-// Issue #838: await the real async controller suite before legacy process.exit.
+// Issue #836: run async controller tests in an awaited child; importing node:test
+// here would let the legacy process.exit below discard pending test callbacks.
 {
-  const thermal = spawnSync(process.execPath, ['--test', path.join(__dirname, 'test_thermal_timeline_js.js')], { encoding: 'utf8' });
-  assertEqual('Thermal Timeline production-source tests', thermal.status, 0);
-  if (thermal.status !== 0) console.error(thermal.stdout, thermal.stderr);
+  const miniTests = spawnSync(process.execPath, ['--test', path.join(__dirname, 'test_mini_war_room_js.js')], { encoding: 'utf8' });
+  assertEqual('Mini War Room production controller suite', miniTests.status, 0);
+  if (miniTests.status !== 0) console.error(miniTests.stdout, miniTests.stderr);
 }
 
 console.log(`\n${'═'.repeat(50)}`);
