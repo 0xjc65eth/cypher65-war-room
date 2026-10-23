@@ -289,6 +289,9 @@ jobs:
       - name: Verify vendored braces depth fix
         run: npm run test:security-braces
 
+      - name: Verify follow-redirects credential isolation
+        run: npm run test:security-follow-redirects
+
       - name: Expo SDK compatibility
         run: npm run doctor
 
