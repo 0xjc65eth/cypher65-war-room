@@ -288,6 +288,10 @@ app.register_blueprint(
 
 # ── Register Axe Fleet blueprint ────────────────────────────────────────────
 app.register_blueprint(axe_fleet_bp, url_prefix="/api/axe-fleet")
+
+# Read-only energy scenarios; never dispatches hardware commands (Issue #837).
+from routes.energy_advisor import create_energy_blueprint
+
 # ── Register Agent API blueprint (SaaS: local agent → cloud dashboard) ───
 app.register_blueprint(agent_bp)
 app.register_blueprint(agent_assets_bp)
@@ -728,6 +732,8 @@ def add_cache_headers(response):
 
 
 from services.db import get_db  # noqa: F401 — re-export (era uma duplicata)
+
+app.register_blueprint(create_energy_blueprint(get_db))
 
 # Inject the real get_db factory into the alerts blueprint so it doesn't need
 # to import the app module at runtime (avoids circular dependency).
@@ -1716,6 +1722,11 @@ _axe_registry = DeviceRegistry(get_db)
 # run here or fleet writes crash on a fresh DB.
 _axe_registry.ensure_tables()
 _init_axe_routes(_axe_registry)
+
+# Issue #836: a dedicated allowlisted, read-only projection, not /api/snapshot.
+from routes.mini_war_room import create_mini_war_room_blueprint
+
+app.register_blueprint(create_mini_war_room_blueprint(lambda: _axe_registry))
 
 # ── Fleet snapshot cache: write-through + boot seed ──────────────────────
 # The /api/snapshot fleet block is assembled from axe_telemetry_cache, which
