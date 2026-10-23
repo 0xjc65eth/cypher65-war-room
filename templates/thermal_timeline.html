@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="referrer" content="no-referrer">
+  <title>Thermal Timeline · CYPHER65</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='thermal-timeline.css') }}?v=838-1">
+  <script type="module" src="{{ url_for('static', filename='thermal-timeline.js') }}?v=838-1"></script>
+</head>
+<body>
+  <main id="thermal-app">
+    <header class="thermal-header"><div><p class="thermal-eyebrow">CYPHER65 / LENTE DE EVIDÊNCIA</p><h1>Thermal Timeline</h1><p>Temperatura, ventilação e contexto no mesmo instante.</p></div><a href="/" class="thermal-back">Voltar ao painel</a></header>
+    <div class="thermal-toolbar">
+      <label>Dispositivo<select id="thermal-device" disabled><option value="">Carregando dispositivos…</option></select></label>
+      <label>Janela<select id="thermal-hours"><option value="1">Última hora</option><option value="6" selected>Últimas 6 horas</option><option value="24">Últimas 24 horas</option></select></label>
+      <button type="button" id="thermal-refresh">Atualizar</button>
+      <span class="thermal-badge">Somente leitura</span>
+    </div>
+    <p id="thermal-state" role="status" aria-live="polite">Carregando histórico…</p>
+    <p id="thermal-coverage">Aguardando observações; dados ausentes não equivalem a zero.</p>
+    <section id="thermal-workspace" aria-busy="true" aria-label="Histórico correlacionado">
+      <button type="button" id="thermal-focus" aria-pressed="true" disabled>Ver janela inteira</button>
+      <div id="thermal-charts" class="thermal-charts" aria-label="Gráficos sincronizados"></div>
+      <div class="thermal-scrub"><label for="thermal-cursor">Inspecionar uma observação <span id="thermal-selected-time">—</span></label><input id="thermal-cursor" type="range" min="0" max="0" value="0" disabled></div>
+      <section aria-labelledby="thermal-lens-title" class="thermal-lens"><h2 id="thermal-lens-title">Lente de evidência</h2><p>Uma amostra histórica, valores alinhados — sem interpolar lacunas.</p><div id="thermal-values" class="thermal-values"></div><p id="thermal-config">Configuração observada: indisponível.</p></section>
+    </section>
+    <section class="thermal-context" aria-labelledby="thermal-context-title"><h2 id="thermal-context-title">O que mudou por perto?</h2><p>Marcos registram contexto, não provam a causa de uma variação.</p><p id="thermal-maintenance">Vínculo de manutenção ainda não verificado.</p><ol id="thermal-events"></ol></section>
+    <footer><p id="thermal-source">Fonte: histórico local de telemetria. Janela média do firmware: não informada.</p><p>Sem previsão de falha, vida útil ou execução de comandos. RPM medido e PWM (%) são grandezas distintas.</p></footer>
+    <noscript>Ative JavaScript para consultar o histórico autenticado. Nenhuma medição é apresentada como atual sem observação válida.</noscript>
+  </main>
+</body>
+</html>
