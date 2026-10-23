@@ -356,6 +356,16 @@ def init_db():
     c.execute(
         "CREATE INDEX IF NOT EXISTS idx_maintenance_records_ts ON maintenance_records(ts)"
     )
+    # Legacy maintenance cannot be attributed safely: leave ownership NULL.
+    maintenance_columns = {
+        row[1] for row in c.execute("PRAGMA table_info(maintenance_records)")
+    }
+    if "tenant_id" not in maintenance_columns:
+        c.execute("ALTER TABLE maintenance_records ADD COLUMN tenant_id TEXT")
+    c.execute(
+        "CREATE INDEX IF NOT EXISTS idx_maintenance_tenant_device_ts "
+        "ON maintenance_records(tenant_id, device_id, ts DESC, id DESC)"
+    )
     # ── Best difficulty history table (Milestone 6) ──
     c.execute(
         """CREATE TABLE IF NOT EXISTS best_diff_history (
@@ -565,6 +575,10 @@ def init_db():
         )
         c.execute(
             "CREATE INDEX IF NOT EXISTS idx_axe_telemetry_tenant ON axe_telemetry(tenant_id)"
+        )
+        c.execute(
+            "CREATE INDEX IF NOT EXISTS idx_axe_telemetry_tenant_device_ts "
+            "ON axe_telemetry(tenant_id, device_id, ts DESC, id DESC)"
         )
     except Exception:
         pass

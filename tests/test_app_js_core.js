@@ -5829,6 +5829,13 @@ for (const temperature of [-41, 151, Infinity, NaN, null, undefined, true, false
 //  RESULTS
 // ═══════════════════════════════════════════════════════════════════════════
 
+// Issue #838: await the real async controller suite before legacy process.exit.
+{
+  const thermal = spawnSync(process.execPath, ['--test', path.join(__dirname, 'test_thermal_timeline_js.js')], { encoding: 'utf8' });
+  assertEqual('Thermal Timeline production-source tests', thermal.status, 0);
+  if (thermal.status !== 0) console.error(thermal.stdout, thermal.stderr);
+}
+
 console.log(`\n${'═'.repeat(50)}`);
 if (failed === 0) {
   console.log(`✅ ALL ${passed} TESTS PASSED`);

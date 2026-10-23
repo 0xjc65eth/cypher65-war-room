@@ -1717,6 +1717,11 @@ _axe_registry = DeviceRegistry(get_db)
 _axe_registry.ensure_tables()
 _init_axe_routes(_axe_registry)
 
+# Issue #838: bounded local history only; this blueprint never polls hardware.
+from routes.thermal_timeline import create_thermal_blueprint
+
+app.register_blueprint(create_thermal_blueprint(get_db))
+
 # ── Fleet snapshot cache: write-through + boot seed ──────────────────────
 # The /api/snapshot fleet block is assembled from axe_telemetry_cache, which
 # used to be fed ONLY by the server-side poll — a poll that SKIPS
@@ -5834,16 +5839,24 @@ def api_device_diagnostics(device_id: str, tenant_id: str = ""):
 
 
 def _add_maintenance_record(
-    device_id: str, record_type: str, notes: str, performed_by: str
+    device_id: str,
+    record_type: str,
+    notes: str,
+    performed_by: str,
+    tenant_id: str | None = None,
 ) -> dict:
-    """Persist a maintenance record to the SQLite database."""
+    """Persist explicit ownership, leaving legacy callers unattributed.
+
+    Example: ``_add_maintenance_record(id, "cleaning", "", "", tenant_id="a")``.
+    """
     ts = int(time.time())
     conn = get_db()
     c = conn.cursor()
     c.execute(
-        """INSERT INTO maintenance_records (ts, device_id, type, notes, performed_by)
-           VALUES (?, ?, ?, ?, ?)""",
-        (ts, device_id, record_type, notes, performed_by),
+        """INSERT INTO maintenance_records
+           (ts, device_id, type, notes, performed_by, tenant_id)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        (ts, device_id, record_type, notes, performed_by, tenant_id),
     )
     conn.commit()
     record_id = c.lastrowid
@@ -5927,7 +5940,9 @@ def api_create_device_maintenance(device_id: str, tenant_id: str = ""):
     if not record_type:
         return jsonify({"error": "type is required", "success": False}), 400
 
-    record = _add_maintenance_record(device_id, record_type, notes, performed_by)
+    record = _add_maintenance_record(
+        device_id, record_type, notes, performed_by, tenant_id=tenant_id
+    )
     return (
         jsonify(
             {
