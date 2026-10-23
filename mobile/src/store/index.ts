@@ -4,6 +4,11 @@ import type { BatteryMode, Device, FleetSummary, Alert, AuthState, BlockHuntData
 interface AppState {
   // Auth
   auth: AuthState;
+  authRevision: number;
+  authReady: boolean;
+  authPending: boolean;
+  authNotice: string | null;
+  credentialRestoreAllowed: boolean;
   setToken: (token: string | null) => void;
   logout: () => void;
 
@@ -43,10 +48,53 @@ interface AppState {
   setPushCategories: (categories: Record<string, boolean>) => void;
 }
 
+const emptyPrivateState = () => ({
+  devices: [] as Device[],
+  fleetSummary: null,
+  alerts: [] as Alert[],
+  snapshot: null,
+  blockHunt: null,
+  marketOffers: [] as MarketOffer[],
+  aiContext: {},
+  pushCategories: {
+    temperature: true,
+    hashrate_drop: true,
+    worker_offline: true,
+    device_offline: true,
+    best_diff_bump: true,
+    new_block: true,
+  },
+});
+
 export const useAppStore = create<AppState>((set) => ({
   auth: { token: null, isAuthenticated: false },
-  setToken: (token) => set({ auth: { token, isAuthenticated: !!token } }),
-  logout: () => set({ auth: { token: null, isAuthenticated: false } }),
+  authRevision: 0,
+  authReady: false,
+  authPending: false,
+  authNotice: null,
+  credentialRestoreAllowed: true,
+  // Rehydration with an identical credential is not a new identity.
+  setToken: (token) => set((state) => state.auth.token === token
+    ? { authReady: true }
+    : {
+      ...emptyPrivateState(),
+      auth: { token, isAuthenticated: !!token },
+      authRevision: state.authRevision + 1,
+      authReady: true,
+      authPending: false,
+      authNotice: null,
+      credentialRestoreAllowed: token ? true : state.credentialRestoreAllowed,
+    }),
+  // Even an already logged-out session must invalidate pending auth intents.
+  logout: () => set((state) => ({
+    ...emptyPrivateState(),
+    auth: { token: null, isAuthenticated: false },
+    authRevision: state.authRevision + 1,
+    authReady: true,
+    authPending: false,
+    authNotice: null,
+    credentialRestoreAllowed: false,
+  })),
 
   batteryMode: 'balanced',
   setBatteryMode: (mode) => set({ batteryMode: mode }),
