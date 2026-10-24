@@ -13447,7 +13447,7 @@ function renderAccount(acct) {
     return val;
   }
 
-  // Pure numeric guard (mirrored in tests): backend may send the literal
+  // Pure numeric guard (tested from this canonical source): backend may send the literal
   // "NOT AVAILABLE" for missing fields, so a plain != null check would
   // crash .toFixed(). Returns null for absent / non-numeric values.
   function _numOrNull(v) {
@@ -13456,18 +13456,20 @@ function renderAccount(acct) {
     return isFinite(n) ? n : null;
   }
 
-  // ── FLEET COMMAND CENTER — pure aggregation (mirrored in tests) ─────
+  // ── FLEET COMMAND CENTER — source-tested pure aggregation ──────────
   // Honest nulls when there is no live data to compute a metric — never
   // invented numbers. OFFLINE devices never contribute share counters
   // (their cumulative firmware counters persist after death and would
   // freeze a historical EFFICIENCY).
   function _ccKpiAgg(fleet) {
     fleet = fleet || [];
-    const live = fleet.filter(d => d && String(d.status || '').toUpperCase() === 'ONLINE');
-    // TOTAL HR = soma de TODOS os devices (paridade com o fleet summary).
-    // Shares/temp/power/eff = APENAS ONLINE — os contadores cumulativos do
-    // firmware persistem depois que o miner morre e congelariam um
-    // EFFICIENCY histórico se OFFLINE contribuísse.
+    // Match core/models/device.py reachability: WARNING is degraded but still
+    // reachable. This metric eligibility does not change the warning bucket.
+    const live = fleet.filter(d => d && ['ONLINE', 'HASHING', 'WARNING'].includes(String(d.status || '').toUpperCase()));
+    // Hashrate is already qualified by the summary endpoint; preserve every
+    // provided current value and never reconstruct it from last-known history.
+    // Other measured KPIs use reachable devices only: historical counters on
+    // OFFLINE/STALE/PAUSED/unknown devices must not become live measurements.
     let totalHr = 0, hrN = 0, acc = 0, rej = 0, stale = 0;
     let tempSum = 0, tempN = 0, powerSum = 0, powerN = 0, effSum = 0, effN = 0;
     fleet.forEach(d => {
@@ -13486,7 +13488,8 @@ function renderAccount(acct) {
       const eff = _numOrNull(t.efficiency_jth);
       if (eff != null) { effSum += eff; effN++; }
     });
-    const lats = live.map(d => Number(d && d.latency_ms)).filter(v => v > 0 && isFinite(v));
+    // The backend rounds successful TCP probes to milliseconds, including zero.
+    const lats = live.map(d => _numOrNull(d && d.latency_ms)).filter(v => v != null && v >= 0);
     const shareTotal = acc + rej;
     return {
       totalHr: hrN ? totalHr : null,

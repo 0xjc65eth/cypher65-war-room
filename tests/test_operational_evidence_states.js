@@ -395,6 +395,44 @@ test('unknown Fleet metrics differ from observed zero, and booleans are not meas
   assert.equal(agg([{ status: 'ONLINE', _telemetry: {} }]).totalPowerW, null);
 });
 
+for (const status of ['ONLINE', 'HASHING', 'WARNING']) {
+  test('Fleet KPI DOM includes reachable ' + status + ' without changing its status bucket', async () => {
+    const fields = { fccSummaryHr: 'hr', fccSummaryOnline: 'online', fccSummaryWarn: 'warn',
+      fccSummaryOffline: 'offline', fccSummaryTemp: 'temp', fccSummaryPower: 'power',
+      fccSummaryEff: 'eff', fccSummaryPing: 'ping' };
+    const h = harness(Object.values(fields), { authFetch: async () => response(200, { devices: [{
+      id: 'synthetic-reachable', name: 'Synthetic device', status, capabilities: [], latency_ms: 20,
+      _telemetry: { hashrate_hs: 1e12, temperature: 60, power_watts: 100, efficiency_jth: 25,
+        shares_accepted: 9, shares_rejected: 1, shares_stale: 2 },
+    }] }) });
+    for (const [key, id] of Object.entries(fields)) h.sandbox.dom[key] = h.nodes[id];
+    const api = load(h, ['48-fleet-cc.js', '49-axe-fleet.js'], '{fetchFleetCommandCenter}');
+    await api.fetchFleetCommandCenter();
+    assert.equal(h.nodes.temp.textContent, '60.0°C');
+    assert.equal(h.nodes.power.textContent, '0.10 kW');
+    assert.equal(h.nodes.eff.textContent, '25.0 J/TH');
+    assert.equal(h.nodes.ping.textContent, '20ms');
+    assert.equal(h.nodes.online.textContent, status === 'WARNING' ? '0' : '1');
+    assert.equal(h.nodes.warn.textContent, status === 'WARNING' ? '1' : '0');
+    assert.equal(h.nodes.offline.textContent, '0');
+  });
+}
+
+test('Fleet KPI DOM preserves measured zero power, temperature and rounded latency', async () => {
+  const fields = { fccSummaryHr: 'hr', fccSummaryTemp: 'temp', fccSummaryPower: 'power', fccSummaryPing: 'ping' };
+  const h = harness(Object.values(fields), { authFetch: async () => response(200, { devices: [{
+    id: 'synthetic-zero', name: 'Zero measurements', status: 'HASHING', capabilities: [], latency_ms: 0,
+    _telemetry: { hashrate_hs: 0, temperature: 0, power_watts: 0 },
+  }] }) });
+  for (const [key, id] of Object.entries(fields)) h.sandbox.dom[key] = h.nodes[id];
+  const api = load(h, ['48-fleet-cc.js', '49-axe-fleet.js'], '{fetchFleetCommandCenter}');
+  await api.fetchFleetCommandCenter();
+  assert.equal(h.nodes.hr.textContent, '0.00 H/s');
+  assert.equal(h.nodes.power.textContent, '0.00 kW');
+  assert.equal(h.nodes.temp.textContent, '0.0°C');
+  assert.equal(h.nodes.ping.textContent, '0ms');
+});
+
 test('Admin reset clears analytics KPIs and private table entries', () => {
   const ids = ['boots', 'dau', 'wau', 'modules', 'top-module'].map(id => 'admin-analytics-' + id);
   const h = harness([...ids, 'admin-analytics', 'admin-analytics-table-body']);
