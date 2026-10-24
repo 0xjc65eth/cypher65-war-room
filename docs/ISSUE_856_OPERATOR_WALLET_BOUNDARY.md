@@ -90,3 +90,19 @@ python -m pytest tests/test_operator_wallet_boundary.py \
 Independent review, exact-head remote CI, full-project coverage, browser E2E
 and any deployment confirmation are separate gates; local focused green is
 not an approval or proof of deployment. No merge/deploy is performed here.
+
+## Publication follow-up — 2026-10-24
+
+Rebased without conflict onto master
+633b0d1202f6d83e7dd8e5d98398be5750c65893; only the separate Block Lab patch
+changed since the initial base. New user-facing errors are Portuguese;
+machine code OPERATOR_SCOPED_DATA and authorization semantics are unchanged.
+
+Root repeated the focused 74 tests: PASS, 100% line/branch helper coverage.
+An independent reviewer also ran 74 tests and found no remaining local
+blocker. Full isolated Python suite: 4960 PASS, 4 SKIP, 644 baseline warnings,
+170.54 seconds, 86.27% configured coverage against the unchanged 80% gate.
+Black 25.1.0, Flake8 7.1.1, Bandit 1.9.4 at MEDIUM/HIGH threshold and diff
+checks passed. Bandit printed existing unmatched-nosec warnings, not findings.
+These results do not establish formal approval, browser/native behavior or
+deployment. Current mobile advisory #859 remains an unrelated release gate.

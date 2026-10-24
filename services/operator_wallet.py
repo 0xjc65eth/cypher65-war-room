@@ -42,7 +42,7 @@ def operator_wallet_required(min_role: str) -> Callable:
                     payload = verify_token(authorization[7:], expected_type="access")
                 subject = payload.get("sub") if isinstance(payload, dict) else None
                 if not isinstance(subject, str) or not subject.strip():
-                    return jsonify({"error": "authentication required"}), 401
+                    return jsonify({"error": "Autenticação necessária"}), 401
                 tenants.append(subject)
                 g.auth_payload = payload
             if api_key is not None:
@@ -51,24 +51,24 @@ def operator_wallet_required(min_role: str) -> Callable:
                 except (ValueError, TypeError):
                     key_tenant = None
                 if not isinstance(key_tenant, str) or not key_tenant.strip():
-                    return jsonify({"error": "authentication required"}), 401
+                    return jsonify({"error": "Autenticação necessária"}), 401
                 tenants.append(key_tenant)
             authenticated_session = bool(session.get("authenticated"))
             if authenticated_session:
                 session_tenant = session.get("tenant_id", "default")
                 if not isinstance(session_tenant, str) or not session_tenant.strip():
-                    return jsonify({"error": "authentication required"}), 401
+                    return jsonify({"error": "Autenticação necessária"}), 401
                 tenants.append(session_tenant)
             if len(set(tenants)) > 1:
-                return jsonify({"error": "authentication required"}), 401
+                return jsonify({"error": "Autenticação necessária"}), 401
             tenant = tenants[0] if tenants else "default"
             if tenant != "default":
                 return (
                     jsonify(
                         {
-                            "error": "operator-scoped wallet resource",
+                            "error": "Recurso de carteira exclusivo do operador",
                             "code": "OPERATOR_SCOPED_DATA",
-                            "detail": "use /api/connect-wallet for tenant wallet sessions",
+                            "detail": "Use /api/connect-wallet para sessões de carteira da sua conta",
                         }
                     ),
                     403,
@@ -86,7 +86,7 @@ def operator_wallet_required(min_role: str) -> Callable:
                 return (
                     jsonify(
                         {
-                            "error": "permission denied",
+                            "error": "Permissão insuficiente",
                             "required_role": min_role,
                             "role": role,
                         }
