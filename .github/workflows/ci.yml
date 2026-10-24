@@ -85,7 +85,10 @@ jobs:
         run: npm run check:lockfile
 
       - name: Run JS core tests (app.js helpers)
-        run: node --test tests/test_app_js_core.js
+        run: |
+          node tests/test_node_child_runner.js
+          node --test tests/test_node_child_runner.js
+          node --test tests/test_app_js_core.js
 
       - name: Playwright installer self-test
         run: bash tests/test_install_playwright_chromium.sh
