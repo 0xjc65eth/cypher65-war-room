@@ -24,7 +24,8 @@ describe('mobile toolchain contract', () => {
     ['@expo/metro-runtime', '~57.0.17', 'dependencies'],
     ['expo', '~57.0.31', 'dependencies'],
     ['expo-constants', '~57.0.22', 'dependencies'],
-    ['expo-notifications', '~57.0.23', 'dependencies'],
+    ['expo-crypto', '~57.0.4', 'dependencies'],
+    ['expo-notifications', '~57.0.24', 'dependencies'],
     ['expo-splash-screen', '~57.0.10', 'dependencies'],
     ['jest-expo', '~57.0.6', 'devDependencies'],
   ])('keeps the reviewed Expo 57 patch %s installed from its lock entry', (name, range, group) => {
@@ -41,10 +42,15 @@ describe('mobile toolchain contract', () => {
 
   test('does not hide Expo compatibility findings or change the React peer matrix', () => {
     const pkg = readJson('package.json');
+    const lock = readJson('package-lock.json');
     expect(pkg.expo?.install?.exclude).toBeUndefined();
     expect(pkg.dependencies.react).toBe('19.2.3');
     expect(pkg.dependencies['react-dom']).toBe(pkg.dependencies.react);
     expect(pkg.devDependencies['react-test-renderer']).toBe(pkg.dependencies.react);
+    for (const name of ['react', 'react-dom', 'react-test-renderer']) {
+      expect(lock.packages[`node_modules/${name}`].version).toBe(pkg.dependencies.react);
+      expect(readJson(`node_modules/${name}/package.json`).version).toBe(pkg.dependencies.react);
+    }
   });
 
   test('retains Babel 7 and the compatible Stryker 9.6.1 runner pair', () => {

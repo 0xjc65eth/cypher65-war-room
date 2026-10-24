@@ -86,3 +86,90 @@ application coverage improvement is claimed.
 593e542be0fc7d24319794d0f2c086a74b05eb40210f3318c282c4b3c7945064  build-aligned.log
 cd9dd064c64b972200fdc311678c1e4135647863307439d03667b854a9e1f017  audit-aligned.log
 ```
+
+## Follow-up — 2026-10-23, post-merge dependency composition
+
+This follow-up starts from master `02901d7c095e378ec0b2daab005d127cc9be00e1`.
+Earlier checkpoints above remain historical; they do not describe the composed
+tree. This is a **partial repair, Refs #845, not Closes #845**. Exact-head remote
+CI and independent approval remain separate gates; no merge/deploy is performed.
+
+### Reproduced dependency failures and minimal repair
+
+- A normal isolated `npm ci` installed the baseline, but `npm ls --all` failed:
+  React19.2.3 did not satisfy React DOM19.2.8 / renderer19.2.9 peers.
+- Both selected Jest suites failed before collecting any tests because the
+  composed manifest omitted `expo-crypto`, although owner-bound offline storage
+  imports it and `jest.setup.js` mocks its real SHA-256 contract.
+- The online official Expo compatibility check required notifications~57.0.24
+  and React DOM19.2.3. The bundled Expo57.0.31 file still listed notifications
+  .23; the CLI explicitly prefers the remote SDK matrix for emergency patches.
+- Restore Expo-compatible `expo-crypto~57.0.4`, update notifications to~57.0.24,
+  and align DOM/renderer to React19.2.3. Lock/installed-version tests cover the
+  restored module and all three React packages.
+- A later unchanged Forge guard exposed a baseline lock transport regression:
+  its resolved URL used SSH, whereas the reviewed manifest/guard require HTTPS.
+  Restore HTTPS with the **same full commit and SRI**. Do not weaken that guard.
+
+Only the three direct existing package versions above change; expo-crypto is
+added. The redundant nested jest-expo renderer/react-is entries are deduplicated.
+Npm also reclassifies unchanged devOptional entries as dev; no version changes
+are hidden in that metadata churn. Preserve existing Biome Linux libc metadata,
+Babel7, both Stryker9.6.1 pins, the Forge commit/SRI, vendored braces, and
+follow-redirects1.16.1. No audit-fix, legacy-peer flag, SDK exclusion, timeout
+increase, source exclusion or workflow weakening is used.
+
+### AI stall: falsified experiment, still unresolved
+
+The actual unchanged `AiOperatorScreen`/RNTL event path was exercised. A cold
+`--no-cache` run reproduced the first test timeout: **1FAIL/4PASS**, first test
+7553ms versus the unchanged5000ms budget; a cached full suite passed. Temporary
+phase instrumentation in another cold run measured render3656ms, text change
+at3677ms, press at3683ms, and answer assertion at3685ms. The backend fixture was
+already resolved: that observation locates the expensive portion before request
+completion, but does **not** establish one universal root cause.
+
+RN exports lazy component getters. Materializing real constructors before tests
+initially reduced a cold first case to796ms; another repetition passed at420ms.
+However, the next cold repetition still failed two cases at6950ms/5242ms.
+Consequently the hypothesis that constructor preloading alone stabilizes this
+test was **falsified**. A fake-timer diagnostic passed once but had no sufficient
+causal red/green proof; it is not shipped. A pending-native-handler diagnostic
+also remains outside the patch because that cold repeat failed it.
+
+Final source retains the original AI screen, tests, real timers, Jest preset and
+5000ms timeout unchanged. No fake answer, warmed render, mocked native list or
+cache-dependent green run is presented as a completed stall fix. Continue with
+monotonic phase/promise/native-layout investigation and cold/order/load controls;
+keep #845 open until that first acceptance criterion is actually satisfied.
+
+### Validation boundaries
+
+Normal clean install/tree, online Doctor21/21, online Expo compatibility, audit
+zero vulnerabilities, full mobile Jest, strict lint/TypeScript, all three security
+guards, and iOS/Android/web exports were observed on October23 after dependency
+repair. A final repeat with the unchanged AI tests passed200tests/25suites in
+3.808s. An intermediate201-test run included a subsequently removed diagnostic,
+not an extra shipped test. Native auth/Keychain/device/signing evidence is
+**NOT RUN**; no application business logic or new coverage result is claimed.
+
+On October24, the resumed full Jest repeat passed200tests/25suites in23.701s;
+Doctor21/21 and online Expo compatibility passed again. **The current audit
+gate FAILS:3HIGH/1MODERATE**, unlike the historical zero result. The updated
+official [Zod advisory GHSA-mrhx-c7xc-m3w5](https://github.com/advisories/GHSA-mrhx-c7xc-m3w5)
+marks versions<4.6.6 affected and4.6.6 patched. Existing pinned Zod entries are
+unchanged by this patch. `@expo/cli57.0.32` requires Zod^3.25.76, while mutation
+server tooling requires^4.1.12; a blind global4.6.6 override crosses the CLI's
+major-version contract. Npm's proposed force-fix downgrades Expo to54.0.38.
+Neither workaround is applied. Track/review that security repair separately;
+do not label this branch all-green or ready to merge. Fast-uri remains the
+reported moderate finding. Audit evidence is `resume-audit.log`.
+
+Integration inspection against master633b0d1202f6d83e7dd8e5d98398be5750c65893
+found only the separate Block Lab numeric patch since02901d7: no mobile or CI
+workflow overlap. That source comparison is not a composed CI run or approval.
+
+Evidence is outside Git at `/private/tmp/cypher65-mobile845.AfUtAQ/`, including
+baseline/green install logs, `cold-ai.log`, `ai-phase-diagnostic.log`,
+`preloaded-cold-ai.log`, both `cold-final-*.log`, and the discarded fake-timer
+diagnostic. Keep failed evidence instead of silently replacing it with green.
