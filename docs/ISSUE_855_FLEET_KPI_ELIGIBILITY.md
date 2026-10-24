@@ -19,8 +19,8 @@ It adds no panel, motion, command, endpoint, dependency or paid service.
 
 | Input | Temperature, power, J/TH, shares and latency | Existing status bucket |
 | --- | --- | --- |
-| `ONLINE`, `HASHING` (case-insensitive) | Include available measurements | Online |
-| `WARNING` (case-insensitive) | Include available measurements | Warning, never healthy/recovered |
+| `ONLINE`, `HASHING` | Include available measurements | Online |
+| `WARNING` | Include available measurements | Warning, never healthy/recovered |
 | `OFFLINE`, `STALE`, `PAUSED`, unknown or absent status | Exclude historical measurements | Unchanged |
 
 Hashrate remains endpoint-authoritative: the aggregator sums supplied current
@@ -28,6 +28,10 @@ Hashrate remains endpoint-authoritative: the aggregator sums supplied current
 from status. It never reads `last_known_hashrate_hs`. A synthetic unit case
 preserving a supplied offline hashrate tests this consumer boundary; it does
 not assert that an offline physical miner produces work.
+
+Metric eligibility is case-insensitive. The unchanged rendered status counters
+consume canonical uppercase backend statuses; this patch does not normalize
+their buckets or add a new lowercase counter contract.
 
 The existing numeric guard retains measured zero and rejects absent, boolean,
 empty and non-finite values. The backend's
