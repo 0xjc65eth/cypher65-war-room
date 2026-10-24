@@ -22,6 +22,7 @@ from services.settings import (
 )
 from services.tenant import require_tenant, role_required, log_audit
 from services.licensing import is_pro
+from services.operator_wallet import operator_wallet_required
 
 settings_bp = Blueprint("settings", __name__, url_prefix="/api")
 
@@ -452,6 +453,7 @@ def api_settings_test_auto_exclude_alert(tenant_id: str = ""):
 
 
 @settings_bp.route("/wallet/history", methods=["GET"])
+@operator_wallet_required("viewer")
 @require_tenant
 @role_required("viewer")
 def get_wallet_history(tenant_id: str = ""):

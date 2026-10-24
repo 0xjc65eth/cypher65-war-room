@@ -8540,7 +8540,11 @@ _FULL_ACCESS_WALLETS = frozenset(
 )
 
 
+from services.operator_wallet import operator_wallet_required
+
+
 @app.route("/api/set-address", methods=["POST"])
+@operator_wallet_required("admin")
 @require_tenant
 @role_required("member")
 def api_set_address(tenant_id: str = ""):
