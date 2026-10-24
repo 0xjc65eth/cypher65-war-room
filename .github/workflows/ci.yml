@@ -90,6 +90,9 @@ jobs:
           node --test tests/test_node_child_runner.js
           node --test tests/test_app_js_core.js
 
+      - name: Verify public-static-only service-worker policy
+        run: node --test tests/test_public_static_worker.js
+
       - name: Playwright installer self-test
         run: bash tests/test_install_playwright_chromium.sh
 
@@ -367,6 +370,9 @@ jobs:
       # sistema com sudo e retry APT limitado — mesmo fix do job e2e (#467).
       - name: Install Playwright browsers
         run: bash scripts/install-playwright-chromium.sh
+
+      - name: Verify private offline boundary with real Flask and Cache API
+        run: npx playwright test tests/e2e/public-static-worker.spec.js --project=chromium --project=mobile-chrome
 
       - name: Run combined frontend pipeline
         run: |
