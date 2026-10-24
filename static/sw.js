@@ -1,5 +1,5 @@
 /* ════════════════════════════════════════════════════════════════════════
-   CYPHER65 · SERVICE WORKER · v6 — cache busted
+   CYPHER65 · SERVICE WORKER · v13 — composed private-route boundary
    ════════════════════════════════════════════════════════════════════════
    - Caches static assets on install for offline resilience
    - Listens for REAL Web Push events (VAPID, Issue #15) and for
@@ -7,7 +7,8 @@
    - Clicking a notification focuses / opens the dashboard
    ════════════════════════════════════════════════════════════════════════ */
 
-const CACHE_NAME = 'cypher65-v12';  // v11 P0-6 terminal pro · v12 Web Push (VAPID)
+// v13 evicts obsolete owned generations that may hold legacy private entries.
+const CACHE_NAME = 'cypher65-v13';
 const ASSETS_TO_CACHE = [
   '/',
   '/static/style.css',
@@ -34,25 +35,30 @@ self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches.keys().then((keys) => {
       return Promise.all(
-        keys.filter((k) => k !== CACHE_NAME).map((k) => caches.delete(k))
+        keys.filter((k) => /^cypher65-v\d+$/.test(k) && k !== CACHE_NAME)
+          .map((k) => caches.delete(k))
       );
-    })
+    }).then(() => self.clients.claim())
   );
-  return self.clients.claim();
 });
 
 // ── Fetch: network-first, cache fallback ───────────────────────────────
 self.addEventListener('fetch', (event) => {
   // Only cache GET requests to same origin
   if (event.request.method !== 'GET') return;
-  if (!event.request.url.startsWith(self.location.origin)) return;
-
-  // Private energy evidence must never enter or fall back to offline caches.
+  // One canonical classification for all composed private page/API families.
+  // Bypass before respondWith: neither network nor any offline cache is used.
   let privatePath;
-  try { privatePath = decodeURIComponent(new URL(event.request.url).pathname).replace(/\/{2,}/g, '/'); }
+  try {
+    const url = new URL(event.request.url);
+    if (url.origin !== self.location.origin) return;
+    privatePath = decodeURIComponent(url.pathname).replace(/\/{2,}/g, '/').replace(/\/$/, '');
+  }
   catch { return; }
-  if (privatePath.replace(/\/$/, '') === '/energy-advisor' ||
-      privatePath === '/api/energy-advisor' || privatePath.startsWith('/api/energy-advisor/')) return;
+  if (['mini-war-room', 'thermal-timeline', 'energy-advisor'].some((family) =>
+    privatePath === '/' + family || privatePath.startsWith('/' + family + '/') ||
+    privatePath === '/api/' + family || privatePath.startsWith('/api/' + family + '/')
+  )) return;
 
   event.respondWith(
     fetch(event.request)

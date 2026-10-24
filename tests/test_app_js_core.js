@@ -5837,6 +5837,13 @@ for (const temperature of [-41, 151, Infinity, NaN, null, undefined, true, false
   if (miniTests.status !== 0) console.error(miniTests.stdout, miniTests.stderr);
 }
 
+// Issue #863: keep Thermal and the composed SW boundary in the awaited CI gate.
+for (const suite of ['test_thermal_timeline_js.js', 'test_private_worker_routes.js']) {
+  const result = spawnSync(process.execPath, ['--test', path.join(__dirname, suite)], { encoding: 'utf8' });
+  assertEqual(suite + ' production-source suite', result.status, 0);
+  if (result.status !== 0) console.error(result.stdout, result.stderr);
+}
+
 console.log(`\n${'═'.repeat(50)}`);
 if (failed === 0) {
   console.log(`✅ ALL ${passed} TESTS PASSED`);
