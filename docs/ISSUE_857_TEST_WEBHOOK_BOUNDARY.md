@@ -85,9 +85,13 @@ Evidence: `/private/tmp/cypher65-devil-work.7Ltt1O/`.
 
 Final current-tree run on 2026-10-24: **4945 PASS, 4 SKIP**, 644 baseline
 warnings, 173.76 seconds, **86.23%** configured coverage, unchanged 80% gate.
-The ownership guard passed in this run. JS core, bundle drift, diff, Black
-25.1.0, Flake8 7.1.1 and Bandit 1.9.4 checks also passed. Failed prior logs
-remain alongside `verified-webhook-full.log`; no result was overwritten.
+The ownership guard passed in this run. Bundle drift, diff, Black 25.1.0,
+Flake8 7.1.1 and Bandit 1.9.4 checks also passed. **JS core FAILS** in both
+baseline and this branch: the Mini War Room worker-cache regression detects
+private-route exclusions lost in feature composition (Issue #863). The final
+Energy child-suite summary does not make its parent JS gate pass. This
+unrelated failure is not hidden or bypassed. Failed prior logs remain
+alongside `verified-webhook-full.log`; no result was overwritten.
 
 ## Primary reference
 
