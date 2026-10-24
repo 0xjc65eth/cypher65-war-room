@@ -434,6 +434,7 @@ jobs:
           npx playwright test tests/e2e/terminal-console.spec.js tests/e2e/operational-evidence-states.spec.js --project=chromium
           npx playwright test tests/e2e/comparison-evidence.spec.js --project=chromium
           npx playwright test tests/e2e/energy-advisor.spec.js --project=chromium --project=mobile-chrome
+          npx playwright test tests/e2e/private-worker-routes.spec.js --project=chromium --project=mobile-chrome
           npx playwright test tests/e2e/navigation-loading.spec.js \
             tests/e2e/fleet-agentless-manual-add.spec.js tests/e2e/topbar-responsive.spec.js --project=chromium
 
