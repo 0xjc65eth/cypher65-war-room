@@ -71,8 +71,9 @@ hashrate. No execution paths were added.
 - Generic timestamp/schema validation and rental currency/unit/retention
   contracts remain separate
   findings. This is not a universal input-schema or product-certification
-  claim. Only the `P(X >= 1)` tail is in scope; multi-count Poisson tails
-  were not introduced or claimed to have been validated.
+  claim. At the initial checkpoint only the `P(X >= 1)` tail was in scope;
+  the bounded pure count-tail follow-up below adds multi-count validation
+  without introducing a new HTTP or UI contract.
 
 ## Evidence and validation
 
@@ -130,8 +131,82 @@ the unrelated mobile gates must remain explicit in the draft PR.
 
 Next checkpoint: publish draft PR, required full-repository and exact-head CI
 gates, and independent GitHub approval. No merge or deployment is part of this
-milestone. Keep the issue open: multi-count tails, generic metadata validation
-and live input availability were not delivered by this scoped patch.
+milestone. At that checkpoint multi-count tails, generic metadata validation
+and live input availability were not delivered. The follow-up below addresses
+the first item only; generic metadata and live input availability are not
+silently represented as delivered.
+
+## Count-tail completion follow-up (2026-10-23)
+
+Base: `02901d7c095e378ec0b2daab005d127cc9be00e1`. The inversion and
+single-event input hardening above are already present on this base. The
+remaining count-tail acceptance criterion is implemented as the pure typed
+function `poisson_block_count_tail(mean, minimum_blocks)`, where `mean` is
+the dimensionless expected event count, not H/s or seconds.
+
+### Explicit new pure-function contract
+
+- `mean`: finite nonnegative Python `int`/`float`, excluding booleans and
+  numeric strings. `minimum_blocks`: integer from 0 through 10,000,
+  excluding booleans. Zero mean is a valid mathematical distribution.
+- The stable three-field result contains `minimum_blocks`,
+  `probability_at_least` (a decimal probability or `None`), and `status`.
+- `SOLVED` means a representable computed probability. Count zero is exactly
+  1; positive count with zero mean is exactly 0. Binary64 rounding to 1 for
+  large means is not certainty or an operational guarantee.
+- `INVALID_INPUT` rejects invalid mean/count domains without coercion or
+  nonfinite JSON. Invalid counts are returned as `None`, not echoed.
+- `UNSUPPORTED_COUNT` rejects counts above 10,000, with no unbounded loop or
+  oversized integer echoed. `UNDERFLOW` returns `None` when a mathematically
+  positive tail rounds below binary64 range, never a solved zero.
+- `NUMERIC_UNAVAILABLE` is the explicit defensive iteration-budget result;
+  no partially summed probability is returned as solved.
+
+The existing Block Lab forward model calls this primitive at count one and
+retains its exact response keys, existing statuses and `expm1` result. No
+`minimum_blocks` query parameter, new route, model default, dependency,
+purchase or hardware path is added. `/target-solver` still has no network
+inputs and accurately returns `INSUFFICIENT_INPUTS`; this does not claim that
+route has become operational. Generic timestamp/schema validation remains
+outside this mathematical follow-up.
+
+### Numerical method and bounded work
+
+For `lambda < k`, sum the upper tail directly, starting with a log-scaled
+mass at `k`. The positive recurrence has decreasing ratios; a geometric
+remainder bound controls termination at binary64 resolution. For
+`lambda >= k`, sum the finite lower CDF backwards from `k-1` and complement
+it. In that branch the requested upper tail is not tiny, avoiding catastrophic
+subtraction. `lgamma` avoids factorial overflow; scaling the sum before the
+final `exp` preserves representable subnormal tails even if the seed mass
+would underflow. Count one uses `-expm1(-lambda)` directly.
+
+Each call uses at most 10,000 recurrence terms; work never scales with the
+mean. Inputs near `lambda=k=10,000`, finite mean `1e308`, representable
+subnormal probabilities and explicit underflow are covered. No normal
+approximation or new runtime dependency is introduced.
+
+The test oracle independently sums the finite CDF from zero using Python
+Decimal at 850-digit precision before taking the complement, rather than
+mirroring production's log-scaled, mode-directed algorithm. Selected oracle
+vectors use a relative tolerance of `5e-11`, including both sides of the
+branch boundary; this is a test tolerance, not a universal accuracy warranty.
+Additional regressions verify monotonicity, adjacent-tail probability mass,
+strict input domains, bounded work, JSON safety, and unchanged forward keys.
+
+### Follow-up evidence
+
+Checkout: `/private/tmp/cypher65-841-complete.U5xDob/repo`.
+Branch: `fix/841-multiblock-numerics-complete`. Existing Python 3.14.6
+runtime, no dependency installation, no external or physical I/O.
+
+- Baseline existing Block Lab tests: **PASS**, 101 tests, 0.49 seconds.
+- Regression-first new count-tail tests: expected **RED**, 53 failures,
+  0.28 seconds, before the primitive existed.
+- First implementation: **PASS**, 53 tests, 1.01 seconds.
+- Expanded coverage/static/review results are recorded in the adjacent
+  handoff checkpoint and logs before publication. No remote CI or GitHub
+  approval is implied by local tests. No merge/deploy is authorized.
 
 ## Primary references
 
