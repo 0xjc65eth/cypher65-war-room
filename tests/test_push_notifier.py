@@ -270,13 +270,10 @@ class TestSendWebhookNotification:
 
     def test_discord_url_detected_and_formats_embed(self):
         """Discord URL → _send_discord_webhook → embed payload."""
-        mock_post = MagicMock()
-        mock_post.return_value.ok = True
-        mock_post.return_value.status_code = 200
+        mock_post = MagicMock(return_value=204)
 
         url = "https://discord.com/api/webhooks/123/abc"
-        with patch("services.push_notifier.requests") as mock_r:
-            mock_r.post = mock_post
+        with patch("services.push_notifier.deliver_webhook", mock_post):
             ok = send_webhook_notification(url=url, **_WEBHOOK_ARGS)
 
         assert ok is True
@@ -285,7 +282,7 @@ class TestSendWebhookNotification:
         assert call_args[0][0] == url
 
         # Check embed structure
-        payload = call_args[1]["json"]
+        payload = call_args[0][1]
         embed = payload["embeds"][0]
         assert "CYPHER65" in embed["title"]
         assert "CRIT" in embed["title"]
@@ -294,15 +291,13 @@ class TestSendWebhookNotification:
         assert embed["color"] == 0xFF1744  # CRIT red
 
     def test_discord_embed_includes_worker_and_address(self):
-        mock_post = MagicMock()
-        mock_post.return_value.ok = True
+        mock_post = MagicMock(return_value=204)
 
         url = "https://discord.com/api/webhooks/456/xyz"
-        with patch("services.push_notifier.requests") as mock_r:
-            mock_r.post = mock_post
+        with patch("services.push_notifier.deliver_webhook", mock_post):
             send_webhook_notification(url=url, **_WEBHOOK_ARGS)
 
-        payload = mock_post.call_args[1]["json"]
+        payload = mock_post.call_args[0][1]
         embed = payload["embeds"][0]
         field_names = [f["name"] for f in embed["fields"]]
         assert "Worker" in field_names
@@ -310,47 +305,41 @@ class TestSendWebhookNotification:
 
     def test_telegram_url_detected_and_formats_markdown(self):
         """Telegram URL → _send_telegram_webhook → MarkdownV2 payload."""
-        mock_post = MagicMock()
-        mock_post.return_value.ok = True
+        mock_post = MagicMock(return_value=204)
 
         url = "https://api.telegram.org/botTOKEN/sendMessage?chat_id=123456"
-        with patch("services.push_notifier.requests") as mock_r:
-            mock_r.post = mock_post
+        with patch("services.push_notifier.deliver_webhook", mock_post):
             ok = send_webhook_notification(url=url, **_WEBHOOK_ARGS)
 
         assert ok is True
-        payload = mock_post.call_args[1]["json"]
+        payload = mock_post.call_args[0][1]
         assert payload["parse_mode"] == "MarkdownV2"
         assert "CYPHER65" in payload["text"]
         assert "CRIT" in payload["text"]
         assert payload["chat_id"] == "123456"
 
     def test_telegram_no_chat_id_still_sends(self):
-        mock_post = MagicMock()
-        mock_post.return_value.ok = True
+        mock_post = MagicMock(return_value=204)
 
         url = "https://api.telegram.org/botTOKEN/sendMessage"
-        with patch("services.push_notifier.requests") as mock_r:
-            mock_r.post = mock_post
+        with patch("services.push_notifier.deliver_webhook", mock_post):
             ok = send_webhook_notification(url=url, **_WEBHOOK_ARGS)
 
         assert ok is True
-        payload = mock_post.call_args[1]["json"]
+        payload = mock_post.call_args[0][1]
         assert "chat_id" not in payload  # no query param → no chat_id
         assert payload["parse_mode"] == "MarkdownV2"
 
     def test_generic_url_sends_legacy_payload(self):
         """Non-Discord, non-Telegram URL → generic JSON payload."""
-        mock_post = MagicMock()
-        mock_post.return_value.ok = True
+        mock_post = MagicMock(return_value=204)
 
         url = "https://hooks.example.com/custom"
-        with patch("services.push_notifier.requests") as mock_r:
-            mock_r.post = mock_post
+        with patch("services.push_notifier.deliver_webhook", mock_post):
             ok = send_webhook_notification(url=url, **_WEBHOOK_ARGS)
 
         assert ok is True
-        payload = mock_post.call_args[1]["json"]
+        payload = mock_post.call_args[0][1]
         assert payload["event"] == "cypher65_war_room_alert"
         assert payload["severity"] == "CRIT"
         assert payload["category"] == "hashrate_drop"
@@ -358,36 +347,31 @@ class TestSendWebhookNotification:
     def test_network_error_returns_false(self):
         mock_post = MagicMock(side_effect=ConnectionError("refused"))
         url = "https://discord.com/api/webhooks/xxx"
-        with patch("services.push_notifier.requests") as mock_r:
-            mock_r.post = mock_post
+        with patch("services.push_notifier.deliver_webhook", mock_post):
             ok = send_webhook_notification(url=url, **_WEBHOOK_ARGS)
 
         assert ok is False
 
     def test_discord_non_200_returns_false(self):
-        mock_post = MagicMock()
-        mock_post.return_value.ok = False
-        mock_post.return_value.status_code = 429
+        mock_post = MagicMock(return_value=204)
+        mock_post.return_value = 429
 
         url = "https://discord.com/api/webhooks/xxx"
-        with patch("services.push_notifier.requests") as mock_r:
-            mock_r.post = mock_post
+        with patch("services.push_notifier.deliver_webhook", mock_post):
             ok = send_webhook_notification(url=url, **_WEBHOOK_ARGS)
 
         assert ok is False
 
     def test_warn_severity_uses_orange_color(self):
-        mock_post = MagicMock()
-        mock_post.return_value.ok = True
+        mock_post = MagicMock(return_value=204)
 
         url = "https://discord.com/api/webhooks/123"
-        with patch("services.push_notifier.requests") as mock_r:
-            mock_r.post = mock_post
+        with patch("services.push_notifier.deliver_webhook", mock_post):
             send_webhook_notification(url=url, severity="WARN", category="temp_high",
                                        message="temp high", ts=1735689600,
                                        worker="w", address="a")
 
-        payload = mock_post.call_args[1]["json"]
+        payload = mock_post.call_args[0][1]
         assert payload["embeds"][0]["color"] == 0xFFA000  # WARN amber
 
 

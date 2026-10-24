@@ -1880,12 +1880,13 @@ def _webhook_dispatch(alert):
     settings — the legacy behavior.
     """
     from services.settings import load_settings
+    from services.settings import is_default_tenant
 
     try:
         tid = getattr(alert, "tenant_id", "") or ""
         s = load_settings(tid)
         # Retry-queue fallback: on transient provider failure the alert is
-        # persisted to the webhook queue (never lost) instead of dropped.
+        # persisted for bounded delayed retries (not exactly-once delivery).
         from services.webhook_queue import dispatch_webhook_or_queue
 
         return dispatch_webhook_or_queue(
@@ -1894,13 +1895,15 @@ def _webhook_dispatch(alert):
             category=alert.category,
             message=alert.message,
             ts=alert.ts,
-            worker=WORKER_NAME,
-            address=BTC_ADDRESS,
+            worker=WORKER_NAME if is_default_tenant(tid) else "",
+            address=BTC_ADDRESS if is_default_tenant(tid) else "",
             min_severity=s.get("webhook_min_severity", "WARN"),
             tenant_id=tid,
         )
-    except Exception as e:
-        log.warning("[webhook] dispatch error: %s", e)
+    except Exception:
+        from services.observability import emit_event
+
+        emit_event("webhook_dispatch_failed", outcome="unconfirmed")
         return False
 
 

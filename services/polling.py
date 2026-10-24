@@ -1135,8 +1135,10 @@ def poll_once():
                     address=config.BTC_ADDRESS,
                     min_severity=min_sev,
                 )
-    except Exception as e:
-        log.warning("[webhook block] error: %s", e)
+    except Exception:
+        from services.observability import emit_event
+
+        emit_event("webhook_poll_dispatch_failed", outcome="unconfirmed")
 
     # ━━ Compute luck estimate ━━
     luck = {}
