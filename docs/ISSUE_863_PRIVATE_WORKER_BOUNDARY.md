@@ -1,5 +1,37 @@
 # Issue #863 — Composed private Service Worker boundary
 
+## Current integration — 2026-10-25
+
+Target master: `e616a0169659a8f5c8c70c5f13e67f300b86075c` (PR #871).
+Its public-static-only v14 policy already subsumes the original three private
+families. This PR preserves that production worker byte-for-byte; it must not
+reintroduce the earlier v13 policy or generic API/document offline caching.
+
+All seven composed source cases and both browser projects remain active. Their
+contract now matches v14: current-owned-cache reads, MIME/header defenses,
+obsolete v12/v13 migration, API bypass, allowed version query, unknown static
+network unavailability and allowed-but-uncached static 503. Private aliases are
+still reseeded after activation in old/current/foreign caches before denial.
+The original tests against v14 first failed (4 passed / 3 failed); the explicit
+contract migration is preserved rather than deleting or skipping assertions.
+
+Thermal and composed-worker source suites run directly as an awaited shell
+`node --test` CI step, not status-only nested children. This avoids depending on
+the not-yet-merged #867 helper while retaining every test in those files. The
+existing Mini/Energy core sites are unchanged; #867 owns their separate fix.
+Remote exact-head CI and independent approval remain required before squash.
+
+Current-base local validation:49 source/feature tests PASS; the exact new
+standalone CI command executes19 tests (Thermal12 + composed7), independently
+repeated on Node20; four browser cases PASS in34.8s (both worker probes on desktop
+and mobile). The reviewer confirmed zero production-worker/core diff against
+master. These are local results, not a substitute for checks on the published SHA.
+
+## Historical v13 implementation and evidence
+
+The following describes the original pre-#871 candidate, not the current
+production policy or current-head test result.
+
 ## Scope and confirmed regression
 
 Base: `f479382750f608b44d3a8dfd6a163ab87ae97d6a` (`master`).

@@ -57,7 +57,8 @@ test('obsolete cache eviction, private seeded offline denial and public offline 
   }, privatePaths);
 
   const migration = await page.evaluate(async () => ({ names: await caches.keys(), preference: localStorage.getItem('fixture-user-preference') }));
-  expect(migration.names).not.toContain('cypher65-v12'); expect(migration.names).toContain('cypher65-v13');
+  expect(migration.names).not.toContain('cypher65-v12'); expect(migration.names).not.toContain('cypher65-v13');
+  expect(migration.names).toContain('cypher65-v14');
   expect(migration.names).toContain('unrelated-app-data'); expect(migration.names).toContain('cypher65-v12-other-app');
   expect(migration.preference).toBe('preserve');
 
@@ -75,27 +76,30 @@ test('obsolete cache eviction, private seeded offline denial and public offline 
 
   // Re-seed AFTER activation: eviction alone must not make this test pass.
   await page.evaluate(async paths => {
-    for (const name of ['cypher65-v12', 'cypher65-v13', 'unrelated-app-data']) {
+    for (const name of ['cypher65-v12', 'cypher65-v13', 'cypher65-v14', 'unrelated-app-data']) {
       const cache = await caches.open(name);
       for (const path of paths) await cache.put(path, new Response('PRIVATE-SEEDED-AFTER-CLAIM'));
     }
-    const response = await fetch('/static/style.css?fixture=public-control');
+    const response = await fetch('/static/style.css?v=fixture-control');
     window.publicControl = await response.text();
   }, privatePaths);
-  await expect.poll(() => page.evaluate(async () => !!await (await caches.open('cypher65-v13')).match('/static/style.css?fixture=public-control'))).toBe(true);
+  await expect.poll(() => page.evaluate(async () => !!await (await caches.open('cypher65-v14')).match('/static/style.css'))).toBe(true);
   await context.setOffline(true);
   const offline = await page.evaluate(async paths => {
     const results = [];
     for (const path of paths) {
       try { results.push(await (await fetch(path)).text()); } catch { results.push('UNAVAILABLE'); }
     }
-    const publicResponse = await fetch('/static/style.css?fixture=public-control');
-    const unversioned = await fetch('/static/manifest.json?fixture=uncached-query');
-    const missing = await fetch('/static/missing-public-fixture');
+    const publicResponse = await fetch('/static/style.css?v=fixture-control');
+    const unversioned = await fetch('/static/manifest.json?v=fixture-uncached');
+    let missingStatus;
+    try { missingStatus = (await fetch('/static/missing-public-fixture')).status; } catch { missingStatus = 'UNAVAILABLE'; }
+    const missingAllowed = await fetch('/static/icon-32x32.png');
     return { results, publicStatus: publicResponse.status, publicMatches: await publicResponse.text() === window.publicControl,
-      manifestStatus: unversioned.status, missingStatus: missing.status };
+      manifestStatus: unversioned.status, missingStatus, missingAllowedStatus: missingAllowed.status };
   }, privatePaths);
   expect(offline.results).toEqual(privatePaths.map(() => 'UNAVAILABLE'));
   expect(offline.publicStatus).toBe(200); expect(offline.publicMatches).toBe(true);
-  expect(offline.manifestStatus).toBe(200); expect(offline.missingStatus).toBe(503);
+  expect(offline.manifestStatus).toBe(200); expect(offline.missingStatus).toBe('UNAVAILABLE');
+  expect(offline.missingAllowedStatus).toBe(503);
 });
