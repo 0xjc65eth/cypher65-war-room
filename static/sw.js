@@ -1,5 +1,5 @@
 /* ════════════════════════════════════════════════════════════════════════
-   CYPHER65 · SERVICE WORKER · v6 — cache busted
+   CYPHER65 · SERVICE WORKER · v14 — public static files only
    ════════════════════════════════════════════════════════════════════════
    - Caches static assets on install for offline resilience
    - Listens for REAL Web Push events (VAPID, Issue #15) and for
@@ -7,24 +7,64 @@
    - Clicking a notification focuses / opens the dashboard
    ════════════════════════════════════════════════════════════════════════ */
 
-const CACHE_NAME = 'cypher65-v12';  // v11 P0-6 terminal pro · v12 Web Push (VAPID)
-const ASSETS_TO_CACHE = [
-  '/',
-  '/static/style.css',
-  '/static/app.js',
-  '/static/manifest.json',
-  '/api/healthz',
-];
+// Never precache '/', documents or APIs: their representation may be private.
+const CACHE_NAME = 'cypher65-v14';
+const PUBLIC_TYPES = {
+  '/static/style.css': ['text/css'],
+  '/static/app.js': ['text/javascript', 'application/javascript'],
+  '/static/manifest.json': ['application/json', 'application/manifest+json'],
+  '/static/icon-32x32.png': ['image/png'],
+  '/static/icon-192x192.png': ['image/png'],
+  '/static/icon-512x512.png': ['image/png'],
+};
+const ASSETS_TO_CACHE = Object.keys(PUBLIC_TYPES);
+
+/** Return an exact public asset key, or null; e.g. style.css?v763 -> style.css.
+ * Only the existing bounded version query is canonicalized. No API/document,
+ * arbitrary query, double encoding, credentials or malformed path is admitted.
+ * @param {string} value Absolute request/response URL.
+ * @returns {string|null} Same-origin canonical asset URL.
+ */
+function publicAssetKey(value) {
+  try {
+    const url = new URL(value);
+    if (url.origin !== self.location.origin || url.username || url.password || url.hash) return null;
+    if (url.search && !/^\?v=?[a-zA-Z0-9._-]{1,128}$/.test(url.search)) return null;
+    const path = decodeURIComponent(url.pathname).replace(/\/{2,}/g, '/');
+    return Object.hasOwn(PUBLIC_TYPES, path) ? url.origin + path : null;
+  } catch { return null; }
+}
+
+/** Apply the same response policy on write AND read; no-store is not automatic
+ * in Cache API. Example: a cached CSS response marked private is unavailable.
+ * @param {Response|undefined} response Network or current-owned-cache response.
+ * @param {string} key Canonical public asset URL.
+ * @returns {boolean} Whether this public static response may be stored/served.
+ */
+function publicStaticResponse(response, key) {
+  if (!response || response.status !== 200 || response.redirected ||
+      !['basic', 'default'].includes(response.type)) return false;
+  if (response.url && publicAssetKey(response.url) !== key) return false;
+  const control = response.headers.get('Cache-Control') || '';
+  if (/(?:^|,)\s*(?:no-store|private)\s*(?:=|,|$)/i.test(control)) return false;
+  const vary = (response.headers.get('Vary') || '').split(',').map(value => value.trim().toLowerCase());
+  if (vary.some(value => ['*', 'authorization', 'cookie'].includes(value))) return false;
+  const type = (response.headers.get('Content-Type') || '').split(';')[0].trim().toLowerCase();
+  return PUBLIC_TYPES[new URL(key).pathname].includes(type);
+}
 
 // ── Install: pre-cache key assets ──────────────────────────────────────
 self.addEventListener('install', (event) => {
   self.skipWaiting();
   event.waitUntil(
     caches.open(CACHE_NAME).then((cache) => {
-      return cache.addAll(ASSETS_TO_CACHE).catch((err) => {
-        // Non-critical: offline still works, just less resilient
-        console.warn('[SW] cache addAll partial:', err);
-      });
+      return Promise.all(ASSETS_TO_CACHE.map(async (path) => {
+        const key = self.location.origin + path;
+        try {
+          const response = await fetch(new Request(key, { credentials: 'omit', cache: 'reload' }));
+          if (publicStaticResponse(response, key)) await cache.put(key, response);
+        } catch { /* Best-effort public asset warmup; never cache a private fallback. */ }
+      }));
     })
   );
 });
@@ -34,48 +74,40 @@ self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches.keys().then((keys) => {
       return Promise.all(
-        keys.filter((k) => k !== CACHE_NAME).map((k) => caches.delete(k))
+        keys.filter((k) => /^cypher65-v\d+$/.test(k) && k !== CACHE_NAME)
+          .map((k) => caches.delete(k))
       );
-    })
+    }).then(() => self.clients.claim())
   );
-  return self.clients.claim();
 });
 
 // ── Fetch: network-first, cache fallback ───────────────────────────────
 self.addEventListener('fetch', (event) => {
-  // Only cache GET requests to same origin
+  // A single public-static policy subsumes all private page/API exclusions.
+  // Bypass before respondWith, so old/foreign private entries cannot be read.
   if (event.request.method !== 'GET') return;
-  if (!event.request.url.startsWith(self.location.origin)) return;
-
-  // Private energy evidence must never enter or fall back to offline caches.
-  let privatePath;
-  try { privatePath = decodeURIComponent(new URL(event.request.url).pathname).replace(/\/{2,}/g, '/'); }
-  catch { return; }
-  if (privatePath.replace(/\/$/, '') === '/energy-advisor' ||
-      privatePath === '/api/energy-advisor' || privatePath.startsWith('/api/energy-advisor/')) return;
+  if (event.request.mode === 'navigate' || event.request.destination === 'document' || event.request.cache === 'no-store') return;
+  if (event.request.headers?.has('Authorization')) return;
+  const key = publicAssetKey(event.request.url);
+  if (!key) return;
 
   event.respondWith(
     fetch(event.request)
       .then((response) => {
         // Cache successful responses for future offline use
-        if (response.ok) {
+        if (publicStaticResponse(response, key)) {
           const clone = response.clone();
-          caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
+          event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.put(key, clone))
+            .catch(() => {})); // Best-effort static cache; never replace a valid network response.
         }
         return response;
       })
       .catch(() => {
-        // Offline: serve from cache (exact match, then query-stripped)
-        return caches.match(event.request).then((cached) => {
-          if (cached) return cached;
-          // The page requests versioned URLs (e.g. /static/app.js?v34) but
-          // the SW pre-caches the un-versioned paths — fall back to those.
-          const url = new URL(event.request.url);
-          url.search = '';
-          return caches.match(new Request(url.href, { method: 'GET' })).then((c2) => {
-            return c2 || new Response('Offline', { status: 503 });
-          });
-        });
+        // Only this generation's public cache is eligible, with read defenses.
+        // Never search all caches: an unrelated application may own those rows.
+        return caches.open(CACHE_NAME).then(cache => cache.match(key))
+          .then(cached => publicStaticResponse(cached, key) ? cached : new Response('Offline', { status: 503 }))
+          .catch(() => new Response('Offline', { status: 503 }));
       })
   );
 });
