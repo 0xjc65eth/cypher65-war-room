@@ -17,7 +17,10 @@ per-rental delivery. CYPHER65 refuses reuse for concurrent rentals in the same
 tenant. It cannot attest exclusivity across other tenants or pool accounts.
 Only Parasite wallet sessions are supported in this MVP. Fleet ASIC telemetry,
 account aggregates, primary-worker fallback, and marketplace averages are never
-evidence sources. Support for another pool needs its own documented adapter.
+evidence sources. The rentals detail cost-per-TH·h continues to use the provider's
+reported average hashrate and is labeled separately from destination-pool sample
+evidence; it must not be interpreted as cost over the sampled delivery series.
+Support for another pool needs its own documented adapter.
 
 ## Operator workflow (Portuguese interface)
 
@@ -45,6 +48,16 @@ or larger gaps reset the streak. A real zero H/s is valid; missing data is `null
 The latest retrieval older than `max_gap_s` yields `stale`, with no current
 hashrate/verdict carried forward. Equality with the threshold is healthy.
 These are **consecutive sampled readings**, not proof between observations.
+
+The active evidence response also includes `coverage`: counts over retained points
+for the active rule revision (`observation_count`, finite `observed_count`, and
+`missing_count`), plus the percentage of those samples with observed hashrate and
+delivery. `observed_pct` is `null` when there are no points; zero hashrate is a
+valid observed sample, while absent/non-finite values are not. This percentage
+is sample-quality coverage only—not elapsed-time coverage, delivery uptime, or
+proof of continuous hashrate. With no active configuration, the frontend says
+`Não configurado` for the contract and `Sem observações` for coverage; it never
+uses zero to imply a missing contract or missing telemetry.
 
 Rule revisions reset evaluation. Alerts are durably deduplicated by tenant,
 rental, revision and streak start. Observation, dedup and durable tenant alert

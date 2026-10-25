@@ -301,7 +301,7 @@
     proxLadderRow: $('#prox-ladder-row'), proxSparkline: $('#prox-sparkline'), proxTip: document.getElementById('prox-tip'),
     lcTimeBig: $('#lc-time-big'), lcSessionShareCount: $('#lc-session-share-count'), lcShareDiff: $('#lc-share-diff'), lcHashes: $('#lc-hashes'),
     lcTimeObs: $('#lc-time-obs'), lcPBlock: $('#lc-p-block'), lcInstHr: $('#lc-inst-hr'), lcSessionShares: $('#lc-session-shares'),
-    lcAvgShareDiff: $('#lc-avg-share-diff'), lcCumP: $('#lc-cum-p'), lcExpectedBlocks: $('#lc-expected-blocks'), lcTickerList: $('#lc-ticker-list'),
+    lcAvgShareDiff: $('#lc-avg-share-diff'), lcCumP: $('#lc-cum-p'), lcExpectedBlocks: $('#lc-expected-blocks'), lcTickerList: $('#lc-ticker-list'), lcEstimatedBadge: $('#lc-estimated-badge'),
     qlStatusBadge: $('#ql-status-badge'), qlScoreBadge: $('#ql-score-badge'), qlBarFill: $('#ql-bar-fill'),
     qlCompShares: $('#ql-comp-shares'), qlCompProx: $('#ql-comp-prox'), qlCompPower: $('#ql-comp-power'), qlCompMomentum: $('#ql-comp-momentum'), qlLabel: $('#ql-label'),
     lmStatusBadge: $('#lm-status-badge'), lmWorkersBadge: $('#lm-workers-badge'),
@@ -1176,35 +1176,41 @@
 
   // Populate LN address from support config on open
   function _populateLNAddress() {
-    var el = document.getElementById('support-ln-address');
-    if (!el || el.textContent !== '—') return;
-    fetch('/api/support-config').then(function(r) { return r.json(); }).then(function(cfg) {
-      var ln = cfg.methods && cfg.methods.find(function(m) { return m.id === 'lightning'; });
-      if (ln && ln.address) el.textContent = ln.address;
-    }).catch(function() { /* support config not available */ });
+    return renderSupportMethods(); // One owner/epoch for config and its recipient address.
   }
 
   // ── Render donation methods into the compact bar + full modal grid ──
   // Fixes the orphaned containers (#support-bar-methods / #support-modal-grid)
   // which had CSS + a copy handler but were never populated by JS. The copy
   // button reads the previous sibling's data-copy attribute (see FASE 3).
+  var _supportMethodsGeneration = 0;
   function renderSupportMethods() {
-    fetch('/api/support-config').then(function(r) { return r.json(); }).then(function(cfg) {
-      var methods = (cfg && cfg.methods) || [];
+    const generation = ++_supportMethodsGeneration;
+    ['support-bar-methods', 'support-modal-grid'].forEach(id => { const el = document.getElementById(id); if (el) el.textContent = 'Loading support configuration…'; });
+    return fetch('/api/support-config').then(function(r) { if (!r.ok) throw new Error((r.status === 401 || r.status === 403 ? 'Access required' : 'Support configuration unavailable') + ' (HTTP ' + r.status + ')'); return r.json(); }).then(function(cfg) {
+      if (generation !== _supportMethodsGeneration) return;
+      if (!cfg || !Array.isArray(cfg.methods) || cfg.methods.some(method => !method || typeof method.address !== 'string' || typeof method.label !== 'string')) throw new Error('Invalid support configuration');
+      var methods = cfg.methods;
       var manifesto = cfg && cfg.manifesto ? cfg.manifesto : '';
 
       // Manifesto (authored, cypherpunk) into the dedicated modal block.
       // Injected BEFORE the methods guard so it renders even if the config
       // ever ships with an empty methods list.
       var maniEl = document.getElementById('support-modal-manifesto');
+      if (maniEl) maniEl.textContent = '';
       if (maniEl && manifesto) {
         maniEl.innerHTML = manifesto.split('\n').map(function(line) {
           if (!line.trim()) return '<br>';
-          return line.replace(/^— (.*)$/, '<span class="support-modal__sign">— $1</span>');
+          return escapeHtml(line).replace(/^— (.*)$/,  '<span class="support-modal__sign">— $1</span>');
         }).join(' ');
       }
 
-      if (!methods.length) return;
+      const lnAddress = document.getElementById('support-ln-address');
+      if (lnAddress) lnAddress.textContent = '—';
+      if (!methods.length) {
+        ['support-bar-methods', 'support-modal-grid'].forEach(id => { const el = document.getElementById(id); if (el) el.textContent = 'No support methods configured'; });
+        return;
+      }
 
       // Compact chips for the fixed footer bar
       var bar = document.getElementById('support-bar-methods');
@@ -1238,7 +1244,12 @@
       if (lnEl && ln && ln.address && lnEl.textContent === '—') {
         lnEl.textContent = ln.address;
       }
-    }).catch(function() { /* support config not available */ });
+    }).catch(function(error) {
+      if (generation !== _supportMethodsGeneration) return;
+      ['support-bar-methods', 'support-modal-grid'].forEach(id => { const el = document.getElementById(id); if (el) el.textContent = String(error.message || 'Support configuration unavailable') + '. Reopen Support to retry.'; });
+      const address = document.getElementById('support-ln-address');
+      if (address) address.textContent = '—';
+    });
   }
 
   // ── Recent Donations list (Support modal) ──
@@ -1451,30 +1462,40 @@
   // Save wallet
 
   // ── FASE 2: Fetch wallet history ──
+  var _walletHistoryGeneration = 0;
+  function resetWalletHistoryEvidence() {
+    _walletHistoryGeneration++;
+    const list = document.getElementById('wallet-history-list');
+    if (list) list.textContent = 'Wallet history not loaded for this session';
+  }
   async function fetchWalletHistory() {
+    const generation = ++_walletHistoryGeneration;
+    const list = document.getElementById('wallet-history-list');
+    if (list) list.textContent = 'Loading saved wallets…';
     try {
-      var resp = await authFetch('/api/wallet/history');
-      var data = await resp.json();
-      if (data.success && data.history) {
-        var list = document.getElementById('wallet-history-list');
-        if (list) {
-          list.innerHTML = '';
-          data.history.forEach(function(entry) {
-            var li = document.createElement('button');
-            li.className = 'wallet-history__item';
-            li.innerHTML = '<span class="mono">' + escapeHtml(entry.address.slice(0, 10)) + '...</span> <span class="mute">' + escapeHtml(entry.worker || '') + '</span>';
-            li.onclick = function() {
-              var input = document.getElementById('wallet-address-input');
-              if (input) input.value = entry.address;
-              var wInput = document.getElementById('wallet-worker-input');
-              if (wInput && entry.worker) wInput.value = entry.worker;
-            };
-            list.appendChild(li);
-          });
-        }
-      }
-    } catch(e) {
-      console.warn('[wallet history]', e);
+      const resp = await authFetch('/api/wallet/history');
+      if (generation !== _walletHistoryGeneration) return;
+      if (!resp.ok) throw new Error((resp.status === 401 || resp.status === 403 ? 'Access required' : 'Wallet history unavailable') + ' (HTTP ' + resp.status + ')');
+      const data = await resp.json();
+      if (generation !== _walletHistoryGeneration) return;
+      if (!data || !data.success || !Array.isArray(data.history) || data.history.some(entry => !entry || typeof entry.address !== 'string')) throw new Error('Invalid wallet history response');
+      if (!list) return;
+      list.textContent = data.history.length ? '' : 'No saved wallets';
+      data.history.forEach(entry => {
+        const button = document.createElement('button');
+        button.className = 'wallet-history__item';
+        button.textContent = entry.address.slice(0, 10) + '... ' + (entry.worker || '');
+        button.onclick = () => {
+          const input = document.getElementById('wallet-address-input');
+          if (input) input.value = entry.address;
+          const worker = document.getElementById('wallet-worker-input');
+          if (worker) worker.value = entry.worker || '';
+        };
+        list.appendChild(button);
+      });
+    } catch (error) {
+      if (generation !== _walletHistoryGeneration) return;
+      if (list) list.textContent = String(error.message || 'Wallet history unavailable') + '. Reopen Wallet to retry.';
     }
   }  // ── Personalized wallet greetings (by address) ───────────────────
   // Wallets in this map are community / early-supporters: they receive a
@@ -1660,6 +1681,7 @@ dom.walletSave?.addEventListener('click', async () => {
   // aqui: ele ignorava `licenseKey()`, então o header `X-License-Key` (tier
   // PRO) não era coberto.
   const AUTH_SESSION_KEY = '_cypher65_auth_session';
+  let _authSessionGeneration = 0;
 
   function authLoadSession() {
     try {
@@ -1670,10 +1692,14 @@ dom.walletSave?.addEventListener('click', async () => {
     } catch (e) { return null; }
   }
   function authSaveSession(s) {
+    _authSessionGeneration++;
     try { localStorage.setItem(AUTH_SESSION_KEY, JSON.stringify(s)); } catch (e) {}
+    if (typeof syncOperationalEvidenceSession === 'function') syncOperationalEvidenceSession(s && s.tenant_id, !!(s && s.access_token));
   }
   function authClearSession() {
+    _authSessionGeneration++;
     try { localStorage.removeItem(AUTH_SESSION_KEY); } catch (e) {}
+    if (typeof syncOperationalEvidenceSession === 'function') syncOperationalEvidenceSession('default', false);
   }
 
   // R1 (PRO tier): the operator's license key rides along on every API call
@@ -2374,28 +2400,39 @@ dom.walletSave?.addEventListener('click', async () => {
   // safety margin), so the isolated tenant is never dropped at the refresh
   // boundary. The 401-retry below is a belt-and-suspenders for routes that
   // DO hard-require auth.
+  function authSameSession(before, after) {
+    if (!before || !after) return !before && !after;
+    return (before.tenant_id || 'default') === (after.tenant_id || 'default') &&
+      (before.refresh_token ? before.refresh_token === after.refresh_token : before.access_token === after.access_token);
+  }
+
   async function authFetch(url, opts) {
     opts = opts || {};
     const session = authLoadSession();
     if (session && session.refresh_token && authIsExpired(session.expires_at)) {
       await authRefresh();
     }
+    if (!authSameSession(session, authLoadSession())) throw new Error('Session changed during request');
     const token = authGetToken();
     const headers = Object.assign({}, opts.headers || {}, authBuildHeaders(token));
     let res = await fetch(url, Object.assign({}, opts, { headers }));
+    if (!authSameSession(session, authLoadSession())) throw new Error('Session changed during request');
     if (res.status === 401 && token) {
       const refreshed = await authRefresh();
+      if (!authSameSession(session, authLoadSession())) throw new Error('Session changed during request');
       if (refreshed) {
         const headers2 = Object.assign({}, opts.headers || {}, authBuildHeaders(authGetToken()));
         res = await fetch(url, Object.assign({}, opts, { headers: headers2 }));
       }
     }
+    if (!authSameSession(session, authLoadSession())) throw new Error('Session changed during request');
     return res;
   }
 
   async function authRefresh() {
     const s = authLoadSession();
     if (!s || !s.refresh_token) return false;
+    const generation = _authSessionGeneration;
     try {
       const r = await fetch('/api/auth/refresh', {
         method: 'POST',
@@ -2404,7 +2441,7 @@ dom.walletSave?.addEventListener('click', async () => {
       });
       if (!r.ok) return false;
       const data = await r.json();
-      if (!data.access_token) return false;
+      if (generation !== _authSessionGeneration || !authSameSession(s, authLoadSession()) || !data.access_token) return false;
       authSaveSession({
         access_token: data.access_token,
         refresh_token: s.refresh_token,
@@ -2417,6 +2454,7 @@ dom.walletSave?.addEventListener('click', async () => {
 
   async function authLogin(apiKey) {
     if (!apiKey) return { ok: false, error: 'API key is required' };
+    const generation = ++_authSessionGeneration;
     try {
       const r = await fetch('/api/auth/login', {
         method: 'POST',
@@ -2424,7 +2462,9 @@ dom.walletSave?.addEventListener('click', async () => {
         body: JSON.stringify({ api_key: apiKey }),
       });
       const data = await r.json().catch(() => ({}));
-      if (!r.ok) return { ok: false, error: data.error || ('login failed (' + r.status + ')') };
+      if (generation !== _authSessionGeneration) return { ok: false, error: 'Session changed; retry login' };
+      if (!r.ok || !data.access_token) return { ok: false, error: data.error || ('login failed (' + r.status + ')') };
+      if (typeof syncOperationalEvidenceSession === 'function') syncOperationalEvidenceSession(data.tenant_id || 'default', true, true);
       authSaveSession({
         access_token: data.access_token,
         refresh_token: data.refresh_token,
@@ -2440,6 +2480,8 @@ dom.walletSave?.addEventListener('click', async () => {
 
   async function authLogout() {
     const s = authLoadSession();
+    authClearSession();
+    authUpdateUi();
     if (s && s.access_token) {
       try {
         await fetch('/api/auth/logout', {
@@ -2449,14 +2491,14 @@ dom.walletSave?.addEventListener('click', async () => {
         });
       } catch (e) {}
     }
-    authClearSession();
-    authUpdateUi();
   }
 
   function authUpdateUi() {
     const s = authLoadSession();
     const connected = authSessionValid(s);
     const tenant = connected ? (s.tenant_id || 'default') : 'default';
+    if (typeof syncConsoleHistorySession === 'function') syncConsoleHistorySession(tenant, connected);
+    if (typeof syncOperationalEvidenceSession === 'function') syncOperationalEvidenceSession(tenant, connected);
     const toggle = dom.authToggle;
     if (toggle) {
       toggle.innerHTML = _ic('key', 12, true) + escapeHtml(connected ? tenant.toUpperCase() : 'LOGIN');
@@ -2476,7 +2518,8 @@ dom.walletSave?.addEventListener('click', async () => {
   }
 
   function initAuth() {
-    authUpdateUi();
+    // boot() starts before the later stateful UI fragments are initialized.
+    Promise.resolve().then(authUpdateUi);
     const toggle = dom.authToggle;
     const modal = dom.authModal;
     if (toggle && modal) {
@@ -3581,11 +3624,20 @@ dom.walletSave?.addEventListener('click', async () => {
   let _consoleSelection = null;
   let _operationalFleetReadAt = null;
 
-  function consoleNumber(value) {
+  /**
+   * Parse a finite measurement within inclusive field-specific bounds.
+   * @param {unknown} value Raw telemetry number or numeric string.
+   * @param {number} [minimum=0] Lower bound; Celsius permits -40.
+   * @param {number} [maximum=Infinity] Upper bound; Celsius permits 150.
+   * @returns {number|null} Valid measurement, otherwise unavailable.
+   * @example consoleNumber('-5', -40, 150); // -5 Celsius
+   * @example consoleNumber(-5); // null for unsigned measurements
+   */
+  function consoleNumber(value, minimum = 0, maximum = Infinity) {
     if (typeof value !== 'number' && typeof value !== 'string') return null;
     if (typeof value === 'string' && !value.trim()) return null;
     const number = Number(value);
-    return Number.isFinite(number) && number >= 0 ? number : null;
+    return Number.isFinite(number) && number >= minimum && number <= maximum ? number : null;
   }
   function consoleAge(ts, now) {
     const raw = consoleNumber(ts);
@@ -3612,10 +3664,12 @@ dom.walletSave?.addEventListener('click', async () => {
       const statuses = { ONLINE: 'Online', HASHING: 'Minerando', IDLE: 'Ocioso', WARNING: 'Atenção', OFFLINE: 'Offline', PAUSED: 'Pausado', MAINTENANCE: 'Manutenção', STALE: 'Dados antigos' };
       const state = fleetError || old ? 'Último estado: ' + (statuses[reportedStatus] || 'não informado') : (statuses[reportedStatus] || 'Estado não informado');
       const needsAttention = old || !['ONLINE', 'HASHING', 'IDLE'].includes(reportedStatus);
+      const stateRank = { PAUSED: 0, STALE: 1, WARNING: 2, ERROR: 3, CRITICAL: 3, OFFLINE: 4, IDLE: 5, ONLINE: 6, HASHING: 6 };
+      const rank = Object.prototype.hasOwnProperty.call(stateRank, reportedStatus) ? stateRank[reportedStatus] : 7;
       const last = consoleNumber(telemetry.last_known_hashrate_hs);
       const hash = reportedStatus === 'OFFLINE' && last !== null ? last : consoleNumber(telemetry.hashrate_hs);
-      return { id: String(device.id || ''), kind: 'fleet', name: String(device.name || device.hostname || device.id || 'Equipamento sem nome'), model: String(device.model || ''), state: state, reportedState: statuses[reportedStatus] || reportedStatus, tone: old ? 'warning' : reportedStatus === 'OFFLINE' ? 'critical' : reportedStatus === 'WARNING' ? 'warning' : 'neutral', old: old, attention: needsAttention, hash: hash, hashNote: old || reportedStatus === 'OFFLINE' ? 'última observação' : 'informado pelo equipamento', temperature: consoleNumber(telemetry.temperature), power: consoleNumber(telemetry.power_watts), age: age, shareAge: consoleAge(telemetry.last_share_ts, now), accepted: consoleNumber(telemetry.shares_accepted), rejected: consoleNumber(telemetry.shares_rejected), telemetry: telemetry };
-    }).sort(function(a, b) { return Number(b.attention) - Number(a.attention) || a.name.localeCompare(b.name); });
+      return { id: String(device.id || ''), kind: 'fleet', name: String(device.name || device.hostname || device.id || 'Equipamento sem nome'), model: String(device.model || ''), state: state, reportedState: statuses[reportedStatus] || reportedStatus, tone: old ? 'warning' : reportedStatus === 'OFFLINE' ? 'critical' : reportedStatus === 'WARNING' ? 'warning' : 'neutral', old: old, attention: needsAttention, rank: rank, hash: hash, hashNote: old || reportedStatus === 'OFFLINE' ? 'última observação' : 'informado pelo equipamento', temperature: consoleNumber(telemetry.temperature, -40, 150), power: consoleNumber(telemetry.power_watts), age: age, shareAge: consoleAge(telemetry.last_share_ts, now), accepted: consoleNumber(telemetry.shares_accepted), rejected: consoleNumber(telemetry.shares_rejected), telemetry: telemetry };
+    }).sort(function(a, b) { return Number(b.attention) - Number(a.attention) || a.rank - b.rank || a.name.localeCompare(b.name); });
     const workers = Array.isArray(snap.all_workers) ? snap.all_workers : [];
     // Never distribute the selected worker's hashrate over reported worker names.
     const identified = workers.filter(function(worker) { return worker && (worker.name || worker.workername || worker.id); });
@@ -3644,6 +3698,197 @@ dom.walletSave?.addEventListener('click', async () => {
     return { mode: mode, rows: mode === 'fleet' ? localRows : workerRows, localRows: localRows, title: mode === 'fleet' ? (fleetError ? 'Últimas observações dos equipamentos' : 'Equipamentos monitorados') : 'Mineração observada pela pool', coverage: mode === 'fleet' ? 'Telemetria local · inventário e amostras dos equipamentos' : 'Pool · temperatura e potência exigem telemetria local', notice: notice, total: inventory, measured: measured.length, recent: recent.length, verified: fresh.length, unknown: unknown, attention: fleetError || !fresh.length ? null : fresh.filter(function(row) { return row.attention; }).length, hashrate: measured.length ? measured.reduce(function(sum, row) { return sum + row.hash; }, 0) : null, poolSource: 'Snapshot da pool: ' + (poolStale ? 'dados antigos · ' : '') + consoleAgeText(snapshotAge), fleetSource: 'ASICs locais: ' + (fleetError ? 'consulta indisponível' : fleetKnown ? inventory === 0 ? 'nenhum cadastrado' : inventory === null ? 'inventário não informado' : inventory + ' cadastrado(s)' : 'aguardando consulta') + (agentAge !== null ? ' · agente ' + consoleAgeText(agentAge) : ''), networkSource: 'Rede Bitcoin: ' + (snap.network && snap.network.height ? '#' + snap.network.height + (snap.network.stale ? ' · cache' : '') : 'sem dados'), loading: !snapshotPresent && !fleetData && !fleetError };
   }
 
+  // Premium dashboard uses identified worker snapshots and tenant-scoped
+  // device history. Never turn the global chart API into a worker timeline.
+  let _consoleHistoryDevice = '';
+  let _consoleHistoryMetric = 'hashrate';
+  let _consoleHistoryRequest = 0;
+  let _consoleHistory = { id: '', rows: [], readAt: 0, pending: false, error: false };
+  let _consoleHistorySession = '';
+  function syncConsoleHistorySession(tenant, connected) {
+    const context = (connected ? 'authenticated:' : 'public:') + tenant;
+    if (_consoleHistorySession && _consoleHistorySession !== context) {
+      ++_consoleHistoryRequest;
+      _consoleHistory = { id: '', rows: [], readAt: 0, pending: false, error: true };
+      const root = document.getElementById('operation-console');
+      if (root && root.dataset.source === 'fleet') renderConsoleHistory();
+    }
+    _consoleHistorySession = context;
+  }
+
+
+  function buildConsoleHistorySeries(history, metric, now) {
+    now = now || Date.now() / 1000;
+    const field = ['hashrate', 'temperature', 'power_watts'].includes(metric) ? metric : 'hashrate';
+    const byTime = new Map();
+    (Array.isArray(history) ? history : []).forEach(function(row) {
+      if (!row || typeof row !== 'object') return;
+      let ts = consoleNumber(row.ts);
+      if (ts !== null && ts > 1e11) ts /= 1000;
+      if (ts === null || ts <= 0 || ts > now) return;
+      byTime.set(ts, { ts: ts, value: consoleNumber(row[field]) });
+    });
+    const points = Array.from(byTime.values()).sort(function(a, b) { return a.ts - b.ts; }).slice(-120);
+    const segments = []; let segment = []; let previous = null;
+    points.forEach(function(point) {
+      if (point.value === null || previous !== null && point.ts - previous > 150) {
+        if (segment.length) segments.push(segment);
+        segment = [];
+      }
+      if (point.value !== null) segment.push(point);
+      previous = point.ts;
+    });
+    if (segment.length) segments.push(segment);
+    const measured = points.filter(function(point) { return point.value !== null; });
+    return { points: points, segments: segments, measured: measured, min: measured.length ? Math.min.apply(null, measured.map(function(p) { return p.value; })) : null, max: measured.length ? Math.max.apply(null, measured.map(function(p) { return p.value; })) : null };
+  }
+
+  function buildPremiumOperationModel(model, snap) {
+    const eligible = model.localRows.filter(function(row) { return !row.old && ['Online', 'Minerando', 'Ocioso', 'Atenção'].includes(row.reportedState); });
+    const powered = eligible.filter(function(row) { return row.power !== null; });
+    const workers = model.rows.filter(function(row) { return row.kind === 'pool' && row.hash !== null; }).sort(function(a, b) { return b.hash - a.hash || a.name.localeCompare(b.name); });
+    const primary = (Array.isArray(snap.all_workers) ? snap.all_workers : []).find(function(worker) { return worker.is_primary; });
+    const selected = snap.worker || primary || {};
+    return { workers: workers, powered: powered.length, power: powered.length ? powered.reduce(function(sum, row) { return sum + row.power; }, 0) : null, lastShareAge: consoleAge(selected.lastSubmission, Date.now()/1000), recent: model.recent, unknown: model.unknown };
+  }
+
+  function consoleHistoryValue(value, metric) {
+    if (value === null) return '—';
+    return metric === 'hashrate' ? fmt.hashrate(value) : value.toFixed(metric === 'temperature' ? 1 : 0) + (metric === 'temperature' ? ' °C' : ' W');
+  }
+  function consoleHistoryTime(ts) { return new Date(ts * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }); }
+
+  async function loadConsoleHistory(force) {
+    const id = _consoleHistoryDevice;
+    if (!id || document.body.dataset.activeModule !== 'dashboard' || document.getElementById('operation-console').dataset.source !== 'fleet') return;
+    if (!force && _consoleHistory.id === id && (_consoleHistory.pending || Date.now() - _consoleHistory.readAt < 30000)) return;
+    const request = ++_consoleHistoryRequest;
+    const previous = _consoleHistory.id === id ? _consoleHistory.rows : [];
+    _consoleHistory = { id: id, rows: previous, readAt: Date.now(), pending: true, error: false };
+    renderConsoleHistory();
+    try {
+      const response = await authFetch('/api/axe-fleet/devices/' + encodeURIComponent(id) + '/history?limit=120');
+      if (request !== _consoleHistoryRequest || id !== _consoleHistoryDevice) return;
+      if (!response.ok) {
+        // Authorization failures must not retain data from an earlier session.
+        if (response.status === 401 || response.status === 403 || response.status === 404) _consoleHistory.rows = [];
+        throw new Error('history unavailable');
+      }
+      const data = await response.json();
+      if (request !== _consoleHistoryRequest || id !== _consoleHistoryDevice) return;
+      if (String(data.device_id) !== id || !Array.isArray(data.history)) throw new Error('history scope mismatch');
+      _consoleHistory.rows = data.history;
+    } catch (_) {
+      if (request !== _consoleHistoryRequest || id !== _consoleHistoryDevice) return;
+      _consoleHistory.error = true;
+    } finally {
+      if (request === _consoleHistoryRequest && id === _consoleHistoryDevice) {
+        _consoleHistory.pending = false;
+        if (document.getElementById('operation-console').dataset.source === 'fleet') renderConsoleHistory();
+      }
+    }
+  }
+
+  function renderConsoleHistory() {
+    const target = document.getElementById('console-visual');
+    if (!target || document.getElementById('operation-console').dataset.source !== 'fleet') return;
+    const state = _consoleHistory;
+    const series = buildConsoleHistorySeries(state.rows, _consoleHistoryMetric);
+    target.setAttribute('aria-busy', String(state.pending));
+    document.getElementById('console-history-refresh').disabled = state.pending;
+    document.getElementById('console-history-stats').hidden = !series.measured.length;
+    document.getElementById('console-history-data').hidden = !series.points.length;
+    const note = document.getElementById('console-visual-note');
+    if (state.pending && !series.measured.length) {
+      target.innerHTML = '<div class="console-chart-empty">Carregando o histórico individual…</div>';
+      skelShow(target, 'chart'); note.textContent = 'Consultando a fonte autorizada do equipamento.'; return;
+    }
+    skelHide(target);
+    if (!series.measured.length) {
+      target.innerHTML = '<div class="console-chart-empty"><strong>' + (state.error ? 'Histórico indisponível' : 'Sem amostras para esta métrica') + '</strong><span>' + (state.error ? 'Confira sua sessão e a comunicação do agente. A tabela mantém seu próprio estado de consulta.' : 'O gráfico aparecerá quando o equipamento enviar observações válidas.') + '</span></div>';
+      note.textContent = 'Nenhuma curva foi estimada a partir do snapshot.'; return;
+    }
+    const start = series.points[0].ts; const end = series.points[series.points.length - 1].ts;
+    const lastMeasured = series.measured[series.measured.length - 1];
+    const width = Math.max(320, target.clientWidth || 720); const height = 180; const left = 82; const right = 20; const top = 16; const bottom = 36;
+    const maximum = series.max > 0 ? series.max * 1.12 : 1;
+    const x = ts => left + (end === start ? 0.5 : (ts - start) / (end - start)) * (width - left - right);
+    const y = value => height - bottom - value / maximum * (height - top - bottom);
+    let svg = '<svg viewBox="0 0 ' + width + ' ' + height + '" role="img" aria-labelledby="console-history-svg-title"><title id="console-history-svg-title">' + escapeHtml(document.getElementById('console-history-metric').selectedOptions[0].textContent) + ': ' + series.measured.length + ' amostras individuais. Lacunas acima de 150 segundos não são conectadas.</title>';
+    for (let i = 0; i <= 3; i++) {
+      const value = maximum * i / 3; const pos = y(value);
+      svg += '<line class="console-chart-grid" x1="' + left + '" x2="' + (width-right) + '" y1="' + pos + '" y2="' + pos + '"/><text class="console-chart-label" x="' + (left-12) + '" y="' + (pos+4) + '" text-anchor="end">' + escapeHtml(consoleHistoryValue(value, _consoleHistoryMetric)) + '</text>';
+    }
+    series.segments.forEach(function(segment) {
+      if (segment.length > 1) svg += '<polyline class="console-chart-line" points="' + segment.map(function(point) { return x(point.ts)+','+y(point.value); }).join(' ') + '"/>';
+      segment.forEach(function(point) { svg += '<circle class="console-chart-point" cx="' + x(point.ts) + '" cy="' + y(point.value) + '" r="3"><title>' + escapeHtml(consoleHistoryTime(point.ts) + ' · ' + consoleHistoryValue(point.value, _consoleHistoryMetric)) + '</title></circle>'; });
+    });
+    svg += '<text class="console-chart-label" x="' + left + '" y="' + (height-9) + '">' + escapeHtml(consoleHistoryTime(start)) + '</text><text class="console-chart-label" x="' + (width-right) + '" y="' + (height-9) + '" text-anchor="end">' + escapeHtml(consoleHistoryTime(end)) + '</text></svg>';
+    setHtmlIfChanged(target, svg);
+    note.textContent = (state.error ? 'Consulta indisponível · últimas observações. ' : state.pending ? 'Atualizando · últimas observações. ' : '') + series.measured.length + ' amostras · última medição válida ' + consoleAgeText(consoleAge(lastMeasured.ts, Date.now()/1000)) + ' · lacunas >150 s não conectadas';
+    document.getElementById('console-history-stats').innerHTML = [['Mínimo', series.min], ['Máximo', series.max], ['Última medição válida', lastMeasured.value]].map(function(item) { return '<div><span>' + item[0] + '</span><strong>' + escapeHtml(consoleHistoryValue(item[1], _consoleHistoryMetric)) + '</strong></div>'; }).join('');
+    document.getElementById('console-history-samples').innerHTML = '<p>Todas as ' + escapeHtml(String(series.points.length)) + ' amostras do gráfico. Horário local do navegador.</p><table><thead><tr><th>Horário</th><th>Medição</th></tr></thead><tbody>' + series.points.map(function(point) { return '<tr><td>' + escapeHtml(consoleHistoryTime(point.ts)) + '</td><td>' + escapeHtml(consoleHistoryValue(point.value, _consoleHistoryMetric)) + '</td></tr>'; }).join('') + '</tbody></table>';
+  }
+
+  function renderPremiumOperation(model, snap) {
+    const premium = buildPremiumOperationModel(model, snap);
+    const put = function(id, value) { document.getElementById(id).textContent = value; };
+    put('console-worker-count', model.mode === 'pool' ? model.rows.length : '—');
+    put('console-worker-count-scope', premium.workers.length + ' com hashrate informado');
+    put('console-last-share', premium.lastShareAge === null ? '—' : fmt.secsToHuman(premium.lastShareAge));
+    put('console-last-share-scope', 'última submissão do worker');
+    put('console-power', premium.power === null ? '—' : premium.power.toLocaleString(undefined, { maximumFractionDigits: 0 }) + ' W');
+    put('console-power-scope', premium.powered + ' de ' + model.localRows.length + ' equipamentos com leitura recente');
+    const controls = document.getElementById('console-history-controls');
+    controls.hidden = model.mode !== 'fleet';
+    put('console-visual-title', model.mode === 'fleet' ? 'Evolução do equipamento' : 'Produção por worker');
+    put('console-visual-origin', model.mode === 'fleet' ? 'Histórico individual' : 'Últimos valores da pool');
+    put('console-observation-origin', model.mode === 'fleet' ? 'Local' : 'Pool');
+    const target = document.getElementById('console-visual');
+    if (model.mode === 'fleet') {
+      const select = document.getElementById('console-history-device');
+      if (!model.localRows.some(function(row) { return row.id === _consoleHistoryDevice; })) _consoleHistoryDevice = (model.localRows.find(function(row) { return !row.old && row.reportedState !== 'Offline'; }) || model.localRows[0] || {}).id || '';
+      setHtmlIfChanged(select, model.localRows.map(function(row) { return '<option value="' + escapeHtml(row.id) + '">' + escapeHtml(row.name) + '</option>'; }).join(''));
+      select.value = _consoleHistoryDevice;
+      // A changed entity cannot render the previous entity's series even briefly.
+      if (_consoleHistory.id !== _consoleHistoryDevice) { ++_consoleHistoryRequest; _consoleHistory = { id: _consoleHistoryDevice, rows: [], readAt: 0, pending: false, error: false }; }
+      renderConsoleHistory(); loadConsoleHistory(false);
+    } else {
+      skelHide(target); target.setAttribute('aria-busy', 'false');
+      document.getElementById('console-history-stats').hidden = true;
+      document.getElementById('console-history-data').hidden = true;
+      const maximum = premium.workers.length ? premium.workers[0].hash : 0;
+      setHtmlIfChanged(target, premium.workers.length ? '<div class="console-bars">' + premium.workers.slice(0, 6).map(function(row, index) { return '<div class="console-bar"><div><span><span class="console-bar-rank">' + String(index+1).padStart(2,'0') + '</span> ' + escapeHtml(row.name) + '</span><strong>' + escapeHtml(fmt.hashrate(row.hash)) + '</strong></div><div class="console-bar-track" aria-hidden="true"><span style="width:' + (maximum > 0 ? row.hash / maximum * 100 : 0) + '%"></span></div></div>'; }).join('') + '</div>' : '<div class="console-chart-empty"><strong>Sem medições de workers</strong><span>Conecte o endereço observado pela pool para comparar a produção.</span></div>');
+      put('console-visual-note', (model.rows.some(function(row) { return row.old; }) ? 'Dados antigos · ' : '') + Math.min(6, premium.workers.length) + ' de ' + model.rows.length + ' workers exibidos · comparação de valores reportados, sem histórico individual');
+    }
+    const observed = model.mode === 'fleet' ? model.localRows : model.rows;
+    let context = '';
+    if (model.mode === 'fleet') {
+      const total = observed.length;
+      const verified = model.verified;
+      context += '<div class="console-coverage-summary"><strong>' + verified + '<span> / ' + total + '</span></strong><span>estados com amostra recente confirmada</span></div><div class="console-coverage-track" aria-hidden="true"><span style="width:' + (total ? verified/total*100 : 0) + '%"></span></div><p class="console-context-note">' + model.unknown + ' sem confirmação atual · não representa uptime</p>';
+      const exceptions = observed.filter(function(row) { return row.attention; }).slice(0,3);
+      context += '<ul class="console-activity">' + (exceptions.length ? exceptions.map(function(row) { return '<li><span class="console-activity-dot console-activity-dot--' + row.tone + '"></span><div><strong>' + escapeHtml(row.name) + '</strong><span>' + escapeHtml(row.state) + '</span></div><small>' + escapeHtml(consoleAgeText(row.age)) + '</small></li>'; }).join('') : '<li><div><strong>Sem exceções nas amostras verificadas</strong><span>Consulte a idade de cada equipamento.</span></div></li>') + '</ul>';
+      context += '<div class="console-local-context"><span>Inventário local</span><strong id="console-total">' + (model.total === null ? '—' : model.total) + '</strong><small>equipamentos cadastrados</small></div>';
+    } else {
+      context += '<ul class="console-activity">' + observed.slice().sort(function(a,b) { return (a.age === null ? Infinity : a.age) - (b.age === null ? Infinity : b.age); }).slice(0,3).map(function(row) { return '<li><span class="console-activity-dot"></span><div><strong>' + escapeHtml(row.name) + '</strong><span>última share informada</span></div><small>' + escapeHtml(consoleAgeText(row.age)) + '</small></li>'; }).join('') + '</ul><p class="console-local-context"><strong>Telemetria dos equipamentos</strong><span>' + (model.localRows.length ? model.localRows.length + ' equipamentos cadastrados · selecione Telemetria local' : 'Telemetria local não configurada.') + '</span></p>';
+    }
+    // Inventory ID exists in both modes for the original renderer contract.
+    if (model.mode === 'pool') context += '<span id="console-total" hidden>' + (model.total === null ? '—' : model.total) + '</span>';
+    setHtmlIfChanged(document.getElementById('console-observations-body'), context);
+    const net = snap.network || {}; const btc = snap.btc_price || {};
+    const price = consoleNumber(btc.usd); const height = consoleNumber(net.height); const difficulty = consoleNumber(net.difficulty);
+    put('console-btc-price', price === null ? '—' : '$' + price.toLocaleString(undefined, { maximumFractionDigits: 0 }));
+    put('console-btc-scope', !price ? 'preço não informado' : btc.stale || btc._stale ? 'fonte BTC · dados em cache' : 'cotação informada · snapshot');
+    put('console-network-height', height === null ? '—' : '#' + height.toLocaleString());
+    put('console-network-diff', difficulty === null ? '—' : fmt.diff(difficulty));
+    put('console-network-scope', height === null ? 'rede não informada' : net.stale || net._stale ? 'rede · dados em cache' : 'última altura informada');
+    document.querySelectorAll('[data-console-mirror]').forEach(function(mirror) {
+      const source = document.getElementById(mirror.getAttribute('data-console-mirror'));
+      if (source) mirror.textContent = source.textContent;
+    });
+  }
+
   function renderOperationConsole(snap, fleetData, fleetError) {
     const root = document.getElementById('operation-console');
     if (!root) return;
@@ -3655,7 +3900,7 @@ dom.walletSave?.addEventListener('click', async () => {
     if (model.loading) skelShow(tableWrap, 'table'); else skelHide(tableWrap);
     const put = function(id, value) { const node = document.getElementById(id); if (node) node.textContent = value; };
     put('console-title', model.title); put('console-coverage', model.coverage);
-    put('console-total', model.total === null ? '—' : model.total);
+    renderPremiumOperation(model, snap);
     put('console-attention-count', model.attention === null ? '—' : model.attention);
     put('console-attention-coverage', model.attention === null ? 'estado atual não verificado' : 'entre ' + model.verified + ' amostras verificadas');
     put('console-hashrate', model.hashrate === null ? '—' : fmt.hashrate(model.hashrate));
@@ -3683,7 +3928,7 @@ dom.walletSave?.addEventListener('click', async () => {
     document.getElementById('console-table-head').innerHTML = '<tr>' + labels.map(function(label) { return '<th scope="col">' + label + '</th>'; }).join('') + '</tr>';
     const rows = model.rows.filter(function(row) { return (row.name + ' ' + row.model + ' ' + row.state).toLowerCase().includes(_consoleQuery); });
     const html = rows.map(function(row) {
-      const values = model.mode === 'fleet' ? [null, row.state, row.hash === null ? '—' : fmt.hashrate(row.hash), row.temperature === null ? '—' : row.temperature.toFixed(1) + ' °C', row.power === null ? '—' : row.power.toFixed(0) + ' W', consoleAgeText(row.age)] : [null, row.state, row.hash === null ? '—' : fmt.hashrate(row.hash), consoleAgeText(row.age)];
+      const values = model.mode === 'fleet' ? [null, row.state, row.hash === null ? '—' : fmt.hashrate(row.hash), row.temperature === null ? '' : row.temperature.toFixed(1) + ' °C', row.power === null ? '' : row.power.toFixed(0) + ' W', consoleAgeText(row.age)] : [null, row.state, row.hash === null ? '—' : fmt.hashrate(row.hash), consoleAgeText(row.age)];
       return '<tr class="console-row console-row--' + row.tone + '">' + values.map(function(value, index) {
         if (index === 0) return '<th scope="row"><button class="console-entity" data-console-id="' + escapeHtml(row.id) + '">' + escapeHtml(row.name) + '<span aria-hidden="true">↗</span></button>' + (row.model ? '<small>' + escapeHtml(row.model) + '</small>' : '') + '</th>';
         return '<td data-label="' + labels[index] + '"' + (index > 1 ? ' class="console-numeric"' : '') + '>' + escapeHtml(value) + (index === 1 && row.old && row.kind === 'fleet' ? '<small>' + (fleetError ? 'consulta indisponível' : 'amostra antiga ou idade não informada') + '</small>' : '') + (index === 2 && row.hash !== null ? '<small>' + escapeHtml(row.hashNote) + '</small>' : '') + '</td>';
@@ -3701,7 +3946,13 @@ dom.walletSave?.addEventListener('click', async () => {
 
   function renderConsoleDetail(id) {
     const row = _consoleRows.find(function(item) { return item.id === id; });
-    if (!row) return;
+    if (!row) {
+      // A successful refresh supersedes the old observation. The native close
+      // handler restores focus to the surviving entity or the search fallback.
+      const dialog = document.getElementById('console-detail');
+      if (dialog && dialog.open) dialog.close();
+      return;
+    }
     document.getElementById('console-detail-title').textContent = row.name;
     document.getElementById('console-detail-source').textContent = row.kind === 'fleet' ? 'TELEMETRIA LOCAL' : 'OBSERVAÇÃO PELA POOL';
     document.getElementById('console-detail-status').textContent = row.state + ' · ' + (row.kind === 'pool' ? 'última share ' : 'amostra ') + consoleAgeText(row.age) + (row.old ? ' · último estado informado: ' + row.reportedState : '');
@@ -3715,10 +3966,27 @@ dom.walletSave?.addEventListener('click', async () => {
     const root = document.getElementById('operation-console');
     if (!root) return;
     const update = function() { renderOperationConsole(_lastSnapshot || {}, _operationalFleetData, _operationalFleetError); };
+    const narrow = window.matchMedia('(max-width: 900px)');
+    const disclose = function() { document.getElementById('console-observation-disclosure').open = !narrow.matches; };
+    disclose(); narrow.addEventListener('change', disclose);
     ['pool', 'fleet'].forEach(function(source) { document.getElementById('console-source-' + source).addEventListener('click', function() { _consoleSource = source; update(); }); });
+    document.getElementById('console-history-device').addEventListener('change', function(event) { _consoleHistoryDevice = event.target.value; update(); });
+    document.getElementById('console-history-metric').addEventListener('change', function(event) { _consoleHistoryMetric = event.target.value; renderConsoleHistory(); });
+    document.getElementById('console-history-refresh').addEventListener('click', function() { loadConsoleHistory(true); });
     document.getElementById('console-search').addEventListener('input', function(event) { _consoleQuery = event.target.value.toLowerCase(); update(); });
     document.getElementById('console-open-fleet').addEventListener('click', function() { activateModule('fleet'); });
     document.getElementById('console-open-analysis').addEventListener('click', function() { activateModule('analysis'); });
+    const commandForm = document.getElementById('desk-command');
+    if (commandForm) commandForm.addEventListener('submit', function(event) {
+      event.preventDefault();
+      const input = document.getElementById('desk-command-input');
+      const command = input.value.trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+      input.value = '';
+      if (command === 'pool') { _consoleSource = 'pool'; update(); return; }
+      if (command === 'frota') { _consoleSource = 'fleet'; update(); return; }
+      const modules = { fleet: 'fleet', equipamentos: 'fleet', alerta: 'alerts', alertas: 'alerts', analise: 'analysis', mercado: 'market' };
+      if (Object.prototype.hasOwnProperty.call(modules, command)) activateModule(modules[command]);
+    });
     const dialog = document.getElementById('console-detail');
     const openDetail = function(id, keyboard) { _consoleSelection = id; renderConsoleDetail(id); dialog.classList.toggle('console-detail--instant', keyboard); if (!dialog.open) dialog.showModal(); };
     document.getElementById('console-table-body').addEventListener('click', function(event) { const button = event.target.closest('[data-console-id]'); if (button) openDetail(button.dataset.consoleId, event.detail === 0); });
@@ -3921,6 +4189,59 @@ dom.walletSave?.addEventListener('click', async () => {
     put('op-action-title', model.actionTitle);
     put('op-action-detail', model.actionEnabled ? 'Opens diagnostic only · no command is executed' : 'Advisory only · no command is executed');
     put('op-state', model.stateText);
+    const evidence = snap && snap.operations_overview;
+    const evidenceRoot = document.getElementById('op-evidence-domains');
+    if (evidenceRoot && evidence && Array.isArray(evidence.domains)) {
+      const domains = evidence.domains;
+      const byId = {};
+      domains.forEach(function(domain) { if (domain && domain.id) byId[domain.id] = domain; });
+      const expected = ['mining', 'fleet', 'pool', 'data', 'economics'];
+      const complete = expected.filter(function(id) { return byId[id] && byId[id].status === 'observed'; }).length;
+      put('op-evidence-coverage', complete + '/' + expected.length + ' domains fully observed · ' + String(evidence.status || 'missing').toUpperCase());
+      const valueText = function(value, unit) {
+        if (value === null || value === undefined || value === '') return '—';
+        const n = Number(value);
+        const shown = value && typeof value === 'object'
+          ? JSON.stringify(value)
+          : (isFinite(n)
+            ? (Math.abs(n) >= 1000 ? n.toLocaleString(undefined, { maximumFractionDigits: 2 }) : String(n))
+            : String(value));
+        return shown + (unit ? ' ' + unit : '');
+      };
+      const ageText = function(age) {
+        if (age === null || age === undefined || !isFinite(Number(age))) return 'age unavailable';
+        return fmt.secsToHuman(Number(age)) + ' old';
+      };
+      const html = expected.map(function(id) {
+        const domain = byId[id] || { id: id, label: id.toUpperCase(), status: 'missing', source: 'unavailable', signals: [], missing_signals: [], evidence_target: '' };
+        const status = ['observed', 'partial', 'stale', 'missing'].indexOf(domain.status) !== -1 ? domain.status : 'missing';
+        const signals = Array.isArray(domain.signals) ? domain.signals : [];
+        const signalHtml = signals.map(function(item) {
+          const title = String(item.name || 'signal').replace(/_/g, ' ');
+          const provenance = String(item.source || domain.source || 'source unavailable') + ' · ' + ageText(item.age_seconds) + ' · ' + String(item.window || 'window unavailable');
+          return '<p class="op-evidence__signal">' + escapeHtml(title) + ': <strong>' + escapeHtml(valueText(item.value, item.unit)) + '</strong><small class="op-evidence__provenance">' + escapeHtml(provenance) + '</small></p>';
+        }).join('');
+        const missing = Array.isArray(domain.missing_signals) ? domain.missing_signals : [];
+        const missingHtml = (!signals.length ? '<p class="op-evidence__missing">No signals observed</p>' : '') + (missing.length ? '<p class="op-evidence__missing">Missing: ' + escapeHtml(missing.join(', ').replace(/_/g, ' ')) + '</p>' : '');
+        const target = String(domain.evidence_target || '');
+        const link = target && document.getElementById(target) ? '<button class="op-evidence__open" type="button" data-evidence-target="' + escapeHtml(target) + '">Open evidence</button>' : '';
+        return '<article class="op-evidence__domain" data-status="' + status + '"><div class="op-evidence__domain-head"><strong>' + escapeHtml(domain.label || id.toUpperCase()) + '</strong><span class="op-evidence__status">' + status.toUpperCase() + '</span></div>' + signalHtml + missingHtml + link + '</article>';
+      }).join('');
+      if (typeof setHtmlIfChanged === 'function') setHtmlIfChanged(evidenceRoot, html);
+      else if (evidenceRoot.innerHTML !== html) evidenceRoot.innerHTML = html;
+      const limits = [];
+      if (Array.isArray(evidence.change_comparison) && evidence.change_comparison.length) limits.push(evidence.change_comparison.join('; '));
+      else limits.push((evidence.change_comparison && evidence.change_comparison.reason) || 'Change over time not established');
+      if (Array.isArray(evidence.anomalies) && evidence.anomalies.length) limits.push(evidence.anomalies.map(function(anomaly) { return String(anomaly.count || 1) + ' ' + String(anomaly.status || 'observed').toUpperCase() + ' device exception(s)'; }).join(' · '));
+      else limits.push('No anomaly asserted');
+      if (Array.isArray(evidence.explanations) && evidence.explanations.length) limits.push(evidence.explanations.length + ' supported explanation(s)');
+      else limits.push('No cause inferred');
+      limits.push(evidence.economic_impact_status === 'established' ? 'Economic impact has evidence' : 'Economic impact not established');
+      put('op-evidence-limits', limits.join(' · '));
+    } else {
+      put('op-evidence-coverage', 'Evidence summary unavailable');
+      if (evidenceRoot) evidenceRoot.innerHTML = '<div class="op-evidence__domain" data-status="missing"><div class="op-evidence__domain-head"><strong>OPERATIONS EVIDENCE</strong><span class="op-evidence__status">MISSING</span></div><p class="op-evidence__missing">Backend evidence summary unavailable.</p></div>';
+    }
     const action = document.getElementById('op-action');
     if (action) {
       action.disabled = !model.actionEnabled;
@@ -3933,6 +4254,20 @@ dom.walletSave?.addEventListener('click', async () => {
     initOperationConsoleControls();
     const action = document.getElementById('op-action');
     if (!action) return;
+    const evidenceDomains = document.getElementById('op-evidence-domains');
+    if (evidenceDomains) evidenceDomains.addEventListener('click', function(event) {
+      const button = event.target.closest('[data-evidence-target]');
+      if (!button) return;
+      const targetId = button.dataset.evidenceTarget || '';
+      const panel = document.getElementById(targetId);
+      if (!panel) return;
+      const module = panel.getAttribute('data-module') || 'analysis';
+      activateModule(module.split(/\s+/)[0]);
+      setTimeout(function() {
+        const reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+        panel.scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth', block: 'start' });
+      }, 140);
+    });
     action.addEventListener('click', function() {
       if (action.disabled) return;
       const target = action.dataset.target || '';
@@ -4309,6 +4644,7 @@ function renderPool(pool, luck) {
   // renderCharts refresh keeps the user's toolbar choice instead of silently
   // resetting every chart back to 1h (audit: range chips were being ignored).
   const _chartRange = {};
+  const _chartRequest = {};
   function _fmtChartLabel(t, cfg, id) {
     if (cfg.chart === 'share_dist') return String(t); // histogram bucket labels
     const d = new Date(t);
@@ -4320,14 +4656,27 @@ function renderPool(pool, luck) {
     }
     return hm;
   }
-  // The Share-Distribution panel badge was hardcoded to "0 shares" in the HTML
-  // and never updated. Reflect the real histogram count from the API.
+  // The Share-Distribution panel badge reflects the real histogram count.
   function _updateShareDistBadge(cfg, data, values) {
     if (!cfg || cfg.chart !== 'share_dist') return;
     const badge = document.getElementById('share-dist-count-badge');
     if (!badge) return;
     const n = (data && data.count != null) ? data.count : values.reduce((a, b) => a + (Number(b) || 0), 0);
     badge.textContent = `${n} shares`;
+  }
+
+
+  function _updateShareDistSummary(data) {
+    const summary = document.getElementById('share-dist-summary');
+    if (!summary) return;
+    const stats = data && data.share_statistics;
+    if (!stats || stats.status === 'NO_DATA') {
+      summary.textContent = 'P50 — · P75 — · P90 — · P95 — · P99 — · MAX — · SAMPLE — · WINDOW —';
+      return;
+    }
+    const value = (number) => number == null ? '—' : fmt.diff(number);
+    const window = stats.observed_window || (stats.window_seconds != null ? `${stats.window_seconds}s` : '—');
+    summary.textContent = `P50 ${value(stats.p50)} · P75 ${value(stats.p75)} · P90 ${value(stats.p90)} · P95 ${value(stats.p95)} · P99 ${value(stats.p99)} · MAX ${value(stats.max)} · SAMPLE ${stats.sample_count == null ? '—' : stats.sample_count} · WINDOW ${window}`;
   }
   // P0-1: overlay the network target difficulty on the share histogram — a
   // solid purple reference line + readable badge so the operator sees how far
@@ -4347,18 +4696,39 @@ function renderPool(pool, luck) {
   async function loadChartData(id) {
     const cfg = CHART_METRICS[id];
     if (!cfg) return;
+    const chart = _ensureDashboardChart(id);
+    if (!chart) return;
+    const range = _chartRange[id] || '1h';
+    const request = (_chartRequest[id] || 0) + 1;
+    _chartRequest[id] = request;
+    const isCurrent = () => _chartRequest[id] === request && charts[id] === chart &&
+      chart.canvas === document.getElementById(id) && Chart.getChart(chart.canvas) === chart &&
+      (_chartRange[id] || '1h') === range;
     try {
-      const r = await fetch(`/api/chart-data?chart=${cfg.chart}&range=${_chartRange[id] || '1h'}`);
-      if (r.status === 402) { await handleLicenseRequired(r); _chartRange[id] = '1h'; const _tb = document.getElementById('share-dist-target-badge'); if (_tb) _tb.textContent = 'target —'; return; }
+      const r = await fetch(`/api/chart-data?chart=${cfg.chart}&range=${range}`);
+      if (!isCurrent()) return;
+      if (r.status === 402) {
+        // Consume the async body before surfacing the lock; a newer range may
+        // have been selected while either fetch or JSON was in flight.
+        let locked = {};
+        try { locked = await r.json(); } catch (e) { /* status still proves a lock */ }
+        if (!isCurrent()) return;
+        await handleLicenseRequired({ json: async () => locked });
+        if (!isCurrent()) return;
+        _chartRange[id] = '1h';
+        const target = document.getElementById('share-dist-target-badge');
+        if (target) target.textContent = 'target —';
+        return;
+      }
       if (!r.ok) return;
       const data = await r.json();
-      const chart = charts[id];
-      if (!chart) return;
+      if (!isCurrent()) return;
       const rawLabels = (data.labels || []);
       const values = (data.datasets?.[0]?.data || data.datasets?.[0]?.values || []);
       chart.data.labels = rawLabels.map(t => _fmtChartLabel(t, cfg, id));
       chart.data.datasets[0].data = values;
       _updateShareDistBadge(cfg, data, values);
+      _updateShareDistSummary(data);
       // Fase 2.1: SMA overlay + shares bar + event annotations
       if (chart.data.datasets[1] && cfg.chart !== 'share_dist') {
         chart.data.datasets[1].data = computeSMA(values, Math.max(3, Math.round(values.length / 10)));
@@ -4370,7 +4740,9 @@ function renderPool(pool, luck) {
       chart._annotations = buildChartAnnotations(data.events || [], rawLabels);
       _applyShareDistTarget(cfg, data, chart);
       chart.update('none');
-    } catch (e) { /* chart load silently */ }
+    } catch (e) {
+      if (isCurrent()) logMessage('CHART', 'Falha ao carregar ' + cfg.label, 'WARN');
+    }
   }
   // R1: gated chart-data ranges (30d/all) return 402 when the gate is live
   // and no key is present — reset the range to 1h and surface the CTA so the
@@ -4385,18 +4757,13 @@ function renderPool(pool, luck) {
     if (!inModuleMode && !chartsTab.classList.contains('active')) return;
     Object.keys(CHART_METRICS).forEach(id => {
       const canvas = document.getElementById(id);
-      if (!canvas) return;
-      // Pula canvases dentro de painéis ocultos (outro módulo) —
-      // Chart.js não consegue medir display:none
-      if (inModuleMode && canvas.offsetParent === null) return;
-      // init chart if not yet created
-      if (!charts[id]) {
-        const cfg = CHART_METRICS[id];
-        charts[id] = makeChart(id, cfg.label, cfg.color);
-      }
+      // Release removed/replaced canvases even while their module is hidden.
+      if (charts[id] && charts[id].canvas !== canvas) _releaseDashboardChart(id);
+      if (!canvas || (inModuleMode && canvas.offsetParent === null)) return;
       loadChartData(id);
     });
   }
+
   // ── Main render ──
   let prevSnapshot = null;
   function render(snap) {
@@ -4436,7 +4803,7 @@ function renderPool(pool, luck) {
     renderComparison(snap);
     renderSoloStats(snap.proximity);
     renderProximity(snap.proximity);
-    renderQuantumLock(snap.proximity);
+    renderSessionEvidence(snap.proximity);
     renderLiveCalc(snap.proximity);
     renderNetworkGauge(snap);
     renderMilestones(snap.milestones);
@@ -4566,6 +4933,9 @@ function renderPool(pool, luck) {
   function _attachChartZoom(chart) {
     const canvas = chart.canvas;
     if (!canvas) return;
+    const controller = new AbortController();
+    chart._zoomController = controller;
+    const on = (event, handler, options = {}) => canvas.addEventListener(event, handler, { ...options, signal: controller.signal });
     const MIN_POINTS = 5;
     const maxPoints = () => Math.max(MIN_POINTS, (chart.data.labels || []).length);
     const resetZoom = () => {
@@ -4573,7 +4943,7 @@ function renderPool(pool, luck) {
       delete chart.options.scales.x.max;
       chart.update('none');
     };
-    canvas.addEventListener('wheel', e => {
+    on('wheel', e => {
       e.preventDefault();
       const xs = chart.scales.x;
       if (!xs) return;
@@ -4589,7 +4959,7 @@ function renderPool(pool, luck) {
       chart.update('none');
     }, { passive: false });
     let drag = null;
-    canvas.addEventListener('pointerdown', e => {
+    on('pointerdown', e => {
       if (e.button !== 0) return;
       const xs = chart.scales.x;
       if (!xs) return;
@@ -4597,7 +4967,7 @@ function renderPool(pool, luck) {
       try { canvas.setPointerCapture(e.pointerId); } catch (err) { /* ignore */ }
       canvas.style.cursor = 'grabbing';
     });
-    canvas.addEventListener('pointermove', e => {
+    on('pointermove', e => {
       if (!drag) return;
       const xs = chart.scales.x;
       if (!xs || !(xs.max - xs.min)) return;
@@ -4607,15 +4977,15 @@ function renderPool(pool, luck) {
       chart.options.scales.x.max = newMin + (xs.max - xs.min);
       chart.update('none');
     });
-    canvas.addEventListener('pointerup', () => {
+    on('pointerup', () => {
       drag = null;
       canvas.style.cursor = '';
     });
-    canvas.addEventListener('pointercancel', () => {
+    on('pointercancel', () => {
       drag = null;
       canvas.style.cursor = '';
     });
-    canvas.addEventListener('dblclick', resetZoom);
+    on('dblclick', resetZoom);
     canvas.title = 'scroll to zoom · drag to pan · double-click to reset';
   }
 
@@ -4678,48 +5048,45 @@ function renderPool(pool, luck) {
           },
         },
       },
-      plugins: [chartEventAnnotationsPlugin],
+      plugins: [chartEventAnnotationsPlugin, {
+        id: 'dashboardZoomCleanup',
+        afterDestroy(chart) {
+          if (chart._zoomController) chart._zoomController.abort();
+        },
+      }],
     });
     if (!isHistogram) _attachChartZoom(chart);
     return chart;
   }
 
+  function _releaseDashboardChart(id) {
+    const chart = charts[id];
+    delete charts[id];
+    _chartRequest[id] = (_chartRequest[id] || 0) + 1;
+    if (chart && chart.canvas) chart.destroy();
+  }
+
+  function _ensureDashboardChart(id) {
+    const canvas = document.getElementById(id);
+    if (charts[id] && (charts[id].canvas !== canvas ||
+        (typeof Chart !== 'undefined' && Chart.getChart(canvas) !== charts[id]))) {
+      _releaseDashboardChart(id);
+    }
+    if (!canvas || typeof Chart === 'undefined') return null;
+    if (!charts[id]) {
+      const cfg = CHART_METRICS[id];
+      charts[id] = Chart.getChart(canvas) || makeChart(id, cfg.label, cfg.color);
+    }
+    return charts[id];
+  }
+
   async function loadChart(id, metric, range) {
-    try {
-      _chartRange[id] = range || '1h'; // persist the toolbar choice across refreshes
-      const r = await fetch(`/api/chart-data?chart=${metric}&range=${range}`);
-      if (r.status === 402) { await handleLicenseRequired(r); _chartRange[id] = '1h'; const _tb = document.getElementById('share-dist-target-badge'); if (_tb) _tb.textContent = 'target —'; return; }
-      if (!r.ok) return;
-      const data = await r.json();
-      const chart = charts[id];
-      if (!chart) return;
-      const cfg = CHART_METRICS[id] || {};
-      const rawLabels = (data.labels || []);
-      const values = (data.datasets?.[0]?.data || data.datasets?.[0]?.values || []);
-      chart.data.labels = rawLabels.map(t => _fmtChartLabel(t, cfg, id));
-      chart.data.datasets[0].data = values;
-      _updateShareDistBadge(cfg, data, values);
-      // Fase 2.1: SMA overlay + shares bar + event annotations
-      if (chart.data.datasets[1] && cfg.chart !== 'share_dist') {
-        chart.data.datasets[1].data = computeSMA(values, Math.max(3, Math.round(values.length / 10)));
-      }
-      if (chart.data.datasets[2] && Array.isArray(data.shares)) {
-        chart.data.datasets[2].data = data.shares;
-        chart.options.scales.y1.display = data.shares.some(s => s > 0);
-      }
-      chart._annotations = buildChartAnnotations(data.events || [], rawLabels);
-      _applyShareDistTarget(cfg, data, chart);
-      chart.update('none');
-    } catch (e) { /* chart load silently */ }
+    _chartRange[id] = range || '1h';
+    return loadChartData(id);
   }
 
   function initCharts() {
-    charts['chart-hashrate'] = makeChart('chart-hashrate', 'Hashrate', 'rgb(247,147,26)');
-    charts['chart-pool'] = makeChart('chart-pool', 'Pool HR', 'rgb(6,214,240)');
-    charts['chart-bestdiff'] = makeChart('chart-bestdiff', 'Best Diff', 'rgb(16,185,129)');
-    charts['chart-net'] = makeChart('chart-net', 'Net Diff', 'rgb(139,92,246)');
-    charts['chart-cumulative-p'] = makeChart('chart-cumulative-p', 'Cum P(Block)', 'rgb(139,92,246)');
-    charts['chart-share-dist'] = makeChart('chart-share-dist', 'Share Dist', 'rgb(16,185,129)');
+    Object.keys(CHART_METRICS).forEach(_ensureDashboardChart);
   }
 
   // Fase 2.1: clear any manual zoom/pan state so the chart renders the full
@@ -4932,7 +5299,11 @@ function renderPool(pool, luck) {
   function _parseNum(txt) { if (!txt) return NaN; const m = String(txt).match(/([\d.,]+)/); if (!m) return NaN; return parseFloat(m[1].replace(/,/g, '')); }
   function countUpValue(el, targetText, durationMs) {
     durationMs = durationMs || 420;
-    if (!el || window.matchMedia('(prefers-reduced-motion: reduce)').matches) { if (el) el.textContent = targetText; return; }
+    if (!el) return;
+    const existing = _countUpState.get(el);
+    if (existing && existing.raf != null) cancelAnimationFrame(existing.raf);
+    _countUpState.delete(el);
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) { el.textContent = targetText; return; }
     const num = _parseNum(targetText);
     if (isNaN(num)) { el.textContent = targetText; return; }
     const prefix = String(targetText).replace(/^([^\d]*).*/, '$1');
@@ -4940,17 +5311,18 @@ function renderPool(pool, luck) {
     const decimals = (String(targetText).match(/\.(\d+)/) || ['', ''])[1].length;
     const start = performance.now();
     const from = isNaN(_parseNum(el.textContent)) ? 0 : _parseNum(el.textContent);
-    const existing = _countUpState.get(el);
-    if (existing && existing.raf) cancelAnimationFrame(existing.raf);
+    const state = { raf: null };
+    _countUpState.set(el, state);
     const step = () => {
+      if (_countUpState.get(el) !== state) return;
       const t = Math.min(1, (performance.now() - start) / durationMs);
       const eased = 1 - Math.pow(1 - t, 3);
       const current = from + (num - from) * eased;
       el.textContent = prefix + current.toFixed(decimals) + suffix;
-      if (t < 1) { const rafInner = requestAnimationFrame(step); _countUpState.set(el, { raf: rafInner }); }
+      if (t < 1) state.raf = requestAnimationFrame(step);
       else { el.textContent = targetText; _countUpState.delete(el); }
     };
-    const rafOuter = requestAnimationFrame(step);
+    state.raf = requestAnimationFrame(step);
   }
 
   // ── Skeleton loading (design-motion-principles) ──
@@ -6075,6 +6447,83 @@ function renderPool(pool, luck) {
     'admin':       { title: 'ADMIN · CFO',   desc: 'Operador: pool health + funil PRO + LTV/CAC' },
   };
 
+  const MODULE_SOURCES = {
+    dashboard: 'Fonte: seleção Pool ou Fleet. Cada equipamento mantém sua origem e idade da observação.',
+    analysis: 'Fontes: rede Bitcoin, pool e entradas do operador. Custos e cenários dependem das premissas informadas.',
+    wallet: 'Fonte: wallet conectada e status do provedor. Conexão não comprova saldo liquidado nem envia fundos.',
+    fleet: 'Fonte: registro e telemetria local via agente. A API cloud não descobre diretamente a LAN do cliente.',
+    live: 'Fontes: resumo Fleet e eventos reportados. Cache ou falha de consulta não confirmam estado físico atual.',
+    probability: 'Fontes: rede, pool e entradas manuais. Estatísticas por janela são modelos, sem prazo ou previsão.',
+    market: 'Fontes: provedores configurados de mercado e hashprice. Disponibilidade e idade pertencem a cada cotação.',
+    rentals: 'Fontes: contratos MRR/Braiins e observações disponíveis. Hashrate contratado e observado são distintos.',
+    alerts: 'Fonte: alertas reportados. Uma lista vazia não estabelece a saúde dos equipamentos ou dos provedores.',
+    automations: 'Fontes: regras, advisory e dry runs. Acesso, capacidades e confirmação limitam ações operacionais.',
+    docs: 'Fonte: documentação local do projeto. Use as seções para configuração, limites e procedimentos.',
+    learning: 'Fontes: material educacional e referências externas. Conteúdo de estudo não é telemetria operacional.',
+    support: 'Fonte: métodos de apoio configurados pelo operador. Escolher um método não comprova pagamento.',
+    admin: 'Fontes: endpoints restritos do operador. Cada dataset pode falhar separadamente; falha não significa zero.',
+  };
+
+  function openSupportModal(panel) {
+    openModalAnimated(panel);
+    const close = panel.querySelector('.modal__close');
+    if (close) close.focus({ preventScroll: true });
+    renderSupportMethods();
+  }
+
+  function renderModuleSections(name) {
+    const context = document.getElementById('module-evidence-context');
+    const destination = document.getElementById(name === 'dashboard' ? 'operation-console' : 'module-header');
+    if (context && destination && context.parentElement !== destination) destination.appendChild(context);
+    const source = document.getElementById('module-source-context');
+    const nav = document.getElementById('module-section-nav');
+    if (source) source.textContent = MODULE_SOURCES[name] || '';
+    if (!nav) return;
+    nav.replaceChildren();
+    let targets = Array.from(document.querySelectorAll('[data-module].panel, section[data-module].section, .operation-console[data-module], .operational-overview[data-module]'));
+    if (name === 'docs') targets = Array.from(document.querySelectorAll('#section-docs .doc-section[id]'));
+    if (name === 'learning') targets = Array.from(document.querySelectorAll('#learning-panel .doc-section[id]'));
+    if (name === 'support') targets = [document.getElementById('support-panel')].filter(Boolean);
+    // Closed disclosures expose their visible summary; navigation opens them.
+    targets = Array.from(new Set(targets.map(target => {
+      const disclosure = target.closest('details');
+      return disclosure && !disclosure.open && disclosure.id ? disclosure : target;
+    })));
+    targets.filter(target => {
+      if (!target.id || target.hidden || target.classList.contains('module-hidden')) return false;
+      if (name !== 'docs' && name !== 'learning' && name !== 'support' && !(target.getAttribute('data-module') || '').split(/\s+/).includes(name)) return false;
+      if (name === 'support') return true;
+      const pane = target.closest('.tab-pane');
+      if (pane && !pane.classList.contains('active')) return false;
+      return target.getClientRects().length > 0;
+    }).forEach(target => {
+      const heading = target.querySelector('h2, h3, .modal__title');
+      const label = (heading && heading.textContent.trim()) || target.getAttribute('aria-label') || (MODULE_MAP[name] || {}).title;
+      if (!label) return;
+      const link = document.createElement('a');
+      link.className = 'module-section-link';
+      link.href = '#' + target.id;
+      link.textContent = label;
+      link.addEventListener('click', event => {
+        event.preventDefault();
+        if (name === 'support') { openSupportModal(target); return; }
+        // Section navigation is frequent and keyboard-accessible: no motion.
+        const disclosure = target.closest('details');
+        if (disclosure) disclosure.open = true;
+        if (target.classList.contains('panel--collapsible')) {
+          target.classList.remove('collapsed');
+          const toggle = target.querySelector('.panel__toggle');
+          if (toggle) { toggle.classList.remove('collapsed'); toggle.setAttribute('aria-expanded', 'true'); }
+        }
+        target.setAttribute('tabindex', '-1');
+        target.focus({ preventScroll: true });
+        target.scrollIntoView({ block: 'start', behavior: 'instant' });
+      });
+      nav.appendChild(link);
+    });
+    nav.hidden = !nav.children.length;
+  }
+
   function openSidebar() {
     sidebar.classList.add('open');
     if (sidebarBackdrop) sidebarBackdrop.classList.add('visible');
@@ -6280,7 +6729,10 @@ function renderPool(pool, luck) {
     // Depois que a visibilidade estabiliza: resize dos charts já criados
     // E cria/atualiza charts dos canvases que acabaram de ficar visíveis
     // (renderCharts pula canvases ocultos, então é seguro chamá-lo aqui)
+    renderModuleSections(name);
     requestAnimationFrame(function() {
+      if (document.body.dataset.activeModule !== name) return;
+      if (name === 'automations') { _apRefreshStatus(); _apRefreshAutoStatus(); }
       // Motion: staggered enter for the panels that just became visible
       // (opacity + translateY + blur, 200ms, 24ms stagger — Emil <300ms).
       if (!reduceMotion) {
@@ -6359,8 +6811,7 @@ function renderPool(pool, luck) {
       if (name === 'support') {
         const panel = document.getElementById('support-panel');
         if (panel) {
-          openModalAnimated(panel);
-          renderSupportMethods();  // also fills the LN recipient row
+          openSupportModal(panel);  // also fills the LN recipient row
         }
       }
     });
@@ -7269,7 +7720,7 @@ function renderAccount(acct) {
       return;
     }
     if (!alerts || !alerts.length) {
-      setHtmlIfChanged(dom.alertsList, '<li class="alert-empty">no alerts — all systems nominal</li>');
+      setHtmlIfChanged(dom.alertsList, '<li class="alert-empty">no alerts reported — device and source health are not established by an empty alert list</li>');
       if (dom.alertsCountBadge) dom.alertsCountBadge.textContent = '0 active';
       return;
     }
@@ -7377,8 +7828,8 @@ function renderAccount(acct) {
   // ↳ R13 — Decision Matrix + Command Center (cards contextuais do snapshot)
 
   // ── P0-2: Decision Matrix — solo vs pool vs lease (capital allocation) ──
-  // Pure render of the backend-aggregated decision_matrix block; every field
-  // is read defensively and shows '—' when the strategy has no data yet.
+  // Render the normalized economic scenario matrix, preserving UNKNOWN,
+  // NOT CONFIGURED, and N/A instead of translating unavailable values to zero.
   function renderDecisionMatrix(p) {
     const dm = (p && p.decision_matrix) || null;
     const rows = (dm && dm.rows) || {};
@@ -7387,18 +7838,45 @@ function renderAccount(acct) {
     const days = (v) => (v != null && isFinite(v)) ? (v >= 365 ? (v/365).toFixed(1) + 'y' : Math.round(v) + 'd') : '—';
     const pct = (v) => (v != null && isFinite(v)) ? (v < 1 ? v.toFixed(4) : v.toFixed(1)) + '%' : '—';
 
-    const poolEl = el('dm-pool-usd'); if (poolEl) poolEl.textContent = usd(rows.pool && rows.pool.net_usd_per_day);
-    const soloTime = el('dm-solo-time'); if (soloTime) soloTime.textContent = days(rows.solo && rows.solo.expected_time_days);
-    const soloSub = el('dm-solo-sub');
-    if (soloSub) {
-      const py = rows.solo && rows.solo.p_year_pct;
-      soloSub.textContent = (py != null && isFinite(py)) ? 'P(bloco no ano) ' + pct(py) : 'média do modelo; não é prazo';
+    const matrix = (p && p.economic_scenarios) || null;
+    const scenarios = (matrix && matrix.scenarios) || {};
+    const statusText = (cell, formatter) => {
+      if (!cell || cell.value == null) return (cell && cell.status) || 'UNKNOWN';
+      return formatter(cell.value);
+    };
+    const scenarioValue = (name, metric, formatter) => statusText(
+      scenarios[name] && scenarios[name][metric], formatter
+    );
+    if (matrix) {
+      const poolEl = el('dm-pool-usd'); if (poolEl) poolEl.textContent = scenarioValue('POOL', 'modeled_net_usd_per_day', usd);
+      const soloEl = el('dm-solo-time'); if (soloEl) soloEl.textContent = scenarioValue('SOLO', 'modeled_ev_btc_per_day', (v) => Number(v).toFixed(8) + ' BTC/d');
+      const soloSub = el('dm-solo-sub');
+      if (soloSub) {
+        const probability = scenarios.SOLO && scenarios.SOLO.p_block_selected_window_pct;
+        const net = scenarios.SOLO && scenarios.SOLO.modeled_net_usd_per_day;
+        const pText = statusText(probability, (v) => 'P(block/24h) ' + pct(v));
+        const netText = statusText(net, usd);
+        soloSub.textContent = 'modeled EV · ' + netText + ' · ' + pText;
+      }
+      const leaseEl = el('dm-lease-usd'); if (leaseEl) leaseEl.textContent = scenarioValue('LEASE', 'modeled_net_usd_per_day', usd);
+      const rentalEl = el('dm-rental-usd'); if (rentalEl) rentalEl.textContent = scenarioValue('RENTAL', 'modeled_net_usd_per_day', usd);
+      const poolCost = el('dm-pool-cost'); if (poolCost) poolCost.textContent = scenarioValue('POOL', 'direct_cost_usd_per_day', usd);
+      const soloCost = el('dm-solo-cost'); if (soloCost) soloCost.textContent = scenarioValue('SOLO', 'direct_cost_usd_per_day', usd);
+      const rentalCost = el('dm-rental-cost'); if (rentalCost) rentalCost.textContent = scenarioValue('RENTAL', 'direct_cost_usd_per_day', usd);
+      const leaseCost = el('dm-lease-cost'); if (leaseCost) leaseCost.textContent = scenarioValue('LEASE', 'direct_cost_usd_per_day', usd);
+      const horizonEl = el('dm-horizon'); if (horizonEl) horizonEl.textContent = 'MODELED · ' + String(matrix.horizon || 'UNKNOWN');
+    } else {
+      const poolEl = el('dm-pool-usd'); if (poolEl) poolEl.textContent = usd(rows.pool && rows.pool.net_usd_per_day);
+      const soloEl = el('dm-solo-time'); if (soloEl) soloEl.textContent = days(rows.solo && rows.solo.expected_time_days);
+      const leaseEl = el('dm-lease-usd'); if (leaseEl) leaseEl.textContent = usd(rows.lease && rows.lease.net_usd_per_day);
     }
-    const leaseEl = el('dm-lease-usd'); if (leaseEl) leaseEl.textContent = usd(rows.lease && rows.lease.net_usd_per_day);
-    const comparable = Number.isFinite(rows.pool && rows.pool.net_usd_per_day) && Number.isFinite(rows.lease && rows.lease.net_usd_per_day);
-    const best = comparable && dm && ['pool', 'lease'].includes(dm.best_option) ? dm.best_option : null;
+    const legacyComparable = Number.isFinite(rows.pool && rows.pool.net_usd_per_day) && Number.isFinite(rows.lease && rows.lease.net_usd_per_day);
+    const matrixBest = matrix && ['POOL', 'RENTAL', 'LEASE'].includes(matrix.best_option) ? matrix.best_option.toLowerCase() : null;
+    const best = matrix ? matrixBest : (legacyComparable && dm && ['pool', 'lease'].includes(dm.best_option) ? dm.best_option : null);
     const bestEl = el('dm-best-badge'); if (bestEl) bestEl.textContent = best ? 'BEST: ' + best.toUpperCase() : 'INSUFFICIENT DATA';
-    const recoEl = el('dm-reco'); if (recoEl) recoEl.textContent = best ? dm.recommendation : 'Comparable pool and lease estimates are required. Solo shows a model mean, not a deadline or guaranteed payout.';
+    const recoEl = el('dm-reco'); if (recoEl) recoEl.textContent = matrix
+      ? matrix.recommendation
+      : (best ? dm.recommendation : 'Comparable pool and lease estimates are required. Solo shows a model mean, not a deadline or guaranteed payout.');
     const beEl = el('dm-breakeven');
     if (beEl) {
       const be = dm && dm.breakeven_cost_per_th_day;
@@ -7526,7 +8004,21 @@ function renderAccount(acct) {
   // Backend: POST /api/automation/arm {armed} (fail-closed per tenant) +
   // GET /api/automation/status (armed + action budget). Arming enables
   // autonomous rule actions, so it requires typed confirmation.
+  let _apControlSessionGeneration = 0;
+  let _apArmedStatusGeneration = 0;
+  let _apAutoStatusGeneration = 0;
   let _apArmed = false;
+  function _apUnknownControl(kind, reason) {
+    const prefix = kind === 'armed' ? 'ap-armed' : 'ap-auto';
+    const label = document.getElementById(prefix + '-label');
+    const btn = document.getElementById(prefix + '-btn');
+    const dot = document.getElementById(prefix + '-dot');
+    if (label) label.textContent = 'UNKNOWN';
+    if (btn) { btn.disabled = true; btn.classList.remove('is-armed'); btn.title = reason || 'Operational status unavailable; reopen Automations to retry'; }
+    if (dot) { dot.style.background = 'var(--text-tertiary)'; dot.style.boxShadow = 'none'; }
+    const badge = document.getElementById(kind === 'armed' ? 'ap-budget-badge' : 'ap-auto-pro-badge');
+    if (badge) { badge.textContent = '—'; badge.className = 'badge badge--mute'; badge.title = reason || 'Status unknown'; }
+  }
   let _apToggleInit = false;
 
   function _apSetUi(armed) {
@@ -7536,6 +8028,7 @@ function renderAccount(acct) {
     const dot = document.getElementById('ap-armed-dot');
     if (label) label.textContent = armed ? 'ARM' : 'OFF';
     if (btn) {
+      btn.disabled = false;
       btn.classList.toggle('is-armed', armed);
       btn.title = armed
         ? 'Auto-Pilot ARMADO — as regras executam ações sozinhas. Clique para desarmar.'
@@ -7548,11 +8041,15 @@ function renderAccount(acct) {
   }
 
   async function _apRefreshStatus() {
+    const session = _apControlSessionGeneration, generation = ++_apArmedStatusGeneration;
     try {
       const r = await authFetch('/api/automation/status');
-      if (!r.ok) return;
-      const d = await r.json().catch(() => ({}));
-      _apSetUi(!!d.armed);
+      if (session !== _apControlSessionGeneration || generation !== _apArmedStatusGeneration) return;
+      if (!r.ok) throw new Error('Operational status unavailable (HTTP ' + r.status + ')');
+      const d = await r.json();
+      if (session !== _apControlSessionGeneration || generation !== _apArmedStatusGeneration) return;
+      if (!d || typeof d.armed !== 'boolean') throw new Error('Invalid operational status');
+      _apSetUi(d.armed);
       const badge = document.getElementById('ap-budget-badge');
       if (badge && typeof d.max_actions_per_window === 'number') {
         const used = d.actions_in_window || 0;
@@ -7562,10 +8059,13 @@ function renderAccount(acct) {
         badge.classList.toggle('badge--amber', used > 0);
         badge.classList.toggle('badge--mute', used === 0);
       }
-    } catch (e) { /* status is advisory — never break the panel */ }
+    } catch (error) {
+      if (session === _apControlSessionGeneration && generation === _apArmedStatusGeneration) _apUnknownControl('armed', error.message);
+    }
   }
 
   async function _apSetArmed(armed) {
+    const session = _apControlSessionGeneration;
     const btn = document.getElementById('ap-armed-btn');
     setBtnLoading(btn, true);
     try {
@@ -7575,6 +8075,7 @@ function renderAccount(acct) {
         body: JSON.stringify({ armed: armed }),
       });
       const d = await r.json().catch(() => ({}));
+      if (session !== _apControlSessionGeneration) return false;
       if (!r.ok || !d.success) {
         showToast('error', '⚠ Auto-Pilot: ' + (d.error || ('HTTP ' + r.status)));
         _apRefreshStatus();
@@ -7585,10 +8086,11 @@ function renderAccount(acct) {
       _apRefreshStatus();
       return true;
     } catch (e) {
+      if (session !== _apControlSessionGeneration) return false;
       showToast('error', '⚠ falha de rede ao alterar o Auto-Pilot');
       return false;
     } finally {
-      setBtnLoading(btn, false);
+      if (session === _apControlSessionGeneration) setBtnLoading(btn, false);
     }
   }
 
@@ -7663,6 +8165,7 @@ function renderAccount(acct) {
     const dot = document.getElementById('ap-auto-dot');
     if (label) label.textContent = auto ? 'ON' : 'OFF';
     if (btn) {
+      btn.disabled = false;
       btn.classList.toggle('is-armed', auto);
       btn.title = auto
         ? 'EXECUÇÃO AUTÔNOMA ON — o piloto executa restart/pause sozinho (PRO + armado). Clique para desligar.'
@@ -7675,11 +8178,15 @@ function renderAccount(acct) {
   }
 
   async function _apRefreshAutoStatus() {
+    const session = _apControlSessionGeneration, generation = ++_apAutoStatusGeneration;
     try {
       const r = await authFetch('/api/auto-pilot/autonomous');
-      if (!r.ok) return;
-      const d = await r.json().catch(() => ({}));
-      _apSetAutoUi(!!d.autonomous);
+      if (session !== _apControlSessionGeneration || generation !== _apAutoStatusGeneration) return;
+      if (!r.ok) throw new Error('Autonomous status unavailable (HTTP ' + r.status + ')');
+      const d = await r.json();
+      if (session !== _apControlSessionGeneration || generation !== _apAutoStatusGeneration) return;
+      if (!d || typeof d.autonomous !== 'boolean' || typeof d.pro !== 'boolean') throw new Error('Invalid autonomous status');
+      _apSetAutoUi(d.autonomous);
       const badge = document.getElementById('ap-auto-pro-badge');
       if (badge) {
         badge.textContent = d.pro ? 'PRO ✓' : 'PRO 🔒';
@@ -7693,10 +8200,13 @@ function renderAccount(acct) {
         const autoBtn = document.getElementById('ap-auto-btn');
         if (autoBtn) autoBtn.title = 'Execução autônoma ON mas o Auto-Pilot está DESARMADO — arme o piloto para ativar.';
       }
-    } catch (e) { /* advisory — never break the panel */ }
+    } catch (error) {
+      if (session === _apControlSessionGeneration && generation === _apAutoStatusGeneration) _apUnknownControl('auto', error.message);
+    }
   }
 
   async function _apSetAuto(enabled) {
+    const session = _apControlSessionGeneration;
     const btn = document.getElementById('ap-auto-btn');
     setBtnLoading(btn, true);
     try {
@@ -7706,6 +8216,7 @@ function renderAccount(acct) {
         body: JSON.stringify({ autonomous: enabled }),
       });
       const d = await r.json().catch(() => ({}));
+      if (session !== _apControlSessionGeneration) return false;
       if (r.status === 402) {
         const price = d.upgrade && d.upgrade.price_usd_month ? ' ($' + d.upgrade.price_usd_month + '/m)' : '';
         showToast('error', '🔒 EXECUÇÃO AUTÔNOMA é PRO — licença necessária' + price);
@@ -7722,10 +8233,11 @@ function renderAccount(acct) {
       _apRefreshAutoStatus();
       return true;
     } catch (e) {
+      if (session !== _apControlSessionGeneration) return false;
       showToast('error', '⚠ falha de rede ao alterar a execução autônoma');
       return false;
     } finally {
-      setBtnLoading(btn, false);
+      if (session === _apControlSessionGeneration) setBtnLoading(btn, false);
     }
   }
 
@@ -7787,6 +8299,37 @@ function renderAccount(acct) {
   let _apRecs = [];
   let _apAudit = [];
   let _apRecsInit = false;
+  let _apRecommendationsGeneration = 0;
+  let _apDryRunGeneration = 0;
+  function _apSourceMessage(listId, countId, message) {
+    const list = document.getElementById(listId);
+    const count = document.getElementById(countId);
+    if (list) list.textContent = message;
+    if (count) count.textContent = '—';
+  }
+  function resetAutomationEvidence() {
+    _apControlSessionGeneration++;
+    _apArmedStatusGeneration++; _apAutoStatusGeneration++;
+    _apArmed = false; _apAuto = false;
+    _apUnknownControl('armed'); _apUnknownControl('auto');
+    ['ap-arm-modal', 'ap-auto-modal'].forEach(id => { const modal = document.getElementById(id); if (modal) modal.classList.remove('modal--open'); });
+    ['ap-arm-type', 'ap-auto-type'].forEach(id => { const input = document.getElementById(id); if (input) input.value = ''; });
+    ['ap-arm-consent', 'ap-auto-consent'].forEach(id => { const checkbox = document.getElementById(id); if (checkbox) checkbox.checked = false; });
+    _apRecommendationsGeneration++;
+    _apDryRunGeneration++;
+    _apRecs = []; _apAudit = [];
+    _apSourceMessage('ap-recs-list', 'ap-recs-badge', 'Recommendations not loaded for this session');
+    _apSourceMessage('ap-audit-list', 'ap-audit-count', 'Audit not loaded for this session');
+    _apSourceMessage('ap-dr-now-list', 'ap-dr-now-count', 'Dry run not loaded for this session');
+    _apSourceMessage('ap-dr-replay-list', 'ap-dr-replay-count', 'Replay not loaded for this session');
+  }
+  async function _apReadSource(url, field) {
+    const response = await authFetch(url);
+    if (!response.ok) throw new Error((response.status === 401 || response.status === 403 ? 'Access required' : 'Source unavailable') + ' (HTTP ' + response.status + ')');
+    const data = await response.json();
+    if (!data || !Array.isArray(data[field]) || data.error || data[field].some(row => !row || typeof row !== 'object' || Array.isArray(row))) throw new Error('Invalid source response');
+    return data;
+  }
 
   function _apRecCardHtml(rec) {
     if (!rec || typeof rec !== 'object') return '';
@@ -7858,7 +8401,9 @@ function renderAccount(acct) {
     const count = document.getElementById('ap-audit-count');
     if (!wrap || !list) return;
     if (!_apAudit.length) {
-      wrap.style.display = 'none';
+      wrap.style.display = '';
+      if (count) count.textContent = '0';
+      list.textContent = 'No recommendation audit entries';
       return;
     }
     wrap.style.display = '';
@@ -7867,23 +8412,25 @@ function renderAccount(acct) {
   }
 
   async function _apLoadRecs() {
-    try {
-      const r = await authFetch('/api/auto-pilot/recommendations');
-      if (r.ok) {
-        const d = await r.json().catch(() => ({}));
-        _apRecs = Array.isArray(d.recommendations) ? d.recommendations : [];
-        if (typeof d.armed === 'boolean') _apSetUi(d.armed);
-      }
-    } catch (e) { /* advisory — never break the module */ }
-    try {
-      const r2 = await authFetch('/api/auto-pilot/recommendations/audit?limit=50');
-      if (r2.ok) {
-        const d2 = await r2.json().catch(() => ({}));
-        _apAudit = Array.isArray(d2.audit) ? d2.audit : [];
-      }
-    } catch (e) { /* best-effort */ }
-    _apRenderRecs();
-    _apRenderAudit();
+    const generation = ++_apRecommendationsGeneration;
+    _apSourceMessage('ap-recs-list', 'ap-recs-badge', 'Loading recommendations…');
+    _apSourceMessage('ap-audit-list', 'ap-audit-count', 'Loading recommendation audit…');
+    const results = await Promise.allSettled([
+      _apReadSource('/api/auto-pilot/recommendations', 'recommendations'),
+      _apReadSource('/api/auto-pilot/recommendations/audit?limit=50', 'audit'),
+    ]);
+    if (generation !== _apRecommendationsGeneration) return;
+    _apRecs = results[0].status === 'fulfilled' ? results[0].value.recommendations : [];
+    _apAudit = results[1].status === 'fulfilled' ? results[1].value.audit : [];
+    // Operational controls have one read owner: /api/automation/status.
+    // A delayed advisory snapshot must not overwrite a newer confirmed state.
+    _apRenderRecs(); _apRenderAudit();
+    if (results[0].status === 'rejected') _apSourceMessage('ap-recs-list', 'ap-recs-badge', 'Recommendations unavailable: ' + String(results[0].reason.message) + '. Use Refresh to retry.');
+    if (results[1].status === 'rejected') {
+      const wrap = document.getElementById('ap-audit-wrap');
+      if (wrap) wrap.style.display = '';
+      _apSourceMessage('ap-audit-list', 'ap-audit-count', 'Recommendation audit unavailable: ' + String(results[1].reason.message) + '. Use Refresh to retry.');
+    }
   }
 
   async function _apRespond(recId, decision, trigger) {
@@ -8004,56 +8551,32 @@ function renderAccount(acct) {
   }
 
   async function _apDrLoad() {
-    try {
-      const r = await authFetch('/api/automation/dry-run');
-      if (r.ok) {
-        const d = await r.json().catch(() => ({}));
-        const list = document.getElementById('ap-dr-now-list');
-        const count = document.getElementById('ap-dr-now-count');
-        const actions = Array.isArray(d.actions) ? d.actions : [];
-        if (count) count.textContent = actions.length ? String(actions.length) : '0';
-        if (list) {
-          if (!actions.length) {
-            list.innerHTML =
-              '<div class="empty-state" style="grid-column:1/-1;border:none;padding:12px">' +
-              '<div class="empty-state__icon">◈</div>' +
-              '<div class="empty-state__title">Nenhuma regra dispararia agora</div>' +
-              '<div class="empty-state__desc">Com a telemetria atual e as regras ativas, o piloto não teria nenhuma ação a tomar.</div>' +
-              '</div>';
-          } else {
-            list.innerHTML = actions.map(_apDrNowCardHtml).join('');
-          }
-        }
-      } else {
-        // Honest feedback: a failed simulation is NOT "nothing fires".
-        // escapeHtml at the source (status is numeric — double-escape is
-        // harmless) to satisfy the DOM regression guard's data-flow scan.
-        const list = document.getElementById('ap-dr-now-list');
-        if (list) list.innerHTML = _apDrErrHtml('simulação indisponível (' + escapeHtml(r.status) + ')');
+    const generation = ++_apDryRunGeneration;
+    _apSourceMessage('ap-dr-now-list', 'ap-dr-now-count', 'Loading dry run…');
+    _apSourceMessage('ap-dr-replay-list', 'ap-dr-replay-count', 'Loading replay…');
+    const results = await Promise.allSettled([
+      _apReadSource('/api/automation/dry-run', 'actions'),
+      _apReadSource('/api/automation/dry-run/replay?hours=24&limit=288', 'per_rule'),
+    ]);
+    if (generation !== _apDryRunGeneration) return;
+    const specs = [
+      { list: 'ap-dr-now-list', count: 'ap-dr-now-count', field: 'actions', render: _apDrNowCardHtml, empty: 'Nenhuma regra dispararia agora', label: 'Dry run' },
+      { list: 'ap-dr-replay-list', count: 'ap-dr-replay-count', field: 'per_rule', render: _apDrReplayRowHtml, empty: 'Nenhuma regra teria disparado nas últimas 24h', label: 'Replay' },
+    ];
+    results.forEach((result, index) => {
+      const spec = specs[index];
+      if (result.status === 'rejected') {
+        _apSourceMessage(spec.list, spec.count, spec.label + ' unavailable: ' + String(result.reason.message) + '. Use Refresh to retry.');
+        return;
       }
-    } catch (e) { /* dry-run — never break the module */ }
-    try {
-      const r2 = await authFetch('/api/automation/dry-run/replay?hours=24&limit=288');
-      if (r2.ok) {
-        const d2 = await r2.json().catch(() => ({}));
-        const list2 = document.getElementById('ap-dr-replay-list');
-        const count2 = document.getElementById('ap-dr-replay-count');
-        const rows = Array.isArray(d2.per_rule) ? d2.per_rule : [];
-        if (count2) count2.textContent = d2.total_fires != null ? String(d2.total_fires) + ' disparos' : '—';
-        if (list2) {
-          if (!rows.length) {
-            list2.innerHTML =
-              '<div class="empty-state" style="grid-column:1/-1;border:none;padding:12px">' +
-              '<div class="empty-state__icon">↻</div>' +
-              '<div class="empty-state__title">Nenhuma regra teria disparado nas últimas 24h</div>' +
-              '<div class="empty-state__desc">Simulação sobre o histórico de telemetria — cooldown, conflitos e budget aplicados.</div>' +
-              '</div>';
-          } else {
-            list2.innerHTML = rows.map(_apDrReplayRowHtml).join('');
-          }
-        }
+      const data = result.value, rows = data[spec.field];
+      const list = document.getElementById(spec.list), count = document.getElementById(spec.count);
+      if (count) count.textContent = index === 0 ? String(rows.length) : (data.total_fires != null ? String(data.total_fires) + ' disparos' : '—');
+      if (list) {
+        if (rows.length) list.innerHTML = rows.map(spec.render).join('');
+        else list.textContent = spec.empty;
       }
-    } catch (e) { /* best-effort */ }
+    });
   }
 
   function _initAutoPilotDryRun() {
@@ -8493,6 +9016,27 @@ function renderAccount(acct) {
     _setQlComp('ql-comp-momentum', comps.momentum, 10);
   }
 
+  function renderSessionEvidence(prox) {
+    const dash = '\u2014';
+    const get = (id, value) => {
+      const el = document.getElementById(id);
+      if (el) el.textContent = value == null ? dash : String(value);
+    };
+    const se = (prox && (prox.session_evidence || (prox.live_calc && prox.live_calc.session_evidence))) || {};
+    const totals = (prox && prox.live_calc && prox.live_calc.session_totals) || {};
+    get('se-session-shares', se.session_shares != null ? se.session_shares : totals.shares_so_far);
+    get('se-valid-modeled', se.valid_modeled_shares);
+    get('se-observed-window', se.observed_window);
+    get('se-last-share-age', se.last_share_age);
+    get('se-data-gaps', se.data_gaps);
+    get('se-avg-share-diff', fmt.diff(se.avg_share_difficulty));
+    get('se-share-trend', se.share_difficulty_trend);
+    get('se-sample-count', se.sample_count);
+    const state = se.evidence_state || se.evidence_state_label || 'NO DATA';
+    get('se-evidence-state', state);
+    get('se-evidence-state2', state);
+  }
+
   function _setQlComp(barId, val, max) {
     const bar = document.getElementById(barId);
     if (!bar) return;
@@ -8527,6 +9071,9 @@ function renderAccount(acct) {
     if (dom.lcAvgShareDiff) dom.lcAvgShareDiff.textContent = totals.avg_share_diff_str || dash;
     if (dom.lcCumP) dom.lcCumP.textContent = totals.cum_p_block_pct_str || dash;
     if (dom.lcExpectedBlocks) dom.lcExpectedBlocks.textContent = totals.expected_blocks_str || dash;
+    if (dom.lcEstimatedBadge) {
+      dom.lcEstimatedBadge.style.display = latest.estimated ? '' : 'none';
+    }
 
     // Ticker — newest first
     if (dom.lcTickerList) {
@@ -9133,6 +9680,27 @@ function renderAccount(acct) {
     });
 
     // Executive Snapshot
+    const intelligence = (inst && inst.market_intelligence) || {};
+    const healthEl = document.getElementById('mkt-provider-health');
+    if (healthEl) {
+      const count = Number(intelligence.available_provider_count || 0);
+      const total = Number(intelligence.total_provider_count || 3);
+      healthEl.textContent = String(intelligence.status || 'NO DATA') + ' · ' + count + '/' + total + ' PROVIDERS';
+      healthEl.dataset.status = String(intelligence.status || 'NO DATA').toLowerCase().replace(/[^a-z]+/g, '-');
+    }
+    const rankingsEl = document.getElementById('mkt-provider-rankings');
+    if (rankingsEl) {
+      const ranks = intelligence.rankings || {};
+      const label = (value) => value ? String(value).toUpperCase() : 'NO DATA';
+      const html = ['CHEAPEST ' + label(ranks.cheapest), 'BEST SCORE ' + label(ranks.best_score), 'FRESHEST ' + label(ranks.freshest), 'CAPACITY ' + label(ranks.most_capacity)].join(' · ');
+      if (rankingsEl.textContent !== html) rankingsEl.textContent = html;
+    }
+    const cacheAgeEl = document.getElementById('mkt-provider-cache-age');
+    if (cacheAgeEl) {
+      const age = intelligence.cache_age_seconds;
+      const source = intelligence.cache_age_source ? ' · ' + String(intelligence.cache_age_source).toUpperCase() : '';
+      cacheAgeEl.textContent = age == null ? 'CACHE AGE UNKNOWN' : 'CACHE AGE ' + Math.floor(Number(age) / 60) + 'm' + source;
+    }
     const snap = inst.snapshot || {};
     const bestEl = document.getElementById('mkt-snap-best');
     if (bestEl && snap.best_price_sats_th_day) {
@@ -9364,64 +9932,66 @@ function renderAccount(acct) {
   function buildMarketTrendDatasets(providers) {
     const colors = ['rgb(247,147,26)', 'rgb(6,214,240)', 'rgb(168,85,247)', 'rgb(245,158,11)', 'rgb(16,185,129)'];
     const allTs = new Set();
-    Object.values(providers || {}).forEach(pts => (pts || []).forEach(p => { if (p && p.ts) allTs.add(p.ts); }));
+    Object.values(providers || {}).forEach(pts => (pts || []).forEach(p => { if (p && typeof p.ts === 'number' && Number.isFinite(p.ts) && p.ts > 0 && Number.isFinite(new Date(p.ts * 1000).getTime())) allTs.add(p.ts); }));
     const times = Array.from(allTs).sort((a, b) => a - b);
     const labels = times.map(t => { const d = new Date(t * 1000); return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); });
     const datasets = Object.keys(providers || {}).map((name, i) => {
       const byTs = {};
-      ((providers[name]) || []).forEach(p => { if (p && p.ts != null) byTs[p.ts] = p.price_btc_per_th_day; });
+      ((providers[name]) || []).forEach(p => { if (p && typeof p.price_btc_per_th_day === 'number' && Number.isFinite(p.price_btc_per_th_day) && p.price_btc_per_th_day >= 0 && Number.isFinite(p.price_btc_per_th_day * 1e8)) byTs[p.ts] = p.price_btc_per_th_day; });
       return {
         label: name,
         data: times.map(t => byTs[t] != null ? Number(byTs[t]) * 1e8 : null),
         borderColor: colors[i % colors.length],
         backgroundColor: colors[i % colors.length].replace(')', ',0.08)').replace('rgb', 'rgba'),
-        tension: 0.4, pointRadius: 0, fill: false,
+        tension: 0.4, pointRadius: times.map((t, index) => byTs[t] != null && byTs[times[index - 1]] == null && byTs[times[index + 1]] == null ? 3 : 0), fill: false,
       };
     });
     return { times, labels, datasets };
   }
 
+  let _marketTrendGeneration = 0;
   async function loadMarketTrend() {
-    // Returns true on success, false on failure — the lazy caller (activateModule)
-    // resets _mktTrendLoaded on false so a transient failure retries next activation.
     const canvas = document.getElementById('mkt-trend-chart');
     if (!canvas) return false;
+    const generation = ++_marketTrendGeneration;
+    const countEl = document.getElementById('mkt-trend-count');
+    const legendEl = document.getElementById('mkt-trend-legend');
+    if (window._mktTrendChart) { window._mktTrendChart.destroy(); window._mktTrendChart = null; }
+    canvas.hidden = true;
+    if (countEl) countEl.textContent = 'LOADING';
+    if (legendEl) legendEl.textContent = 'Loading retained market prices…';
     try {
       const r = await fetch('/api/market/trend');
-      if (!r.ok) return false;
+      if (generation !== _marketTrendGeneration) return false;
+      if (!r.ok) throw new Error((r.status === 401 || r.status === 403 ? 'Access required' : 'Source unavailable') + ' (HTTP ' + r.status + ')');
       const data = await r.json();
-      const provs = data.providers || {};
-      const countEl = document.getElementById('mkt-trend-count');
-      const legendEl = document.getElementById('mkt-trend-legend');
-      const { labels, datasets } = buildMarketTrendDatasets(provs);
-      // Frescor honesto: mostra quantos providers têm histórico e QUANDO o
-      // snapshot mais recente foi persistido (dado real do /api/market/trend).
-      if (countEl) {
-        const upd = data.updated_at || 0;
-        const clock = upd ? new Date(upd * 1000) : null;
-        const hhmm = clock ? String(clock.getHours()).padStart(2, '0') + ':' + String(clock.getMinutes()).padStart(2, '0') : '';
-        countEl.textContent = datasets.length
-          ? (datasets.length + ' providers' + (hhmm ? ' · ' + hhmm : ''))
-          : '0 providers — sem histórico ainda';
+      if (generation !== _marketTrendGeneration) return false;
+      if (!data || !data.providers || typeof data.providers !== 'object' || Array.isArray(data.providers) || Object.values(data.providers).some(points => !Array.isArray(points))) throw new Error('Invalid market trend response');
+      const { labels, datasets } = buildMarketTrendDatasets(data.providers);
+      const hasPoints = datasets.some(dataset => dataset.data.some(value => value != null && Number.isFinite(value)));
+      const suppliedPoints = Object.values(data.providers).some(points => points.length);
+      if (!hasPoints && suppliedPoints) {
+        if (countEl) countEl.textContent = 'UNKNOWN';
+        if (legendEl) legendEl.textContent = 'Retained market rows have no usable timestamps or numeric prices. Reopen Hash Market to retry.';
+        return false;
       }
-      if (legendEl) {
-        legendEl.innerHTML = datasets.length
-          ? datasets.map(d =>
-              `<span class="mkt-trend__legend-item"><span class="mkt-trend__legend-dot" style="background:${d.borderColor}"></span>${escapeHtml(d.label)}</span>`
-            ).join('')
-          : '<span class="mkt-trend__legend-item" style="color:var(--text-tertiary)">preços são persistidos a cada fetch (warm-up 5min) — volte mais tarde</span>';
-      }
-      if (!datasets.length) return true;  // valid empty state — nothing to plot
-      if (typeof Chart === 'undefined') return false;  // Issue #186: defer — próximo poll re-tenta
-      const ctx = canvas.getContext('2d');
-      if (window._mktTrendChart) window._mktTrendChart.destroy();
-      window._mktTrendChart = new Chart(ctx, {
-        type: 'line',
-        data: { labels, datasets },
-        options: { responsive: true, maintainAspectRatio: false, scales: { x: { ticks: { color: cssVar('--text-tertiary'), maxTicksLimit: 8 } }, y: { ticks: { color: cssVar('--text-tertiary') } } }, plugins: { legend: { display: false } } }
+      if (countEl) countEl.textContent = hasPoints ? datasets.length + ' providers' : 'EMPTY';
+      if (legendEl) legendEl.textContent = hasPoints ? 'Source: retained market prices · received ' + new Date().toLocaleTimeString() : 'No retained market prices. Retry on the next module activation.';
+      if (!hasPoints) return true;
+      if (typeof Chart === 'undefined') throw new Error('Chart renderer unavailable');
+      canvas.hidden = false;
+      window._mktTrendChart = new Chart(canvas.getContext('2d'), {
+        type: 'line', data: { labels, datasets },
+        options: { responsive: true, maintainAspectRatio: false, animation: window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches ? false : { duration: 180 }, scales: { x: { ticks: { color: cssVar('--text-tertiary'), maxTicksLimit: 8 } }, y: { title: { display: true, text: 'sats/TH/day' }, ticks: { color: cssVar('--text-tertiary') } } }, plugins: { legend: { display: true } } }
       });
       return true;
-    } catch (e) { return false; }
+    } catch (error) {
+      if (generation !== _marketTrendGeneration) return false;
+      canvas.hidden = true;
+      if (countEl) countEl.textContent = 'ERROR';
+      if (legendEl) legendEl.textContent = String(error.message || 'Market prices unavailable') + '. Reopen Hash Market to retry.';
+      return false;
+    }
   }
   // ══════════════════════════════════════════════════════════════════════
   // Rentals — domínio extraído de `40-app-logic.js`
@@ -9480,12 +10050,12 @@ function renderAccount(acct) {
     wrap.hidden = false;
     const spend = p.spend || {};
     const income = p.income || {};
-    set('rentals-port-total', spend.spent_sats ? Number(spend.spent_sats).toLocaleString('en-US') + ' sats' : '—');
+    set('rentals-port-total', spend.spent_sats != null ? Number(spend.spent_sats).toLocaleString('en-US') + ' sats' + (spend.price_state === 'partial' ? ' · parcial (BTC)' : '') : '—');
     set('rentals-port-avg-cost', spend.avg_cost_sats_per_thh != null ? Number(spend.avg_cost_sats_per_thh).toFixed(1) + ' st/TH·h' : '—');
     set('rentals-port-avg-delivery', spend.avg_delivery_pct != null ? Number(spend.avg_delivery_pct).toFixed(1) + '%' : '—');
     set('rentals-port-delivered', spend.delivered_thh ? Number(spend.delivered_thh).toLocaleString('en-US') + ' TH·h' : '—');
     // Owner side: what rigs leased OUT earned (sats from renters).
-    set('rentals-port-income', income.count && income.spent_sats ? Number(income.spent_sats).toLocaleString('en-US') + ' sats' : '—');
+    set('rentals-port-income', income.count && income.spent_sats != null ? Number(income.spent_sats).toLocaleString('en-US') + ' sats' + (income.price_state === 'partial' ? ' · parcial (BTC)' : '') : '—');
     const split = p.split || {};
     const parts = [];
     if (split.mrr) parts.push('MRR ' + split.mrr);
@@ -9494,19 +10064,51 @@ function renderAccount(acct) {
   }
 
   // Mirror of services/rental_performance._hash_to_th — MRR reports hashrate
-  // as {hash, type} where the raw hash is in the type unit (ph/mh/gh/th).
-  // Unknown units (e.g. raw 'hash') return null: an honest '—' beats a
+  // as {hash, type} where the raw hash is in the declared hash..EH unit.
+  // Unknown units return null: an honest '—' beats a
   // nonsense astronomical number in the AVG/ADVERTISED cell.
   function _mrToTh(v, unit) {
-    if (v === null || v === undefined || v === '') return null;
+    if ((typeof v !== 'number' && typeof v !== 'string') || String(v).trim() === '') return null;
     const n = Number(v);
-    if (!isFinite(n)) return null;
-    const u = String(unit || '').toLowerCase();
-    if (u === 'ph') return n * 1000;
-    if (u === 'th') return n;
-    if (u === 'gh') return n / 1000;
-    if (u === 'mh') return n / 1e6;
-    return null;
+    if (!isFinite(n) || n < 0 || typeof unit !== 'string') return null;
+    const factors = { hash: 1e-12, kh: 1e-9, mh: 1e-6, gh: 1e-3, th: 1, ph: 1e3, eh: 1e6 };
+    const factor = factors[unit.trim().toLowerCase()];
+    const converted = factor == null ? null : n * factor;
+    return converted != null && isFinite(converted) ? converted : null;
+  }
+
+  /** Keep unrepresentable work unavailable; a measured zero rate remains zero. */
+  function _rentalWorkThh(rate, hours) {
+    if (!Number.isFinite(rate) || !Number.isFinite(hours) || rate < 0 || hours <= 0) return null;
+    const work = rate * hours;
+    return Number.isFinite(work) && !(rate > 0 && work === 0) ? work : null;
+  }
+
+  /** Do not render numeric overflow or underflow as an infinite or free cost. */
+  function _rentalUnitCost(paid, work) {
+    if (!Number.isFinite(paid) || !Number.isFinite(work) || paid < 0 || work <= 0) return null;
+    const cost = paid / work;
+    return Number.isFinite(cost) && !(paid > 0 && cost === 0) ? cost : null;
+  }
+
+  /** Return sats only for explicitly BTC-denominated raw provider payments. */
+  function _rentalPaymentSats(price) {
+    if (!price || typeof price.currency !== 'string' || price.currency.trim().toUpperCase() !== 'BTC') return null;
+    if ((typeof price.paid !== 'number' && typeof price.paid !== 'string') || String(price.paid).trim() === '') return null;
+    const amount = Number(price.paid);
+    const sats = amount * 1e8;
+    return isFinite(amount) && amount >= 0 && isFinite(sats) ? sats : null;
+  }
+
+  /** Display original currency without inventing an FX conversion; null stays unknown. */
+  function _rentalRawPriceStr(price) {
+    const sats = _rentalPaymentSats(price);
+    if (sats != null) return sats.toFixed(0) + ' sats';
+    if (!price || typeof price.currency !== 'string' || !price.currency.trim() ||
+        (typeof price.paid !== 'number' && typeof price.paid !== 'string') || String(price.paid).trim() === '') return '—';
+    const amount = Number(price.paid);
+    return isFinite(amount) && amount >= 0
+      ? amount.toLocaleString('pt-BR', { maximumSignificantDigits: 10 }) + ' ' + price.currency.trim().toUpperCase() : '—';
   }
 
   function _rentalStatus(r) {
@@ -9527,8 +10129,12 @@ function renderAccount(acct) {
   }
 
   function _rentalPriceStr(r) {
-    if (!r || r.price_paid_btc == null) return '—';
-    return (r.price_paid_btc * 1e8).toFixed(0) + ' sats';
+    if (!r) return '—';
+    if (Object.prototype.hasOwnProperty.call(r, 'price_currency')) {
+      const btc = typeof r.price_currency === 'string' && r.price_currency.trim().toUpperCase() === 'BTC';
+      return _rentalRawPriceStr({ paid: r.price_paid_amount != null ? r.price_paid_amount : (btc ? r.price_paid_btc : null), currency: r.price_currency });
+    }
+    return _rentalRawPriceStr({ paid: r.price_paid_btc, currency: 'BTC' });
   }
 
   // CFO: rig trust — is this rig blacklisted (manual OR auto-excluded) or a
@@ -9932,6 +10538,8 @@ function renderAccount(acct) {
         (t.rentals != null ? t.rentals + ' aluguéis · ' : '') +
         (t.spent_sats != null ? Number(t.spent_sats).toLocaleString('en-US') + ' sats gastos · ' : '') +
         'P/L total ' + plTxt;
+      if (t.price_state === 'partial') m += ' · gastos parciais (BTC)';
+      if (t.price_state === 'unavailable') m += ' · gastos em BTC indisponíveis';
       // Issue #146: when the self-mining EV entered the account, surface the
       // consolidated total + the honest ESTIMATE note (EV, not realized).
       if (t.own_ev_sats != null) {
@@ -10409,7 +11017,7 @@ function renderAccount(acct) {
       '</div>' +
       '<div class="rentals-item__stats">' +
         '<div class="rentals-item__stat"><span class="rentals-item__stat-label">HASHRATE</span><span class="rentals-item__stat-value">' + _rentalHashrateStr(r) + '</span></div>' +
-        '<div class="rentals-item__stat"><span class="rentals-item__stat-label">PAID</span><span class="rentals-item__stat-value">' + _rentalPriceStr(r) + '</span></div>' +
+        '<div class="rentals-item__stat"><span class="rentals-item__stat-label">PAID</span><span class="rentals-item__stat-value">' + escapeHtml(_rentalPriceStr(r)) + '</span></div>' +
         '<div class="rentals-item__stat"><span class="rentals-item__stat-label">LENGTH</span><span class="rentals-item__stat-value">' + (r && r.length_hours != null ? Number(r.length_hours).toFixed(1) + 'h' : '—') + '</span></div>' +
       '</div>' +
       '<div class="rentals-item__status">' + escapeHtml(st) + '</div>' +
@@ -10761,8 +11369,13 @@ function renderAccount(acct) {
       _rentalEvidenceMetric(summary, 'Última observação (UTC)', _rentalEvidenceUtc(evaluation.last_observed_at));
       _rentalEvidenceMetric(summary, 'Trecho de leituras baixas (UTC)', _rentalEvidenceUtc(evaluation.window_start) + ' → ' + _rentalEvidenceUtc(evaluation.window_end));
       _rentalEvidenceMetric(summary, 'Amostras baixas consecutivas', _rentalEvidenceNumber(evaluation.samples, ''));
+      const coverage = data.coverage || {};
+      _rentalEvidenceMetric(summary, 'Cobertura das amostras retidas', coverage.status === 'AVAILABLE'
+        ? _rentalEvidenceNumber(coverage.observed_pct, '%') + ' · ' + _rentalEvidenceNumber(coverage.observed_count, '') + '/' + _rentalEvidenceNumber(coverage.observation_count, '') + ' válidas'
+        : 'Sem observações');
       _rentalEvidenceMetric(summary, 'Hashrate observado', _rentalEvidenceNumber(evaluation.observed_th, ' TH/s'));
       _rentalEvidenceMetric(summary, 'Entrega amostrada', _rentalEvidenceNumber(evaluation.delivery_pct, '%'));
+      if (!binding) _rentalEvidenceMetric(summary, 'Contrato declarado', 'Não configurado');
       if (binding) _rentalEvidenceMetric(summary, 'Regra declarada', _rentalEvidenceNumber(binding.threshold_pct, '%') + ' · ' + _rentalEvidenceNumber(binding.duration_s, ' s') + ' · lacuna ≤ ' + _rentalEvidenceNumber(binding.max_gap_s, ' s'));
     }
     const select = document.getElementById('rentals-evidence-source');
@@ -11124,7 +11737,7 @@ function renderAccount(acct) {
         ['Renter', d.renter || '—'],
         ['Advertised', hr.advertised ? (hr.advertised.nice || hr.advertised.hash || '—') : '—'],
         ['Average', hr.average ? (hr.average.nice || '—') + (hr.average.percent != null ? ' (' + hr.average.percent + '%)' : '') : '—'],
-        ['Paid', d.price && d.price.paid != null ? (Number(d.price.paid) * 1e8).toFixed(0) + ' sats' : '—'],
+        ['Pago', _rentalRawPriceStr(d.price)],
         ['Length', d.length != null ? d.length + 'h' : '—'],
         ['Rig', d.rig && d.rig.name ? d.rig.name : '—'],
         ['Region', d.rig && d.rig.region ? d.rig.region : '—'],
@@ -11137,22 +11750,28 @@ function renderAccount(acct) {
       const perfEl = document.getElementById('rentals-detail-perf');
       if (perfEl) {
         const adv = hr.advertised, avg = hr.average;
-        const advTh = adv ? _mrToTh(adv.hash, adv.type) : null;
-        const avgTh = avg ? _mrToTh(avg.hash, avg.type) : null;
+        // Braiins supplies a normalized Bitcoin contract, not an MRR rig record.
+        const modelEligible = (provider === 'braiins' && data.provider === 'braiins') ||
+          (d.rig && typeof d.rig.type === 'string' && d.rig.type.trim().toLowerCase() === 'sha256');
+        const advTh = modelEligible && adv ? _mrToTh(adv.hash, adv.type) : null;
+        const avgTh = modelEligible && avg ? _mrToTh(avg.hash, avg.type) : null;
         const pct = avg && avg.percent != null ? parseFloat(avg.percent)
           : (avgTh && advTh ? (avgTh / advTh) * 100 : null);
         const lenH = d.length != null ? parseFloat(d.length) : 0;
-        const paidSats = d.price && d.price.paid != null ? parseFloat(d.price.paid) * 1e8 : null;
-        const costPerThHour = (paidSats != null && avgTh && lenH) ? paidSats / (avgTh * lenH) : null;
-        const delivered = (avgTh && lenH) ? avgTh * lenH : null;
+        const paidSats = _rentalPaymentSats(d.price);
+        const perf = data.perf || d.perf || {};
+        // Braiins duration is rounded for display; its series work is not.
+        const delivered = provider === 'braiins' && data.provider === 'braiins' &&
+          Number.isFinite(perf.delivered_thh) && perf.delivered_thh >= 0
+          ? perf.delivered_thh : _rentalWorkThh(avgTh, lenH);
+        const costPerThHour = _rentalUnitCost(paidSats, delivered);
         // Backend pre-computes analytics for BOTH providers (Braiins from the
         // speed series, MRR from the raw detail) — prefer those so the banner
         // renders even when the series is empty or sparse.
-        const perf = data.perf || d.perf || {};
-        const avgThFinal = perf.avg_th != null ? perf.avg_th : avgTh;
+        const avgThFinal = avgTh == null ? null : (Object.prototype.hasOwnProperty.call(perf, 'avg_th') ? perf.avg_th : avgTh);
         const pctFinal = perf.percent != null ? perf.percent : pct;
-        const costFinal = perf.cost_sats_per_thh != null ? perf.cost_sats_per_thh : costPerThHour;
-        const deliveredFinal = perf.delivered_thh != null ? perf.delivered_thh : delivered;
+        const costFinal = paidSats == null || !delivered ? null : (Object.prototype.hasOwnProperty.call(perf, 'cost_sats_per_thh') ? (Number.isFinite(perf.cost_sats_per_thh) ? perf.cost_sats_per_thh : null) : costPerThHour);
+        const deliveredFinal = delivered == null ? null : (Object.prototype.hasOwnProperty.call(perf, 'delivered_thh') ? (Number.isFinite(perf.delivered_thh) ? perf.delivered_thh : null) : delivered);
         let cls = '', verdict = '—';
         if (pctFinal != null) {
           cls = pctFinal >= 95 ? 'is-good' : (pctFinal >= 80 ? 'is-warn' : 'is-bad');
@@ -11172,10 +11791,10 @@ function renderAccount(acct) {
         // more than the hashrate produced at current difficulty.
         const pl = data.pl || {};
         let yieldVal = '—', plVal = '—', plCls = '', plTitle = '';
-        if (pl.expected_yield_sats_per_thh != null) {
+        if (paidSats != null && delivered != null && Number.isFinite(pl.expected_yield_sats_per_thh)) {
           yieldVal = Number(pl.expected_yield_sats_per_thh).toFixed(2) + ' st/TH·h';
         }
-        if (pl.pl_sats != null) {
+        if (paidSats != null && delivered != null && pl.available !== false && Number.isFinite(pl.pl_sats)) {
           const sign = pl.pl_sats >= 0 ? '+' : '';
           plVal = sign + Number(pl.pl_sats).toFixed(0) + ' sats';
           plCls = pl.pl_sats >= 0 ? 'is-good' : 'is-bad';
@@ -11185,8 +11804,8 @@ function renderAccount(acct) {
         }
         const cells = [
           { l: 'PERFORMANCE', v: verdict, c: cls },
-          { l: 'AVG / ADVERTISED', v: avgThFinal ? fmt.hashrate(avgThFinal * 1e12) + ' / ' + fmt.hashrate((advTh || 0) * 1e12) : '—', c: '' },
-          { l: 'COST', v: costFinal != null ? costFinal.toFixed(2) + ' sats/TH/h' : '—', c: '' },
+          { l: 'AVG / ADVERTISED', v: (avgThFinal != null ? fmt.hashrate(avgThFinal * 1e12) : '—') + ' / ' + (advTh != null ? fmt.hashrate(advTh * 1e12) : '—'), c: '' },
+          { l: 'COST (PROVIDER AVG)', v: costFinal != null ? costFinal.toFixed(2) + ' sats/TH/h' : '—', c: '', t: 'Unit cost uses provider-reported average hashrate and duration; destination-pool observations are separate sampled evidence and may have an unknown averaging window.' },
           { l: 'YIELD (exp)', v: yieldVal, c: '', t: 'expected GROSS yield of 1 TH·h at the current network hashrate (before pool fee)' },
           { l: 'DELIVERED', v: deliveredFinal != null ? deliveredFinal.toFixed(0) + ' TH·h' : '—', c: '' },
           { l: 'P/L', v: plVal, c: plCls, t: plTitle },
@@ -11812,47 +12431,127 @@ function renderAccount(acct) {
   let _adminAnalyticsCharts = {};
   let _adminAnalyticsRendered = false;
 
+  let _adminRequestGeneration = 0;
+  const _adminSources = ['sessions', 'conversion', 'rentals/accepted-recos', 'pool-metrics', 'docs-feedback', 'error-rate', 'degradation-rate', 'analytics'];
+  const _adminEmptyLabels = {};
+
+  function _restoreAdminEmptyLabels() {
+    Object.keys(_adminEmptyLabels).forEach(id => _setAdminText(id, _adminEmptyLabels[id]));
+  }
+
+  function _markAdminUnavailable(sources) {
+    const fields = {
+      sessions: ['sessions', 'polls-per-sec', 'queue', 'workers', 'uptime', 'autoex-alerts'],
+      conversion: ['drop-paywall-modal', 'drop-modal-checkout', 'drop-checkout-paid', 'conv-rate', 'funnel-sessions', 'funnel-session-conv', 'ltv', 'ltv-source', 'cac', 'ltv-cac', 'payback', 'cohort-source'],
+      analytics: ['analytics-boots', 'analytics-dau', 'analytics-wau', 'analytics-modules', 'analytics-top-module'],
+      'error-rate': ['err-total', 'err-peak', 'err-sentry'],
+      'degradation-rate': ['deg-total', 'deg-peak', 'deg-state'],
+    };
+    const states = {
+      conversion: ['admin-cohort-empty', 'admin-funnel-trend-empty'],
+      'pool-metrics': ['admin-metrics-empty'],
+      'error-rate': ['admin-error-rate-empty'],
+      'degradation-rate': ['admin-deg-empty'],
+    };
+    sources.forEach(source => {
+      (fields[source] || []).forEach(id => _setAdminText('admin-' + id, '—'));
+      (states[source] || []).forEach(id => {
+        const el = document.getElementById(id);
+        if (el) {
+          if (!(id in _adminEmptyLabels)) _adminEmptyLabels[id] = el.textContent;
+          el.hidden = false;
+          el.textContent = 'Source unavailable: ' + source + '. Retry with Refresh.';
+        }
+      });
+      if (source === 'conversion') {
+        ['admin-funnel-list', 'admin-feature-list'].forEach(id => {
+          const el = document.getElementById(id);
+          if (el) el.innerHTML = '<li class="alert-empty">conversion source unavailable</li>';
+        });
+      }
+      if (source === 'docs-feedback') {
+        const wrap = document.getElementById('admin-docs-feedback');
+        if (wrap) wrap.hidden = true;
+      }
+      if (source === 'rentals/accepted-recos') {
+        ['admin-audit', 'admin-autoex'].forEach(id => {
+          const el = document.getElementById(id);
+          if (el) el.hidden = true;
+        });
+        _adminAuditDecisions = [];
+      }
+      if (source === 'sessions') {
+        const stall = document.getElementById('admin-stall');
+        if (stall) { stall.hidden = true; stall.textContent = ''; }
+      }
+      if (source === 'degradation-rate') {
+        const state = document.getElementById('admin-deg-state');
+        if (state) state.className = 'kpi-card__value';
+      }
+    });
+  }
+
+  function resetAdminEvidence() {
+    _adminRequestGeneration++;
+    _adminLoaded = false;
+    _renderAdmin({}, {}, {}, {}, {}, {}, {}, { error: 'Analytics not loaded for this session' });
+    _markAdminUnavailable(_adminSources);
+    _setAdminText('admin-gate-badge', 'unknown');
+    const err = document.getElementById('admin-error');
+    if (err) { err.hidden = true; err.textContent = ''; }
+    const refresh = document.getElementById('admin-refresh-btn');
+    if (refresh) { refresh.disabled = false; refresh.setAttribute('aria-busy', 'false'); }
+  }
+
   async function fetchAdminData() {
     if (_adminLoaded) return;
+    const generation = ++_adminRequestGeneration;
     const errEl = document.getElementById('admin-error');
     const gate = document.getElementById('admin-gate-badge');
+    const refresh = document.getElementById('admin-refresh-btn');
+    if (gate) gate.textContent = 'loading';
+    if (errEl) { errEl.hidden = true; errEl.textContent = ''; }
+    if (refresh) { refresh.disabled = true; refresh.setAttribute('aria-busy', 'true'); }
     _setAdminAnalyticsLoading(true);
     try {
-      // Pool health — no auth needed for localhost/operator-key admin routes.
-      const [sessionsResp, convResp, auditResp, metricsResp, docsResp, errResp, degResp, analyticsResp] = await Promise.all([
-        fetch('/api/admin/sessions', { headers: { 'X-Requested-With': 'fetch' } }),
-        fetch('/api/admin/conversion?weeks=8', { headers: { 'X-Requested-With': 'fetch' } }),
-        fetch('/api/admin/rentals/accepted-recos?limit=1000', { headers: { 'X-Requested-With': 'fetch' } }),
-        fetch('/api/admin/pool-metrics?hours=24', { headers: { 'X-Requested-With': 'fetch' } }),
-        fetch('/api/admin/docs-feedback', { headers: { 'X-Requested-With': 'fetch' } }),
-        fetch('/api/admin/error-rate?hours=24', { headers: { 'X-Requested-With': 'fetch' } }),
-        fetch('/api/admin/degradation-rate?hours=24', { headers: { 'X-Requested-With': 'fetch' } }),
-        fetch('/api/admin/analytics?days=30', { headers: { 'X-Requested-With': 'fetch' } }),
-      ]);
-      if (sessionsResp.status === 403 || convResp.status === 403 || auditResp.status === 403 || metricsResp.status === 403 || docsResp.status === 403 || errResp.status === 403 || degResp.status === 403 || analyticsResp.status === 403) {
-        if (gate) gate.textContent = 'restricted';
-        if (errEl) {
-          errEl.hidden = false;
-          errEl.textContent = 'Admin access required — endpoint só responde de localhost ou com a API key do operador (X-API-Key).';
-        }
-        _renderAdminAnalytics({ error: 'admin access required' });
-        _adminLoaded = true;  // don't re-hammer a 403
-        return;
+      const paths = ['/api/admin/sessions', '/api/admin/conversion?weeks=8', '/api/admin/rentals/accepted-recos?limit=1000', '/api/admin/pool-metrics?hours=24', '/api/admin/docs-feedback', '/api/admin/error-rate?hours=24', '/api/admin/degradation-rate?hours=24', '/api/admin/analytics?days=30'];
+      const results = await Promise.all(paths.map(async path => {
+        try {
+          const response = await fetch(path, { headers: { 'X-Requested-With': 'fetch' } });
+          if (!response.ok) return { error: 'HTTP ' + response.status, status: response.status };
+          const data = await response.json();
+          if (!data || typeof data !== 'object' || Array.isArray(data) || data.error) return { error: 'invalid response' };
+          return { data: data };
+        } catch (e) { return { error: 'request failed' }; }
+      }));
+      if (generation !== _adminRequestGeneration) return;
+      const restricted = results.some(result => result.status === 401 || result.status === 403);
+      const unavailable = restricted ? _adminSources : _adminSources.filter((_, i) => results[i].error);
+      const payloads = restricted ? results.map(() => ({})) : results.map(result => result.data || {});
+      if (restricted || results[7].error) payloads[7] = { error: restricted ? 'admin access required' : 'analytics source unavailable' };
+      _restoreAdminEmptyLabels();
+      _renderAdmin(...payloads);
+      _markAdminUnavailable(unavailable);
+      if (gate) gate.textContent = restricted ? 'restricted' : unavailable.length ? 'partial' : 'ok';
+      if (errEl) {
+        errEl.hidden = !unavailable.length;
+        errEl.textContent = restricted
+          ? 'Admin access required — operator access must be verified before displaying data.'
+          : unavailable.map(source => source + ': ' + results[_adminSources.indexOf(source)].error).join('; ') + (unavailable.length ? '. Data unavailable; retry with Refresh.' : '');
       }
-      if (gate) gate.textContent = 'ok';
-      const sessions = sessionsResp.ok ? await sessionsResp.json() : {};
-      const conv = convResp.ok ? await convResp.json() : {};
-      const audit = auditResp.ok ? await auditResp.json() : {};
-      const metrics = metricsResp.ok ? await metricsResp.json() : {};
-      const docsFb = docsResp.ok ? await docsResp.json() : {};
-      const errData = errResp.ok ? await errResp.json() : {};
-      const degData = degResp.ok ? await degResp.json() : {};
-      const analytics = analyticsResp.ok ? await analyticsResp.json() : { error: 'analytics request failed (' + analyticsResp.status + ')' };
-      _renderAdmin(sessions, conv, audit, metrics, docsFb, errData, degData, analytics);
-      _adminLoaded = true;
+      // Partial responses remain retryable; denied access waits for an explicit
+      // refresh or session change instead of repeatedly hammering the gate.
+      _adminLoaded = restricted || !unavailable.length;
     } catch (e) {
-      if (errEl) { errEl.hidden = false; errEl.textContent = 'admin fetch error: ' + e.message; }
-      _renderAdminAnalytics({ error: 'analytics indisponível' });
+      if (generation !== _adminRequestGeneration) return;
+      resetAdminEvidence();
+      if (gate) gate.textContent = 'error';
+      if (errEl) { errEl.hidden = false; errEl.textContent = 'Admin data unavailable; retry with Refresh.'; }
+    } finally {
+      if (generation === _adminRequestGeneration && refresh) {
+        refresh.disabled = false;
+        refresh.setAttribute('aria-busy', 'false');
+      }
     }
   }
   function _renderAdmin(sessions, conv, audit, metrics, docsFb, errData, degData, analytics) {
@@ -11960,6 +12659,9 @@ function renderAccount(acct) {
     root.querySelectorAll('[data-analytics-canvas], [data-analytics-empty]').forEach(function(el) { el.hidden = true; });
 
     if (report && report.error) {
+      _markAdminUnavailable(['analytics']);
+      const tableBody = document.getElementById('admin-analytics-table-body');
+      if (tableBody) tableBody.innerHTML = '';
       if (state) {
         state.textContent = 'Analytics indisponível: ' + String(report.error);
         state.classList.add('admin-analytics__state--error');
@@ -12757,7 +13459,7 @@ function renderAccount(acct) {
   // "NOT AVAILABLE" for missing fields, so a plain != null check would
   // crash .toFixed(). Returns null for absent / non-numeric values.
   function _numOrNull(v) {
-    if (v == null || v === '') return null;
+    if (v == null || v === '' || typeof v === 'boolean') return null;
     const n = Number(v);
     return isFinite(n) ? n : null;
   }
@@ -12774,10 +13476,11 @@ function renderAccount(acct) {
     // Shares/temp/power/eff = APENAS ONLINE — os contadores cumulativos do
     // firmware persistem depois que o miner morre e congelariam um
     // EFFICIENCY histórico se OFFLINE contribuísse.
-    let totalHr = 0, acc = 0, rej = 0, stale = 0;
+    let totalHr = 0, hrN = 0, acc = 0, rej = 0, stale = 0;
     let tempSum = 0, tempN = 0, powerSum = 0, powerN = 0, effSum = 0, effN = 0;
     fleet.forEach(d => {
-      totalHr += Number((d && d._telemetry && d._telemetry.hashrate_hs) || 0);
+      const hr = _numOrNull(d && d._telemetry && d._telemetry.hashrate_hs);
+      if (hr != null && hr >= 0) { totalHr += hr; hrN++; }
     });
     live.forEach(d => {
       const t = (d && d._telemetry) || {};
@@ -12794,10 +13497,10 @@ function renderAccount(acct) {
     const lats = live.map(d => Number(d && d.latency_ms)).filter(v => v > 0 && isFinite(v));
     const shareTotal = acc + rej;
     return {
-      totalHr: totalHr,
+      totalHr: hrN ? totalHr : null,
       effPct: shareTotal > 0 ? (acc / shareTotal) * 100 : null,
       avgTemp: tempN ? tempSum / tempN : null,
-      totalPowerW: powerSum || null,
+      totalPowerW: powerN ? powerSum : null,
       avgEff: effN ? effSum / effN : null,
       avgLatency: lats.length ? Math.round(lats.reduce((a, b) => a + b, 0) / lats.length) : null,
       acc: acc, rej: rej, stale: stale,
@@ -12989,16 +13692,65 @@ function renderAccount(acct) {
     if (buf.length > _LM_FLOW_MAX) buf.shift();
   }
 
-  // FLEET COMMAND CENTER — fetch /summary and render. Non-fatal: on
-  // failure the panel simply keeps the last good data.
+  let _ccFetchGeneration = 0;
+  let _ccEvidenceState = 'loading';
+  let _ccHasSnapshot = false;
+  let _ccEvidenceAt = null;
+
+  function _ccSourceStatus() {
+    if (!dom.lmStatusBadge) return;
+    const labels = { loading: 'LOADING', error: 'ERROR', cached: 'CACHED', restricted: 'ACCESS REQUIRED', ready: _ccLastFleet.length ? 'LIVE' : 'EMPTY' };
+    dom.lmStatusBadge.textContent = labels[_ccEvidenceState] || 'UNKNOWN';
+    dom.lmStatusBadge.title = _ccHasSnapshot
+      ? 'Fleet summary received at ' + new Date(_ccEvidenceAt).toLocaleTimeString() + (_ccEvidenceState === 'cached' ? '; refresh failed — last successful response' : '')
+      : 'Fleet summary has not been received for this session';
+    dom.lmStatusBadge.classList.toggle('badge--green', _ccEvidenceState === 'ready');
+    dom.lmStatusBadge.classList.toggle('badge--mute', _ccEvidenceState !== 'ready');
+  }
+
+  function resetFleetSummaryEvidence() {
+    _ccFetchGeneration++;
+    _ccLastFleet = [];
+    _ccHasSnapshot = false;
+    _ccEvidenceAt = null;
+    _ccEvidenceState = 'loading';
+    _ccHrSeries.length = 0;
+    [_ccHrHist, _lmFlow, _lmLastCounters].forEach(buffer => Object.keys(buffer).forEach(key => delete buffer[key]));
+    if (typeof _ccShareSeen !== 'undefined') Object.keys(_ccShareSeen).forEach(key => delete _ccShareSeen[key]);
+    if (dom.fccSummaryEarnings) dom.fccSummaryEarnings.textContent = '—';
+    _ccRenderFleet();
+  }
+
+  // Source availability is separate from the registered devices' health.
   async function fetchFleetCommandCenter() {
+    const generation = ++_ccFetchGeneration;
+    if (!_ccHasSnapshot) { _ccEvidenceState = 'loading'; _ccRenderFleet(); }
     try {
       const r = await authFetch('/api/axe-fleet/summary');
-      if (!r.ok) return;
+      if (generation !== _ccFetchGeneration) return;
+      if (!r.ok) {
+        if (r.status === 401 || r.status === 403) {
+          resetFleetSummaryEvidence();
+          _ccEvidenceState = 'restricted';
+          _ccRenderFleet();
+          return;
+        }
+        throw new Error('HTTP ' + r.status);
+      }
       const data = await r.json();
-      _ccLastFleet = (data && data.devices) || [];
+      if (generation !== _ccFetchGeneration) return;
+      if (!data || !Array.isArray(data.devices) || data.devices.some(device => !device || typeof device !== 'object' || Array.isArray(device) || typeof device.id !== 'string' || !device.id)) throw new Error('Invalid fleet summary');
+      _ccLastFleet = data.devices;
+      _ccHasSnapshot = true;
+      _ccEvidenceAt = Date.now();
+      _ccEvidenceState = 'ready';
       _ccRenderFleet();
-    } catch (e) { /* non-fatal */ }
+    } catch (e) {
+      if (generation !== _ccFetchGeneration) return;
+      _ccEvidenceState = _ccHasSnapshot ? 'cached' : 'error';
+      if (!_ccHasSnapshot) _ccRenderFleet();
+      _ccSourceStatus();
+    }
   }
 
   // View toggle (grid cards / dense table) — persisted per browser.
@@ -13024,13 +13776,21 @@ function renderAccount(acct) {
     const rows = buildCommandCenterRows(fleet);
     if (dom.lmWorkersCount) dom.lmWorkersCount.textContent = rows.length + (rows.length === 1 ? ' worker' : ' workers');
     if (dom.lmWorkersBadge) dom.lmWorkersBadge.textContent = rows.length + (rows.length === 1 ? ' worker' : ' workers');
-    if (dom.lmStatusBadge) dom.lmStatusBadge.textContent = rows.length ? 'LIVE' : 'IDLE';
+    _ccSourceStatus();
     if (dom.lmWorkers) dom.lmWorkers.style.display = rows.length ? 'block' : 'none';
     if (dom.lmFlow) dom.lmFlow.style.display = rows.length ? 'block' : 'none';
     if (!rows.length) {
-      if (dom.lmWorkersGrid) dom.lmWorkersGrid.innerHTML = '<div class="lm-workers__empty">no fleet workers registered — add miners in AXE FLEET (⚙) to see live per-worker telemetry here</div>';
+      if (dom.lmWorkersGrid) dom.lmWorkersGrid.innerHTML = '<div class="lm-workers__empty">' + (_ccHasSnapshot ? 'no fleet workers registered — add miners in AXE FLEET (⚙)' : _ccEvidenceState === 'loading' ? 'loading fleet summary…' : _ccEvidenceState === 'restricted' ? 'fleet summary requires access' : 'fleet summary unavailable — retry on the next refresh') + '</div>';
+      [dom.fccSummaryHr, dom.fccSummaryOnline, dom.fccSummaryWarn, dom.fccSummaryOffline, dom.fccSummaryTemp, dom.fccSummaryPower, dom.fccSummaryEff, dom.fccSummaryPing].forEach(el => { if (el) el.textContent = _ccHasSnapshot ? '0' : '—'; });
+      if (dom.fccSummaryTemp) dom.fccSummaryTemp.textContent = '—';
+      if (dom.fccSummaryEff) dom.fccSummaryEff.textContent = '—';
+      if (dom.fccSummaryPing) dom.fccSummaryPing.textContent = '—';
+      if (dom.fccSummaryHr && _ccHasSnapshot) dom.fccSummaryHr.textContent = fmt.hashrate(0);
+      if (dom.fccSummaryPower && _ccHasSnapshot) dom.fccSummaryPower.textContent = '0.00 kW';
+      if (dom.fccSummaryHrSpark) dom.fccSummaryHrSpark.innerHTML = '';
       if (dom.fccExceptions) { dom.fccExceptions.style.display = 'none'; dom.fccExceptions.innerHTML = ''; }
       if (dom.fccThermalGrid) dom.fccThermalGrid.innerHTML = '';
+      if (dom.lmFlowRaster) dom.lmFlowRaster.innerHTML = '';
       // Fleet emptied — drop lingering buffers/counters so a re-added device
       // with reset counters never produces a bogus first delta.
       Object.keys(_lmFlow).forEach(k => delete _lmFlow[k]);
@@ -13040,8 +13800,9 @@ function renderAccount(acct) {
 
     // KPI strip (fleet-fed).
     const k = _ccKpiAgg(fleet);
-    if (dom.fccSummaryHr) dom.fccSummaryHr.textContent = k.totalHr ? fmt.hashrate(k.totalHr) : '—';
-    _ccHrSeries.push(k.totalHr); if (_ccHrSeries.length > 40) _ccHrSeries.shift();
+    if (dom.fccSummaryHr) dom.fccSummaryHr.textContent = k.totalHr != null ? fmt.hashrate(k.totalHr) : '—';
+    if (k.totalHr != null) _ccHrSeries.push(k.totalHr);
+    if (_ccHrSeries.length > 40) _ccHrSeries.shift();
     if (dom.fccSummaryHrSpark) dom.fccSummaryHrSpark.innerHTML = _ccSvgSparkline(_ccHrSeries, cssVar('--brand'));
     const onlineN = fleet.filter(d => d.status === 'ONLINE' || d.status === 'HASHING').length;
     const warnN = fleet.filter(d => d.status === 'WARNING').length;
@@ -13050,7 +13811,7 @@ function renderAccount(acct) {
     if (dom.fccSummaryWarn) dom.fccSummaryWarn.textContent = String(warnN);
     if (dom.fccSummaryOffline) dom.fccSummaryOffline.textContent = String(offlineN);
     if (dom.fccSummaryTemp) dom.fccSummaryTemp.textContent = k.avgTemp != null ? k.avgTemp.toFixed(1) + '°C' : '—';
-    if (dom.fccSummaryPower) dom.fccSummaryPower.textContent = k.totalPowerW ? (k.totalPowerW / 1000).toFixed(2) + ' kW' : '—';
+    if (dom.fccSummaryPower) dom.fccSummaryPower.textContent = k.totalPowerW != null ? (k.totalPowerW / 1000).toFixed(2) + ' kW' : '—';
     if (dom.fccSummaryEff) dom.fccSummaryEff.textContent = k.avgEff != null ? k.avgEff.toFixed(1) + ' J/TH' : '—';
     if (dom.fccSummaryPing) {
       if (k.avgLatency != null) {
@@ -13338,19 +14099,53 @@ function renderAccount(acct) {
     } catch (e) { /* best-effort: the static checklist stays pending */ }
   }
 
+  let _axeFleetRequestGeneration = 0;
+  let _axeAgentSessionGeneration = 0;
+  var _resetAxeAgentPanel; // init runs in boot before this fragment is evaluated.
+
+  function resetAxeFleetEvidence() {
+    _axeFleetRequestGeneration++;
+    _operationalFleetData = null;
+    _operationalFleetReadAt = null;
+    _operationalFleetError = false;
+    if (dom.axeGrid) dom.axeGrid.textContent = 'Fleet source not loaded for this session';
+    ['axeFleetStatusBadge', 'axeFleetCountBadge', 'axeSummaryHr', 'axeSummaryOnline', 'axeSummaryWarning', 'axeSummaryOffline', 'axeSummaryHealth', 'axeSummaryTemp', 'axeSummaryPower', 'axeSummaryEff', 'axeSummaryBest'].forEach(key => {
+      if (dom[key]) countUpValue(dom[key], '—');
+    });
+    if (dom.axeFleetStatusBadge) dom.axeFleetStatusBadge.className = 'badge badge--mute';
+    if (typeof renderOperationalOverview === 'function') renderOperationalOverview(_lastSnapshot || {}, null, false);
+  }
+
   async function fetchAxeFleet() {
+    const generation = ++_axeFleetRequestGeneration;
     try {
       const r = await authFetch('/api/axe-fleet/health');
+      if (generation !== _axeFleetRequestGeneration) return;
+      if (r.status === 401 || r.status === 403) {
+        resetAxeFleetEvidence();
+        _operationalFleetError = true;
+        if (dom.axeFleetStatusBadge) dom.axeFleetStatusBadge.textContent = 'ACCESS REQUIRED';
+        if (dom.axeGrid) dom.axeGrid.textContent = 'Access required to read Fleet health';
+        renderOperationalOverview(_lastSnapshot || {}, null, true);
+        fetchFleetCommandCenter();
+        return;
+      }
       if (!r.ok) throw new Error('fleet health failed (' + r.status + ')');
       const data = await r.json();
+      if (generation !== _axeFleetRequestGeneration) return;
+      if (!data || !data.fleet_stats || typeof data.fleet_stats !== 'object' || Array.isArray(data.fleet_stats) ||
+          !Array.isArray(data.device_health) || data.device_health.some(device => !device || typeof device !== 'object' || Array.isArray(device) || typeof device.id !== 'string' || !device.id.trim())) {
+        throw new Error('fleet health schema unavailable');
+      }
       _operationalFleetData = data;
       _operationalFleetReadAt = Date.now() / 1000;
       _operationalFleetError = false;
       renderAxeFleet(data);
       renderOperationalOverview(_lastSnapshot || {}, data, false);
     } catch (e) {
+      if (generation !== _axeFleetRequestGeneration) return;
       _operationalFleetError = true;
-      if (dom.axeFleetStatusBadge) dom.axeFleetStatusBadge.textContent = 'ERROR';
+      if (dom.axeFleetStatusBadge) dom.axeFleetStatusBadge.textContent = _operationalFleetData ? 'CACHED · ERROR' : 'ERROR';
       renderOperationalOverview(_lastSnapshot || {}, _operationalFleetData, true);
     }
     // FLEET COMMAND CENTER rides the same poll/SSE cadence.
@@ -13629,31 +14424,39 @@ function renderAccount(acct) {
     const fleet = data.fleet_stats || {};
     const devices = data.device_health || [];
 
+    const count = value => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null;
+    const total = count(fleet.total_devices);
+    const online = count(fleet.online);
+    const warning = count(fleet.warning);
+    const offline = count(fleet.offline);
+    const countsKnown = [total, online, warning, offline].every(value => value !== null);
+
     // Summary stats
     if (dom.axeSummaryHr) dom.axeSummaryHr.textContent = fleet.total_hashrate_str || '—';
-    if (dom.axeSummaryOnline) countUpValue(dom.axeSummaryOnline, String(fleet.online || 0));
-    if (dom.axeSummaryWarning) countUpValue(dom.axeSummaryWarning, String(fleet.warning || 0));
-    if (dom.axeSummaryOffline) countUpValue(dom.axeSummaryOffline, String(fleet.offline || 0));
+    if (dom.axeSummaryOnline) countUpValue(dom.axeSummaryOnline, online === null ? '—' : String(online));
+    if (dom.axeSummaryWarning) countUpValue(dom.axeSummaryWarning, warning === null ? '—' : String(warning));
+    if (dom.axeSummaryOffline) countUpValue(dom.axeSummaryOffline, offline === null ? '—' : String(offline));
     if (dom.axeSummaryHealth) dom.axeSummaryHealth.textContent = fleet.avg_health_score != null ? Math.round(fleet.avg_health_score) + '/100' : '—';
     if (dom.axeSummaryTemp) dom.axeSummaryTemp.textContent = fleet.avg_temperature_c != null ? fleet.avg_temperature_c.toFixed(1) + '°C' : '—';
-    if (dom.axeSummaryPower) dom.axeSummaryPower.textContent = fleet.total_power_w ? fleet.total_power_w.toFixed(0) + 'W' : '—';
+    if (dom.axeSummaryPower) dom.axeSummaryPower.textContent = fleet.total_power_w != null ? fleet.total_power_w.toFixed(0) + 'W' : '—';
     if (dom.axeSummaryEff) dom.axeSummaryEff.textContent = fleet.efficiency_jth != null ? fleet.efficiency_jth.toFixed(1) + ' J/TH' : '—';
     if (dom.axeSummaryBest) dom.axeSummaryBest.textContent = fleet.best_diff ? fmt.diff(fleet.best_diff) : '—';
 
     // Count badge
-    const total = fleet.total_devices || 0;
-    if (dom.axeFleetCountBadge) dom.axeFleetCountBadge.textContent = total + ' device' + (total === 1 ? '' : 's');
+    if (dom.axeFleetCountBadge) dom.axeFleetCountBadge.textContent = total === null ? '— devices' : total + ' device' + (total === 1 ? '' : 's');
 
     // Status badge
     if (dom.axeFleetStatusBadge) {
-      if (total === 0) dom.axeFleetStatusBadge.textContent = 'NO DEVICES';
+      if (!countsKnown) dom.axeFleetStatusBadge.textContent = 'UNKNOWN';
+      else if (total === 0) dom.axeFleetStatusBadge.textContent = 'NO DEVICES';
       else if (fleet.offline === total) dom.axeFleetStatusBadge.textContent = 'ALL OFFLINE';
       else if (fleet.warning > 0) dom.axeFleetStatusBadge.textContent = fleet.warning + ' WARNING';
       else if (fleet.online === total) dom.axeFleetStatusBadge.textContent = 'ALL ONLINE';
       else dom.axeFleetStatusBadge.textContent = fleet.online + '/' + total + ' ONLINE';
       dom.axeFleetStatusBadge.className = 'badge';
-      if (fleet.offline === total) dom.axeFleetStatusBadge.classList.add('badge--red');
-      else if (fleet.warning > 0) dom.axeFleetStatusBadge.classList.add('badge--amber');
+      if (!countsKnown || total === 0) dom.axeFleetStatusBadge.classList.add('badge--mute');
+      else if (offline === total) dom.axeFleetStatusBadge.classList.add('badge--red');
+      else if (warning > 0) dom.axeFleetStatusBadge.classList.add('badge--amber');
       else dom.axeFleetStatusBadge.classList.add('badge--green');
     }
 
@@ -13983,41 +14786,90 @@ function renderAccount(acct) {
     '</div>';
   }
 
-  function openAxeDetail(deviceId) {
+  let _axeDetailChart = null;
+  let _axeDetailRequestGeneration = 0;
+  let _axeHistoryRequestGeneration = 0;
+  let _operationalEvidenceSession = null;
+
+  function _clearAxeHistory() {
+    _axeHistoryRequestGeneration++;
+    if (_axeDetailChart) { _axeDetailChart.destroy(); _axeDetailChart = null; }
+    const wrap = document.getElementById('axe-detail-chart-wrap');
+    const canvas = document.getElementById('axe-detail-chart');
+    const status = document.getElementById('axe-detail-chart-status');
+    const count = document.getElementById('axe-detail-chart-count');
+    if (wrap) { wrap.style.display = 'none'; wrap.setAttribute('aria-busy', 'false'); }
+    if (canvas) canvas.hidden = true;
+    if (status) status.textContent = '';
+    if (count) count.textContent = '—';
+  }
+
+  function resetAxeDetail() {
+    _axeDetailRequestGeneration++;
+    _clearAxeHistory();
+    if (dom.axeDetail) dom.axeDetail.style.display = 'none';
+    if (dom.axeDetailTitle) dom.axeDetailTitle.textContent = '';
+    if (dom.axeDetailBody) { dom.axeDetailBody.innerHTML = ''; dom.axeDetailBody.setAttribute('aria-busy', 'false'); }
+  }
+
+  function syncOperationalEvidenceSession(tenant, connected, force) {
+    const key = JSON.stringify([tenant || 'default', !!connected]);
+    if (_operationalEvidenceSession === key && !force) return;
+    _operationalEvidenceSession = key;
+    resetAxeDetail();
+    resetAxeFleetEvidence();
+    _axeAgentSessionGeneration++;
+    if (typeof _resetAxeAgentPanel === 'function') _resetAxeAgentPanel();
+    if (typeof resetFleetSummaryEvidence === 'function') resetFleetSummaryEvidence();
+    if (typeof resetAdminEvidence === 'function') resetAdminEvidence();
+    if (typeof resetWalletHistoryEvidence === 'function') resetWalletHistoryEvidence();
+    if (typeof resetAutomationEvidence === 'function') resetAutomationEvidence();
+  }
+
+  async function openAxeDetail(deviceId) {
     if (!dom.axeDetail || !dom.axeDetailTitle || !dom.axeDetailBody) return;
+    const generation = ++_axeDetailRequestGeneration;
+    _clearAxeHistory();
     dom.axeDetail.style.display = 'block';
     dom.axeDetailTitle.textContent = 'Loading device...';
-    dom.axeDetailBody.innerHTML = '<div class="axe-detail__loading">loading telemetry…</div>';
-
-    authFetch('/api/axe-fleet/devices/' + encodeURIComponent(deviceId))
-      .then(r => r.json())
-      .then(data => {
-        const dev = data.device || {};
-        const tel = data.latest_telemetry || {};
-        dom.axeDetailTitle.textContent = dev.name || 'Device';
-
+    dom.axeDetailBody.setAttribute('aria-busy', 'true');
+    dom.axeDetailBody.innerHTML = '<div class="axe-detail__loading operational-loading" role="status">loading telemetry…</div>';
+    try {
+      const response = await authFetch('/api/axe-fleet/devices/' + encodeURIComponent(deviceId));
+      if (generation !== _axeDetailRequestGeneration) return;
+      if (!response.ok) {
+        dom.axeDetailTitle.textContent = response.status === 401 || response.status === 403 ? 'Access required' : 'Device unavailable';
+        dom.axeDetailBody.textContent = (response.status === 401 || response.status === 403 ? 'Access required. ' : '') + 'Device telemetry request failed (HTTP ' + response.status + '). Reopen the device to retry.';
+        return;
+      }
+      const data = await response.json();
+      if (generation !== _axeDetailRequestGeneration) return;
+      if (!data || !data.device || typeof data.device !== 'object' || Array.isArray(data.device)) throw new Error('Invalid device response');
+      const dev = data.device;
+      const tel = data.latest_telemetry || {};
+      dom.axeDetailTitle.textContent = dev.name || 'Device';
         const items = [
           { lbl: 'Model', val: dev.model || 'unknown' },
           { lbl: 'Firmware', val: (dev.firmware || '') + ' ' + (dev.firmware_version || '') },
           { lbl: 'IP Address', val: dev.ip_address || '—' },
-          { lbl: 'Status', val: dev.status || 'OFFLINE', cls: dev.status === 'ONLINE' ? 'green' : 'red' },
-          { lbl: 'Hashrate', val: fmt.hashrate(tel.hashrate_hs || 0) },
+          { lbl: 'Status', val: dev.status || 'UNKNOWN', cls: dev.status === 'ONLINE' ? 'green' : 'red' },
+          { lbl: 'Hashrate', val: fmt.num(tel.hashrate_hs) ? fmt.hashrate(tel.hashrate_hs) : '—' },
           { lbl: 'Hashrate 1m', val: fmt.num(tel.hashrate_1m) ? fmt.hashrate(tel.hashrate_1m) : 'NOT AVAILABLE' },
           { lbl: 'Hashrate 10m', val: fmt.num(tel.hashrate_10m) ? fmt.hashrate(tel.hashrate_10m) : 'NOT AVAILABLE' },
           { lbl: 'Hashrate 1h', val: fmt.num(tel.hashrate_1h) ? fmt.hashrate(tel.hashrate_1h) : 'NOT AVAILABLE' },
           { lbl: 'Chip Temp', val: fmt.num(tel.chip_temp) ? tel.chip_temp + '°C' : (fmt.num(tel.temp_asic) ? tel.temp_asic + '°C' : 'NOT AVAILABLE'), cls: fmt.num(tel.chip_temp) && tel.chip_temp > 70 ? 'red' : 'green' },
           { lbl: 'VR Temp', val: fmt.num(tel.vr_temp) ? tel.vr_temp + '°C' : (fmt.num(tel.temp_vreg) ? tel.temp_vreg + '°C' : 'NOT AVAILABLE') },
           { lbl: 'Temperature', val: fmt.num(tel.temperature) ? tel.temperature + '°C' : '—', cls: fmt.num(tel.temperature) && tel.temperature > 70 ? 'red' : 'green' },
-          { lbl: 'Power', val: tel.power_watts ? tel.power_watts + ' W' : '—' },
-          { lbl: 'Frequency', val: tel.frequency_mhz ? tel.frequency_mhz + ' MHz' : '—' },
-          { lbl: 'Voltage', val: tel.voltage_mv ? tel.voltage_mv + ' mV' : '—' },
-          { lbl: 'Best Diff', val: tel.best_diff ? fmt.diff(tel.best_diff) : '—', cls: 'gold' },
+          { lbl: 'Power', val: fmt.num(tel.power_watts) ? tel.power_watts + ' W' : '—' },
+          { lbl: 'Frequency', val: fmt.num(tel.frequency_mhz) ? tel.frequency_mhz + ' MHz' : '—' },
+          { lbl: 'Voltage', val: fmt.num(tel.voltage_mv) ? tel.voltage_mv + ' mV' : '—' },
+          { lbl: 'Best Diff', val: fmt.num(tel.best_diff) ? fmt.diff(tel.best_diff) : '—', cls: 'gold' },
           { lbl: 'Shares Accepted', val: tel.shares_accepted != null ? tel.shares_accepted.toLocaleString() : '—' },
           { lbl: 'Shares Rejected', val: tel.shares_rejected != null ? tel.shares_rejected.toLocaleString() : '—' },
           { lbl: 'HW Error %', val: fmt.num(tel.hw_error_pct) ? tel.hw_error_pct.toFixed(2) + '%' : '—', cls: fmt.num(tel.hw_error_pct) && tel.hw_error_pct > 1 ? 'red' : 'green' },
           { lbl: 'Efficiency', val: fmt.num(tel.efficiency_jth) ? tel.efficiency_jth.toFixed(1) + ' J/TH' : '—' },
           { lbl: 'Uptime', val: tel.uptime_str || '—' },
-          { lbl: 'Free Heap', val: tel.free_heap ? tel.free_heap.toLocaleString() + ' B' : '—' },
+          { lbl: 'Free Heap', val: fmt.num(tel.free_heap) ? tel.free_heap.toLocaleString() + ' B' : '—' },
           { lbl: 'WiFi RSSI', val: tel.wifi_rssi != null ? tel.wifi_rssi + ' dBm' : '—' },
           { lbl: 'Last Seen', val: dev.last_seen ? fmt.age(dev.last_seen) : '—' },
         ];
@@ -14026,71 +14878,93 @@ function renderAccount(acct) {
           '<div class="axe-detail__item"><div class="lbl">' + escapeHtml(it.lbl) + '</div><div class="val' + (it.cls ? ' ' + escapeHtml(it.cls) : '') + '">' + escapeHtml(String(it.val)) + '</div></div>'
         ).join('');
 
-        // Phase C: load telemetry history chart
-        loadDeviceHistoryChart(deviceId);
-      })
-      .catch(() => {
-        dom.axeDetailBody.innerHTML = '<div class="axe-detail__loading">error loading device telemetry</div>';
-      });
+      await loadDeviceHistoryChart(deviceId, generation);
+    } catch (e) {
+      if (generation !== _axeDetailRequestGeneration) return;
+      dom.axeDetailTitle.textContent = 'Device unavailable';
+      dom.axeDetailBody.textContent = 'Error loading device telemetry. Reopen the device to retry.';
+    } finally {
+      if (generation === _axeDetailRequestGeneration) dom.axeDetailBody.setAttribute('aria-busy', 'false');
+    }
   }
 
-  // ── Phase C: Device History Chart ─────────────────────────────────────
-  let _axeDetailChart = null;
-
-  async function loadDeviceHistoryChart(deviceId) {
+  // One owner for the selected device and its asynchronous history response.
+  async function loadDeviceHistoryChart(deviceId, detailGeneration = _axeDetailRequestGeneration) {
+    _clearAxeHistory();
+    const generation = _axeHistoryRequestGeneration;
+    const current = () => generation === _axeHistoryRequestGeneration && detailGeneration === _axeDetailRequestGeneration;
     const wrap = document.getElementById('axe-detail-chart-wrap');
     const canvas = document.getElementById('axe-detail-chart');
     const countBadge = document.getElementById('axe-detail-chart-count');
-    if (!wrap || !canvas || typeof Chart === 'undefined') return;  // Issue #186: defer-safe
-
-    // Destroy previous chart instance so Chart.js doesn't complain.
-    if (_axeDetailChart) { _axeDetailChart.destroy(); _axeDetailChart = null; }
-
-    try {
-      const r = await authFetch('/api/axe-fleet/devices/' + encodeURIComponent(deviceId) + '/history?limit=120');
-      if (!r.ok) return;
-      const data = await r.json();
-      const rows = data.history || [];
-      if (rows.length < 2) return;  // need at least 2 points for a line
-
+    const status = document.getElementById('axe-detail-chart-status');
+    if (!wrap || !canvas) return;
+    const showState = (label, message) => {
       wrap.style.display = 'block';
-      if (countBadge) countBadge.textContent = rows.length + ' points';
-
-      var labels = rows.map(function(r) {
-        var d = new Date(r.ts * 1000);
-        return d.getHours().toString().padStart(2, '0') + ':' + d.getMinutes().toString().padStart(2, '0');
-      });
-
-      var hrVals = rows.map(function(r) { return r.hashrate ? r.hashrate / 1e12 : null; });
-      var tempVals = rows.map(function(r) { return r.temperature; });
-      var effVals = rows.map(function(r) { return r.efficiency_jth; });
-
+      wrap.setAttribute('aria-busy', label === 'loading' ? 'true' : 'false');
+      if (countBadge) countBadge.textContent = label;
+      if (status) status.textContent = message;
+      canvas.hidden = true;
+    };
+    showState('loading', 'Loading retained telemetry…');
+    if (typeof Chart === 'undefined') { showState('unavailable', 'Chart renderer unavailable.'); return; }
+    try {
+      const response = await authFetch('/api/axe-fleet/devices/' + encodeURIComponent(deviceId) + '/history?limit=120');
+      if (!current()) return;
+      if (!response.ok) {
+        showState(response.status === 401 || response.status === 403 ? 'access required' : 'error', 'Telemetry history unavailable (HTTP ' + response.status + '). Reopen the device to retry.');
+        return;
+      }
+      const data = await response.json();
+      if (!current()) return;
+      if (!data || !Array.isArray(data.history)) throw new Error('Invalid telemetry history');
+      const rows = data.history.filter(row => row && fmt.num(row.ts) && row.ts > 0 && Number.isFinite(new Date(row.ts * 1000).getTime()));
+      if (!rows.length) {
+        showState(data.history.length ? 'unknown' : 'empty', data.history.length ? 'Retained samples have no usable timestamps; observation times are unknown.' : 'No retained telemetry samples for this device.');
+        return;
+      }
+      if (!rows.some(row => fmt.num(row.hashrate) || fmt.num(row.temperature) || fmt.num(row.efficiency_jth))) {
+        showState('unknown', 'Retained samples have no numeric measurements for these series.');
+        return;
+      }
+      const numeric = value => fmt.num(value) ? value : null;
+      const radius = field => {
+        const present = rows.map(row => numeric(row[field]) != null);
+        if (present.filter(Boolean).length === 1) return 3;
+        return present.map((value, i) => value && !present[i - 1] && !present[i + 1] ? 3 : 0);
+      };
+      const reducedMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+      const labels = rows.map(row => new Date(row.ts * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
+      wrap.style.display = 'block';
+      wrap.setAttribute('aria-busy', 'false');
+      canvas.hidden = false;
+      if (countBadge) countBadge.textContent = rows.length + (rows.length === 1 ? ' point' : ' points');
+      if (status) status.textContent = 'Source: retained device telemetry · up to 120 samples · received ' + new Date().toLocaleTimeString();
       _axeDetailChart = new Chart(canvas.getContext('2d'), {
         type: 'line',
         data: {
           labels: labels,
           datasets: [
-            { label: 'Hashrate TH/s', data: hrVals, borderColor: 'rgb(6,214,240)', backgroundColor: 'rgba(6,214,240,0.06)', tension: 0.3, pointRadius: 0, fill: true, yAxisID: 'y' },
-            { label: 'Temp °C', data: tempVals, borderColor: 'rgb(255,160,0)', backgroundColor: 'rgba(255,160,0,0.04)', tension: 0.3, pointRadius: 0, borderDash: [4, 2], yAxisID: 'y1' },
-            { label: 'Eff J/TH', data: effVals, borderColor: 'rgb(186,133,224)', backgroundColor: 'transparent', tension: 0.3, pointRadius: 0, borderDash: [2, 3], yAxisID: 'y1' },
-          ]
+            { label: 'Hashrate TH/s', data: rows.map(row => numeric(row.hashrate) == null ? null : row.hashrate / 1e12), borderColor: 'rgb(6,214,240)', backgroundColor: 'rgba(6,214,240,0.06)', tension: 0.3, pointRadius: radius('hashrate'), fill: true, yAxisID: 'y' },
+            { label: 'Temp °C', data: rows.map(row => numeric(row.temperature)), borderColor: 'rgb(255,160,0)', backgroundColor: 'transparent', tension: 0.3, pointRadius: radius('temperature'), borderDash: [4, 2], yAxisID: 'y1' },
+            { label: 'Eff J/TH', data: rows.map(row => numeric(row.efficiency_jth)), borderColor: 'rgb(186,133,224)', backgroundColor: 'transparent', tension: 0.3, pointRadius: radius('efficiency_jth'), borderDash: [2, 3], yAxisID: 'y2' },
+          ],
         },
         options: {
           responsive: true,
           maintainAspectRatio: false,
+          animation: reducedMotion ? false : { duration: 180 },
           interaction: { mode: 'index', intersect: false },
           scales: {
             x: { ticks: { color: cssVar('--text-tertiary'), maxTicksLimit: 10, font: { size: 9 } }, grid: { color: 'rgba(94,89,82,0.12)' } },
             y: { type: 'linear', position: 'left', title: { display: true, text: 'TH/s', color: 'rgb(6,214,240)' }, ticks: { color: cssVar('--text-tertiary'), font: { size: 9 } }, grid: { color: 'rgba(94,89,82,0.10)' } },
-            y1: { type: 'linear', position: 'right', title: { display: true, text: '°C / J/TH', color: 'rgb(255,160,0)' }, ticks: { color: cssVar('--text-tertiary'), font: { size: 9 } }, grid: { display: false } }
+            y1: { type: 'linear', position: 'right', title: { display: true, text: '°C', color: 'rgb(255,160,0)' }, ticks: { color: cssVar('--text-tertiary'), font: { size: 9 } }, grid: { display: false } },
+            y2: { type: 'linear', position: 'right', title: { display: true, text: 'J/TH', color: 'rgb(186,133,224)' }, ticks: { color: cssVar('--text-tertiary'), font: { size: 9 } }, grid: { display: false } },
           },
-          plugins: {
-            legend: { labels: { color: cssVar('--text-secondary'), font: { size: 9 }, usePointStyle: true, padding: 12 } }
-          }
-        }
+          plugins: { legend: { labels: { color: cssVar('--text-secondary'), font: { size: 9 }, usePointStyle: true, padding: 12 } } },
+        },
       });
     } catch (e) {
-      // Non-fatal: chart is a nice-to-have, detail panel still works.
+      if (current()) showState('error', 'Error loading telemetry history. Reopen the device to retry.');
     }
   }
 
@@ -14483,7 +15357,7 @@ function renderAccount(acct) {
     // Device detail close
     if (dom.axeDetailClose) {
       dom.axeDetailClose.addEventListener('click', () => {
-        if (dom.axeDetail) dom.axeDetail.style.display = 'none';
+        resetAxeDetail();
       });
     }
 
@@ -14812,10 +15686,13 @@ function renderAccount(acct) {
     };
 
     document.getElementById('axe-agent-gen')?.addEventListener('click', async () => {
+      const generation = _axeAgentSessionGeneration;
       setStatus('> minting token...');
       try {
         const r = await authFetch('/api/agent/token', { method: 'POST' });
+        if (generation !== _axeAgentSessionGeneration) return;
         const data = await r.json();
+        if (generation !== _axeAgentSessionGeneration) return;
         if (!r.ok || !data.token) {
           setStatus('✗ ' + (data.error || 'token mint failed (HTTP ' + r.status + ')'), 'var(--accent-red)');
           return;
@@ -14829,6 +15706,7 @@ function renderAccount(acct) {
         setRevokePhase('idle');
         setStatus('✓ token issued · tenant ' + (data.tenant_id || ''), 'var(--accent-green)');
       } catch (e) {
+        if (generation !== _axeAgentSessionGeneration) return;
         setStatus('✗ network error', 'var(--accent-red)');
       }
     });
@@ -14871,12 +15749,24 @@ function renderAccount(acct) {
       renderRevoke();
     };
 
+    _resetAxeAgentPanel = () => {
+      panel.style.display = 'none';
+      if (tokenArea) tokenArea.value = '';
+      if (tokenRow) tokenRow.style.display = 'none';
+      if (dockerPre) dockerPre.textContent = '';
+      if (oneLinerPre) oneLinerPre.textContent = '';
+      if (revokeRoot) revokeRoot.dataset.inflight = '0';
+      setRevokePhase('idle');
+      setStatus('');
+    };
+
     revokeTrigger?.addEventListener('click', () => setRevokePhase('confirm'));
     revokeCancel?.addEventListener('click', () => {
       setRevokePhase('idle');
       setStatus('');
     });
     revokeDo?.addEventListener('click', async () => {
+      const generation = _axeAgentSessionGeneration;
       if (revokeState.phase === 'working') return; // nada de disparo duplo local
       // Caminho DESTRUTIVO: a guarda acima só cobre o estado deste closure. Se o
       // painel for inicializado duas vezes (já aconteceu de verdade — a linha
@@ -14888,7 +15778,9 @@ function renderAccount(acct) {
       setRevokePhase('working');
       try {
         const r = await authFetch('/api/agent/tokens/revoke', { method: 'POST' });
+        if (generation !== _axeAgentSessionGeneration) return;
         const data = await r.json().catch(() => ({}));
+        if (generation !== _axeAgentSessionGeneration) return;
         if (!r.ok || !data.success) {
           setRevokePhase('error', {
             reason: data.detail || data.error || ('HTTP ' + r.status),
@@ -14900,10 +15792,11 @@ function renderAccount(acct) {
         setRevokePhase('done', { from: data.revoked_epoch, to: data.active_epoch });
         setStatus('✓ tokens revogados — gere um token novo', 'var(--accent-green)');
       } catch (e) {
+        if (generation !== _axeAgentSessionGeneration) return;
         setRevokePhase('error', { reason: 'network error' });
         setStatus('✗ network error', 'var(--accent-red)');
       } finally {
-        if (revokeRoot) revokeRoot.dataset.inflight = '0';
+        if (generation === _axeAgentSessionGeneration && revokeRoot) revokeRoot.dataset.inflight = '0';
       }
     });
     document.getElementById('axe-agent-copy-token')?.addEventListener('click', () => {

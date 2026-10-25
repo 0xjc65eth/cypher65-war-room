@@ -24,6 +24,7 @@ These tests pin the fail-closed rules added in #569:
 
 import pytest
 import requests
+import time
 
 import app as _app_module
 
@@ -598,14 +599,25 @@ class TestAgentProtocolEvidence:
             lambda ip, cmd: sent.append(cmd) or {"STATUS": [{"STATUS": "S"}]},
         )
         known = {"10.0.0.5": {"type": "braiins"}}
+        # Discovery currently lacks a Braiins MAC contract; this fixture only
+        # checks dispatch after an explicit, fresh identity has been observed.
+        monkeypatch.setattr(agent, "_probe_host", lambda ip: {
+            "ip": ip, "type": "braiins", "mac": "02:00:00:00:05:01"
+        })
+        envelope = {
+            "id": "fixture-842", "device_id": "fixture-device-842",
+            "command_protocol": 1, "expected_type": "braiins",
+            "expires_at": int(time.time()) + 300,
+            "expected_mac": "02:00:00:00:05:01", "ip_address": "10.0.0.5",
+        }
 
         ok, _ = agent._exec_command(
-            {"ip_address": "10.0.0.5", "command": "restart"}, known
+            {**envelope, "command": "restart"}, known
         )
         assert ok is True
 
         ok, _ = agent._exec_command(
-            {"ip_address": "10.0.0.5", "command": "identify"}, known
+            {**envelope, "command": "identify"}, known
         )
         assert ok is True
 
@@ -618,7 +630,13 @@ class TestAgentProtocolEvidence:
         known = {"10.0.0.5": {"type": "braiins"}}
 
         ok, message = agent._exec_command(
-            {"ip_address": "10.0.0.5", "command": "pause"}, known
+            {
+                "id": "fixture-842", "device_id": "fixture-device-842",
+                "ip_address": "10.0.0.5", "command": "pause",
+                "command_protocol": 1, "expected_type": "braiins",
+                "expires_at": int(time.time()) + 300,
+                "expected_mac": "02:00:00:00:05:01",
+            }, known
         )
 
         assert ok is False

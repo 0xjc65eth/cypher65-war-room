@@ -9,12 +9,14 @@ drop below 7d peak, hot fleet device, automation rule ready to fire).
 Hermetic: no network, no DB, no app import needed (same ethos as
 test_decision_matrix.py).
 """
+
 import time
 from pathlib import Path
 
 import pytest
 
 from helpers import build_command_center, CC_MAX_ACTIONS
+from services.snapshot_enrichment import build_operations_overview
 
 
 def test_initial_dashboard_uses_unknown_counts_and_operational_heading():
@@ -45,6 +47,90 @@ def _base_snapshot(**overrides):
     return snap
 
 
+class TestOperationsOverviewEvidence:
+    def test_missing_inputs_are_explicit_and_do_not_invent_signals(self):
+        overview = build_operations_overview({}, now=2000)
+        assert overview["status"] == "missing"
+        assert [item["id"] for item in overview["domains"]] == [
+            "mining",
+            "fleet",
+            "pool",
+            "data",
+            "economics",
+        ]
+        assert all(item["status"] == "missing" for item in overview["domains"])
+        assert overview["anomalies"] == []
+        assert overview["explanations"] == []
+        assert overview["economic_impact"] is None
+
+    def test_stale_source_is_labeled_with_source_age_and_window(self):
+        overview = build_operations_overview(
+            {"ts": 1000, "pool": {"hashrate": 0}}, now=1200
+        )
+        pool = next(item for item in overview["domains"] if item["id"] == "pool")
+        assert pool["status"] == "stale"
+        evidence = pool["signals"][0]
+        assert evidence["value"] == 0
+        assert evidence["source"] == "snapshot.pool.hashrate"
+        assert evidence["age_seconds"] == 200
+        assert evidence["window"]
+
+    def test_partial_coverage_does_not_label_missing_data_as_zero(self):
+        overview = build_operations_overview(
+            {
+                "ts": 1990,
+                "network": {"height": 840000, "hashrate": 1e20},
+                "market_data": {"updated_at": 1995},
+            },
+            now=2000,
+        )
+        data = next(item for item in overview["domains"] if item["id"] == "data")
+        assert data["status"] == "partial"
+        assert data["missing_signals"] == ["network_difficulty", "btc_usd"]
+        assert all(signal["value"] is not None for signal in data["signals"])
+
+    def test_fleet_missing_timestamps_is_partial_and_never_stated_as_live(self):
+        overview = build_operations_overview(
+            {
+                "ts": 1990,
+                "axe_fleet": [{"device_id": "mine-a", "hashrate_hs": 12}],
+                "profitability": {"cost_model_configured": False},
+            },
+            now=2000,
+        )
+        fleet = next(item for item in overview["domains"] if item["id"] == "fleet")
+        assert fleet["status"] == "partial"
+        assert "fresh_device_timestamps" in fleet["missing_signals"]
+        assert all(signal["age_seconds"] is None for signal in fleet["signals"])
+
+    def test_stale_flag_is_preserved_even_when_signal_value_is_missing(self):
+        overview = build_operations_overview(
+            {"ts": 1990, "pool": {"_stale": True}}, now=2000
+        )
+        pool = next(item for item in overview["domains"] if item["id"] == "pool")
+        assert pool["status"] == "stale"
+        assert pool["signals"] == []
+        assert pool["missing_signals"] == ["pool_hashrate"]
+
+    def test_explicit_fleet_status_is_a_grounded_anomaly_without_cause(self):
+        overview = build_operations_overview(
+            {
+                "ts": 1990,
+                "axe_fleet": [
+                    {"status": "OFFLINE", "hashrate_hs": 0, "ts": 1700},
+                    {"status": "ONLINE", "hashrate_hs": 10, "ts": 1990},
+                ],
+            },
+            now=2000,
+        )
+        assert overview["anomalies"][0]["status"] == "OFFLINE"
+        assert overview["anomalies"][0]["count"] == 1
+        # A newer ONLINE sample must not make the older OFFLINE evidence look fresh.
+        assert overview["anomalies"][0]["age_seconds"] == 300
+        assert overview["explanations"] == []
+        assert overview["metric_status"]["explanations"] == "not_established"
+
+
 class TestNoActions:
     def test_healthy_snapshot_returns_empty(self):
         cards = build_command_center(_base_snapshot())
@@ -55,14 +141,21 @@ class TestNoActions:
         assert build_command_center({}) == []
 
     def test_garbage_snapshot_never_raises(self):
-        assert build_command_center({"worker": 123, "axe_fleet": "junk", "proximity": None}) == []
+        assert (
+            build_command_center(
+                {"worker": 123, "axe_fleet": "junk", "proximity": None}
+            )
+            == []
+        )
         assert build_command_center("nope") == []
 
 
 class TestWorkerOffline:
     def test_missing_worker_fires_crit(self):
         cards = build_command_center(_base_snapshot(worker=None))
-        assert any(c["id"] == "worker_offline" and c["severity"] == "crit" for c in cards)
+        assert any(
+            c["id"] == "worker_offline" and c["severity"] == "crit" for c in cards
+        )
 
     def test_worker_offline_ranked_first(self):
         # Offline worker is CRIT — must come before any info card.
@@ -197,7 +290,9 @@ class TestRankingAndCap:
                 "decision_matrix": {"best_option": "lease"},
                 "pool_net_usd_per_day": -1.0,
             },
-            market_data={"affiliate": {"provider": "mrr", "url": "https://mrr.example/ref"}},
+            market_data={
+                "affiliate": {"provider": "mrr", "url": "https://mrr.example/ref"}
+            },
         )
         cards = build_command_center(snap)
         assert len(cards) <= CC_MAX_ACTIONS
@@ -215,7 +310,7 @@ class TestRankingAndCap:
     def test_gold_before_warn(self):
         snap = _base_snapshot(
             axe_fleet=[{"status": "OFFLINE"}],  # warn
-            proximity={"hot_streak": True},      # gold
+            proximity={"hot_streak": True},  # gold
         )
         cards = build_command_center(snap)
         severities = [c["severity"] for c in cards]
@@ -224,7 +319,16 @@ class TestRankingAndCap:
     def test_card_shape_contract(self):
         snap = _base_snapshot(worker=None)
         card = build_command_center(snap)[0]
-        for key in ("id", "severity", "title", "message", "action", "target", "panel", "url"):
+        for key in (
+            "id",
+            "severity",
+            "title",
+            "message",
+            "action",
+            "target",
+            "panel",
+            "url",
+        ):
             assert key in card, f"missing card field: {key}"
 
 
@@ -235,19 +339,25 @@ class TestSnapshotInjection:
     @pytest.fixture
     def client(self):
         import app as _app_module
+
         _app_module.app.config["TESTING"] = True
         yield _app_module.app.test_client()
 
     def test_snapshot_injects_command_center(self, client, monkeypatch):
         import app as _app_module
         import services.state as _state
+
         # Fase 6 · PR2: /api/snapshot served by dashboard_bp → reads services.state
         monkeypatch.setattr(
             "services.state.latest_snapshot",
             {
                 "ts": int(time.time()),
                 "network": {"hashrate": 6e20, "difficulty": 8e13, "height": 840000},
-                "worker": {"hashrate": 1.5e14, "bestDifficulty": "45.2T", "name": "cypher65"},
+                "worker": {
+                    "hashrate": 1.5e14,
+                    "bestDifficulty": "45.2T",
+                    "name": "cypher65",
+                },
                 "proximity": {"hot_streak": False, "milestone_cur_pct": 0.5},
                 "profitability": {"decision_matrix": {"best_option": "pool"}},
             },
@@ -256,12 +366,29 @@ class TestSnapshotInjection:
         # No external HTTP: stub the fetch; feed the REAL build_highlights
         # path via last_known_prices so attach_affiliate runs for real
         # (the code path that resolves market_data.affiliate from offers).
-        monkeypatch.setattr("services.snapshot_enrichment._get_hashrate_market_offers", lambda s: [], raising=False)
+        monkeypatch.setattr(
+            "services.snapshot_enrichment._get_hashrate_market_offers",
+            lambda s: [],
+            raising=False,
+        )
         _state.last_known_prices = {
-            "braiins": {"price": 0.0001, "ts": int(time.time()), "source": "braiins", "label": "Braiins"},
-            "mrr": {"price": 0.0004, "ts": int(time.time()), "source": "mrr", "label": "MRR"},
+            "braiins": {
+                "price": 0.0001,
+                "ts": int(time.time()),
+                "source": "braiins",
+                "label": "Braiins",
+            },
+            "mrr": {
+                "price": 0.0004,
+                "ts": int(time.time()),
+                "source": "mrr",
+                "label": "MRR",
+            },
         }
-        monkeypatch.setattr("services.snapshot_enrichment.affiliate_map_from_env", lambda: {"mrr": "https://mrr.example/ref"})
+        monkeypatch.setattr(
+            "services.snapshot_enrichment.affiliate_map_from_env",
+            lambda: {"mrr": "https://mrr.example/ref"},
+        )
 
         response = client.get("/api/snapshot")
         assert response.status_code == 200
@@ -277,6 +404,7 @@ class TestSnapshotInjection:
         """A snapshot with ts>0 and no worker must produce the crit card
         (real offline condition, not a cold boot)."""
         import app as _app_module
+
         monkeypatch.setattr(
             "services.state.latest_snapshot",
             {
@@ -286,8 +414,16 @@ class TestSnapshotInjection:
             },
             raising=False,
         )
-        monkeypatch.setattr("services.snapshot_enrichment._get_hashrate_market_offers", lambda s: [], raising=False)
-        monkeypatch.setattr("services.hashrate_market.build_highlights", lambda *a, **k: [], raising=False)
+        monkeypatch.setattr(
+            "services.snapshot_enrichment._get_hashrate_market_offers",
+            lambda s: [],
+            raising=False,
+        )
+        monkeypatch.setattr(
+            "services.hashrate_market.build_highlights",
+            lambda *a, **k: [],
+            raising=False,
+        )
 
         response = client.get("/api/snapshot")
         assert response.status_code == 200
@@ -298,6 +434,7 @@ class TestSnapshotInjection:
         """Cold boot (ts == 0, worker None) must NOT fire worker_offline —
         no wallet connected yet is not an anomaly (honest telemetry)."""
         import app as _app_module
+
         monkeypatch.setattr(
             "services.state.latest_snapshot",
             {
@@ -310,8 +447,16 @@ class TestSnapshotInjection:
             },
             raising=False,
         )
-        monkeypatch.setattr("services.snapshot_enrichment._get_hashrate_market_offers", lambda s: [], raising=False)
-        monkeypatch.setattr("services.hashrate_market.build_highlights", lambda *a, **k: [], raising=False)
+        monkeypatch.setattr(
+            "services.snapshot_enrichment._get_hashrate_market_offers",
+            lambda s: [],
+            raising=False,
+        )
+        monkeypatch.setattr(
+            "services.hashrate_market.build_highlights",
+            lambda *a, **k: [],
+            raising=False,
+        )
 
         response = client.get("/api/snapshot")
         assert response.status_code == 200
@@ -323,19 +468,32 @@ class TestSnapshotInjection:
         the advisory context (peak hashrate 7d + automation preview) BEFORE
         command_center, so the hashrate_drop / automation_ready rules see it."""
         import app as _app_module
+
         monkeypatch.setattr(
             "services.state.latest_snapshot",
             {
                 "ts": int(time.time()),
                 "network": {"hashrate": 6e20, "difficulty": 8e13, "height": 840000},
-                "worker": {"hashrate": 1e12, "bestDifficulty": "45.2T", "name": "cypher65"},
+                "worker": {
+                    "hashrate": 1e12,
+                    "bestDifficulty": "45.2T",
+                    "name": "cypher65",
+                },
                 "proximity": {"hot_streak": False, "milestone_cur_pct": 0.5},
                 "profitability": {"decision_matrix": {"best_option": "pool"}},
             },
             raising=False,
         )
-        monkeypatch.setattr("services.snapshot_enrichment._get_hashrate_market_offers", lambda s: [], raising=False)
-        monkeypatch.setattr("services.hashrate_market.build_highlights", lambda *a, **k: [], raising=False)
+        monkeypatch.setattr(
+            "services.snapshot_enrichment._get_hashrate_market_offers",
+            lambda s: [],
+            raising=False,
+        )
+        monkeypatch.setattr(
+            "services.hashrate_market.build_highlights",
+            lambda *a, **k: [],
+            raising=False,
+        )
         # A high 7d peak + low current hashrate must produce hashrate_drop.
         monkeypatch.setattr(
             "services.snapshot_enrichment.build_auto_pilot_context",
@@ -385,6 +543,7 @@ class TestBuildAutoPilotContext:
         no sqlite conn leak per snapshot poll (review finding #1)."""
         import services.snapshot_enrichment as sre
         import services.db  # trigger submodule import for monkeypatch
+
         closed = []
 
         class _BrokenConn:
@@ -405,6 +564,7 @@ class TestBuildAutoPilotContext:
         never unscoped ('' would leak every tenant's rule names into the
         advisory card; review finding #2)."""
         import services.snapshot_enrichment as sre
+
         seen = {}
 
         class _FakeEngine:
@@ -428,6 +588,7 @@ class TestBuildAutoPilotContext:
 
         import services.db as _sdb
         import services.tenant as _st
+
         monkeypatch.setattr(_sdb, "get_db", lambda: _EmptyConn())
         # Fase 6: inject the fake engine (and no devices) the way app.py does
         # via set_auto_pilot_deps — the snapshot path now uses the injected
@@ -445,6 +606,7 @@ class TestBuildAutoPilotContext:
         'default' tenant — NOT fall back to '' (unscoped = cross-tenant
         leak)."""
         import services.snapshot_enrichment as sre
+
         seen = {}
 
         class _FakeEngine:
@@ -471,6 +633,7 @@ class TestBuildAutoPilotContext:
 
         import services.db as _sdb
         import services.tenant as _st
+
         monkeypatch.setattr(_sdb, "get_db", lambda: _EmptyConn())
         monkeypatch.setattr(sre, "_auto_pilot_engine", _FakeEngine(), raising=False)
         monkeypatch.setattr(sre, "_auto_pilot_registry", None, raising=False)
@@ -552,8 +715,12 @@ class TestAutoPilotTempHigh:
         assert all(c["id"] != "temp_high" for c in cards)
 
     def test_first_hot_device_wins_title(self):
-        snap = _base_snapshot(axe_fleet=[{"name": "hot-1", "temperature": 90},
-                                         {"name": "hot-2", "temperature": 95}])
+        snap = _base_snapshot(
+            axe_fleet=[
+                {"name": "hot-1", "temperature": 90},
+                {"name": "hot-2", "temperature": 95},
+            ]
+        )
         cards = build_command_center(snap)
         hot = [c for c in cards if c["id"] == "temp_high"]
         assert len(hot) == 1
@@ -565,13 +732,17 @@ class TestAutoPilotAutomationReady:
     (read-only preview from AutomationEngine.preview_rules, no execution)."""
 
     def test_preview_present_fires_info(self):
-        snap = _base_snapshot(auto_pilot={
-            "automation_preview": [{
-                "rule_name": "cool-down",
-                "device_id": "dev-1",
-                "action_command": "underclock",
-            }],
-        })
+        snap = _base_snapshot(
+            auto_pilot={
+                "automation_preview": [
+                    {
+                        "rule_name": "cool-down",
+                        "device_id": "dev-1",
+                        "action_command": "underclock",
+                    }
+                ],
+            }
+        )
         cards = build_command_center(snap)
         ready = [c for c in cards if c["id"] == "automation_ready"]
         assert len(ready) == 1

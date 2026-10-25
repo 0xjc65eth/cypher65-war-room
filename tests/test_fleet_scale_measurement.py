@@ -12,6 +12,7 @@ import os
 import socket
 import sqlite3
 import subprocess
+import sys
 import time
 import tracemalloc
 import urllib.request
@@ -384,25 +385,41 @@ def test_cli_real_worker_json_and_exclusive_artifact(tmp_path, capsys):
 
 
 def test_worker_cli_and_argument_errors(capsys):
-    assert (
-        measurement.main(
-            [
-                "--worker",
-                "--devices",
-                "100",
-                "--modes",
-                "stale",
-                "--warmups",
-                "0",
-                "--samples",
-                "1",
-                "--memory-samples",
-                "1",
-            ]
-        )
-        == 0
+    # --worker is an internal subprocess entry point. The production launcher
+    # isolates it from app/bootstrap workers; keep that isolation in the suite
+    # so its global transport guard cannot intercept another test's threads.
+    worker = subprocess.run(
+        [
+            sys.executable,
+            str(measurement.ROOT / "scripts" / "measure_fleet_scale.py"),
+            "--worker",
+            "--devices",
+            "100",
+            "--modes",
+            "stale",
+            "--warmups",
+            "0",
+            "--samples",
+            "1",
+            "--memory-samples",
+            "1",
+        ],
+        cwd=measurement.ROOT,
+        env={
+            key: os.environ[key]
+            for key in ("PATH", "LANG", "LC_ALL", "TMPDIR")
+            if key in os.environ
+        }
+        | {"PYTHON_DOTENV_DISABLED": "1"},
+        capture_output=True,
+        text=True,
+        timeout=60,
     )
-    assert json.loads(capsys.readouterr().out)["load"]["telemetry_mode"] == "stale"
+    assert worker.returncode == 0, worker.stdout + worker.stderr
+    result = json.loads(worker.stdout)
+    assert result["load"]["telemetry_mode"] == "stale"
+    assert result["invariants"]["outbound_transport_attempts"] == 0
+    assert result["invariants"]["store_unchanged"] is True
     assert measurement.main(["--worker", "--devices", "100", "500"]) == 1
     assert "one workload" in capsys.readouterr().out
     for args in (["--samples", "101"], ["--samples", "wrong"], ["--devices", "1"]):

@@ -265,18 +265,26 @@ class TestRegistryIsolation:
             conn.row_factory = sqlite3.Row
             return conn
 
-        # Hermetic: never attempt a real socket connect to 192.168.1.x —
-        # force add_device() to take the OFFLINE path immediately.
-        from axe_fleet.connector import AxeOSConnectorError
-
+        # Explicit synthetic identity; no physical socket or credentials.
         class _FakeConn:
+
+            def __init__(self, ip):
+                self.ip = ip
+
             def fetch_info(self):
-                raise AxeOSConnectorError("hermetic")
+                return {
+                    "ASICModel": "Fixture",
+                    "macAddr": {
+                        "192.168.1.10": "02:00:00:00:11:10",
+                        "192.168.1.20": "02:00:00:00:11:20",
+                        "192.168.1.30": "02:00:00:00:11:30",
+                    }[self.ip],
+                }
 
             def detect_capabilities(self):
                 return {}
 
-        with patch("axe_fleet.registry.AxeOSConnector", return_value=_FakeConn()):
+        with patch("axe_fleet.registry.AxeOSConnector", _FakeConn):
             r = DeviceRegistry(get_db)
             r.ensure_tables()
             yield r

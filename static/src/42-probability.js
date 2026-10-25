@@ -183,6 +183,27 @@
     _setQlComp('ql-comp-momentum', comps.momentum, 10);
   }
 
+  function renderSessionEvidence(prox) {
+    const dash = '\u2014';
+    const get = (id, value) => {
+      const el = document.getElementById(id);
+      if (el) el.textContent = value == null ? dash : String(value);
+    };
+    const se = (prox && (prox.session_evidence || (prox.live_calc && prox.live_calc.session_evidence))) || {};
+    const totals = (prox && prox.live_calc && prox.live_calc.session_totals) || {};
+    get('se-session-shares', se.session_shares != null ? se.session_shares : totals.shares_so_far);
+    get('se-valid-modeled', se.valid_modeled_shares);
+    get('se-observed-window', se.observed_window);
+    get('se-last-share-age', se.last_share_age);
+    get('se-data-gaps', se.data_gaps);
+    get('se-avg-share-diff', fmt.diff(se.avg_share_difficulty));
+    get('se-share-trend', se.share_difficulty_trend);
+    get('se-sample-count', se.sample_count);
+    const state = se.evidence_state || se.evidence_state_label || 'NO DATA';
+    get('se-evidence-state', state);
+    get('se-evidence-state2', state);
+  }
+
   function _setQlComp(barId, val, max) {
     const bar = document.getElementById(barId);
     if (!bar) return;
@@ -217,6 +238,9 @@
     if (dom.lcAvgShareDiff) dom.lcAvgShareDiff.textContent = totals.avg_share_diff_str || dash;
     if (dom.lcCumP) dom.lcCumP.textContent = totals.cum_p_block_pct_str || dash;
     if (dom.lcExpectedBlocks) dom.lcExpectedBlocks.textContent = totals.expected_blocks_str || dash;
+    if (dom.lcEstimatedBadge) {
+      dom.lcEstimatedBadge.style.display = latest.estimated ? '' : 'none';
+    }
 
     // Ticker — newest first
     if (dom.lcTickerList) {

@@ -43,11 +43,21 @@ async function openWithPoolReport(page, fixture = {}) {
     const snap = await response.json();
     snap.pool_detection = detection;
     snap.pool_worker = worker;
+    // A rendered synthetic marker proves bootstrap, including no-report cases.
+    snap.network = { ...(snap.network || {}), height: 969641 };
     await route.fulfill({ json: snap });
   });
 
   await page.goto('/');
   await page.waitForSelector('#app-shell', { timeout: 20000 });
+  await expect(page.locator('#n-height')).toHaveText('#969641');
+  // The current console owns Pool Context in Analysis, not the Operation pane.
+  // Navigate visibly so geometry assertions never pass on a hidden ancestor.
+  const menu = page.getByRole('button', { name: 'Abrir menu', exact: true });
+  if (await menu.isVisible()) await menu.click();
+  await page.getByRole('button', { name: 'Análise', exact: true }).click();
+  await expect(page.locator('body')).toHaveAttribute('data-active-module', 'analysis');
+  await expect(page.locator('#pool-overview')).toBeVisible();
 }
 
 /** Wait for the strip to reflect a detected pool (não fica presa no `hidden`). */
@@ -56,6 +66,7 @@ async function waitForStrip(page) {
     const el = document.getElementById('pool-detect');
     return !!el && !el.hasAttribute('hidden');
   }, null, { timeout: 15000 });
+  await expect(page.locator('#pool-detect')).toBeVisible();
 }
 
 const PARASITE_DETECTION = {
@@ -241,10 +252,10 @@ test.describe('Pool detectada pelo ASIC — faixa do painel Pool Context', () =>
 
   test('sem report do ASIC a faixa fica oculta (não mostra zero como fato)', async ({ page }) => {
     await openWithPoolReport(page);
-    // Espera um render real aterrissar antes de afirmar a ausência.
+    // The template placeholder cannot satisfy this fixture-specific render signal.
     await page.waitForFunction(() => {
-      const el = document.getElementById('p-hashrate');
-      return !!el && el.textContent.trim() !== '';
+      const el = document.getElementById('n-height');
+      return !!el && el.textContent.trim() === '#969641';
     }, null, { timeout: 15000 });
 
     await expect(page.locator('#pool-detect')).toHaveAttribute('hidden', '');

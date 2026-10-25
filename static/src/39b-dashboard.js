@@ -197,11 +197,20 @@
   let _consoleSelection = null;
   let _operationalFleetReadAt = null;
 
-  function consoleNumber(value) {
+  /**
+   * Parse a finite measurement within inclusive field-specific bounds.
+   * @param {unknown} value Raw telemetry number or numeric string.
+   * @param {number} [minimum=0] Lower bound; Celsius permits -40.
+   * @param {number} [maximum=Infinity] Upper bound; Celsius permits 150.
+   * @returns {number|null} Valid measurement, otherwise unavailable.
+   * @example consoleNumber('-5', -40, 150); // -5 Celsius
+   * @example consoleNumber(-5); // null for unsigned measurements
+   */
+  function consoleNumber(value, minimum = 0, maximum = Infinity) {
     if (typeof value !== 'number' && typeof value !== 'string') return null;
     if (typeof value === 'string' && !value.trim()) return null;
     const number = Number(value);
-    return Number.isFinite(number) && number >= 0 ? number : null;
+    return Number.isFinite(number) && number >= minimum && number <= maximum ? number : null;
   }
   function consoleAge(ts, now) {
     const raw = consoleNumber(ts);
@@ -228,10 +237,12 @@
       const statuses = { ONLINE: 'Online', HASHING: 'Minerando', IDLE: 'Ocioso', WARNING: 'Atenção', OFFLINE: 'Offline', PAUSED: 'Pausado', MAINTENANCE: 'Manutenção', STALE: 'Dados antigos' };
       const state = fleetError || old ? 'Último estado: ' + (statuses[reportedStatus] || 'não informado') : (statuses[reportedStatus] || 'Estado não informado');
       const needsAttention = old || !['ONLINE', 'HASHING', 'IDLE'].includes(reportedStatus);
+      const stateRank = { PAUSED: 0, STALE: 1, WARNING: 2, ERROR: 3, CRITICAL: 3, OFFLINE: 4, IDLE: 5, ONLINE: 6, HASHING: 6 };
+      const rank = Object.prototype.hasOwnProperty.call(stateRank, reportedStatus) ? stateRank[reportedStatus] : 7;
       const last = consoleNumber(telemetry.last_known_hashrate_hs);
       const hash = reportedStatus === 'OFFLINE' && last !== null ? last : consoleNumber(telemetry.hashrate_hs);
-      return { id: String(device.id || ''), kind: 'fleet', name: String(device.name || device.hostname || device.id || 'Equipamento sem nome'), model: String(device.model || ''), state: state, reportedState: statuses[reportedStatus] || reportedStatus, tone: old ? 'warning' : reportedStatus === 'OFFLINE' ? 'critical' : reportedStatus === 'WARNING' ? 'warning' : 'neutral', old: old, attention: needsAttention, hash: hash, hashNote: old || reportedStatus === 'OFFLINE' ? 'última observação' : 'informado pelo equipamento', temperature: consoleNumber(telemetry.temperature), power: consoleNumber(telemetry.power_watts), age: age, shareAge: consoleAge(telemetry.last_share_ts, now), accepted: consoleNumber(telemetry.shares_accepted), rejected: consoleNumber(telemetry.shares_rejected), telemetry: telemetry };
-    }).sort(function(a, b) { return Number(b.attention) - Number(a.attention) || a.name.localeCompare(b.name); });
+      return { id: String(device.id || ''), kind: 'fleet', name: String(device.name || device.hostname || device.id || 'Equipamento sem nome'), model: String(device.model || ''), state: state, reportedState: statuses[reportedStatus] || reportedStatus, tone: old ? 'warning' : reportedStatus === 'OFFLINE' ? 'critical' : reportedStatus === 'WARNING' ? 'warning' : 'neutral', old: old, attention: needsAttention, rank: rank, hash: hash, hashNote: old || reportedStatus === 'OFFLINE' ? 'última observação' : 'informado pelo equipamento', temperature: consoleNumber(telemetry.temperature, -40, 150), power: consoleNumber(telemetry.power_watts), age: age, shareAge: consoleAge(telemetry.last_share_ts, now), accepted: consoleNumber(telemetry.shares_accepted), rejected: consoleNumber(telemetry.shares_rejected), telemetry: telemetry };
+    }).sort(function(a, b) { return Number(b.attention) - Number(a.attention) || a.rank - b.rank || a.name.localeCompare(b.name); });
     const workers = Array.isArray(snap.all_workers) ? snap.all_workers : [];
     // Never distribute the selected worker's hashrate over reported worker names.
     const identified = workers.filter(function(worker) { return worker && (worker.name || worker.workername || worker.id); });
@@ -260,6 +271,197 @@
     return { mode: mode, rows: mode === 'fleet' ? localRows : workerRows, localRows: localRows, title: mode === 'fleet' ? (fleetError ? 'Últimas observações dos equipamentos' : 'Equipamentos monitorados') : 'Mineração observada pela pool', coverage: mode === 'fleet' ? 'Telemetria local · inventário e amostras dos equipamentos' : 'Pool · temperatura e potência exigem telemetria local', notice: notice, total: inventory, measured: measured.length, recent: recent.length, verified: fresh.length, unknown: unknown, attention: fleetError || !fresh.length ? null : fresh.filter(function(row) { return row.attention; }).length, hashrate: measured.length ? measured.reduce(function(sum, row) { return sum + row.hash; }, 0) : null, poolSource: 'Snapshot da pool: ' + (poolStale ? 'dados antigos · ' : '') + consoleAgeText(snapshotAge), fleetSource: 'ASICs locais: ' + (fleetError ? 'consulta indisponível' : fleetKnown ? inventory === 0 ? 'nenhum cadastrado' : inventory === null ? 'inventário não informado' : inventory + ' cadastrado(s)' : 'aguardando consulta') + (agentAge !== null ? ' · agente ' + consoleAgeText(agentAge) : ''), networkSource: 'Rede Bitcoin: ' + (snap.network && snap.network.height ? '#' + snap.network.height + (snap.network.stale ? ' · cache' : '') : 'sem dados'), loading: !snapshotPresent && !fleetData && !fleetError };
   }
 
+  // Premium dashboard uses identified worker snapshots and tenant-scoped
+  // device history. Never turn the global chart API into a worker timeline.
+  let _consoleHistoryDevice = '';
+  let _consoleHistoryMetric = 'hashrate';
+  let _consoleHistoryRequest = 0;
+  let _consoleHistory = { id: '', rows: [], readAt: 0, pending: false, error: false };
+  let _consoleHistorySession = '';
+  function syncConsoleHistorySession(tenant, connected) {
+    const context = (connected ? 'authenticated:' : 'public:') + tenant;
+    if (_consoleHistorySession && _consoleHistorySession !== context) {
+      ++_consoleHistoryRequest;
+      _consoleHistory = { id: '', rows: [], readAt: 0, pending: false, error: true };
+      const root = document.getElementById('operation-console');
+      if (root && root.dataset.source === 'fleet') renderConsoleHistory();
+    }
+    _consoleHistorySession = context;
+  }
+
+
+  function buildConsoleHistorySeries(history, metric, now) {
+    now = now || Date.now() / 1000;
+    const field = ['hashrate', 'temperature', 'power_watts'].includes(metric) ? metric : 'hashrate';
+    const byTime = new Map();
+    (Array.isArray(history) ? history : []).forEach(function(row) {
+      if (!row || typeof row !== 'object') return;
+      let ts = consoleNumber(row.ts);
+      if (ts !== null && ts > 1e11) ts /= 1000;
+      if (ts === null || ts <= 0 || ts > now) return;
+      byTime.set(ts, { ts: ts, value: consoleNumber(row[field]) });
+    });
+    const points = Array.from(byTime.values()).sort(function(a, b) { return a.ts - b.ts; }).slice(-120);
+    const segments = []; let segment = []; let previous = null;
+    points.forEach(function(point) {
+      if (point.value === null || previous !== null && point.ts - previous > 150) {
+        if (segment.length) segments.push(segment);
+        segment = [];
+      }
+      if (point.value !== null) segment.push(point);
+      previous = point.ts;
+    });
+    if (segment.length) segments.push(segment);
+    const measured = points.filter(function(point) { return point.value !== null; });
+    return { points: points, segments: segments, measured: measured, min: measured.length ? Math.min.apply(null, measured.map(function(p) { return p.value; })) : null, max: measured.length ? Math.max.apply(null, measured.map(function(p) { return p.value; })) : null };
+  }
+
+  function buildPremiumOperationModel(model, snap) {
+    const eligible = model.localRows.filter(function(row) { return !row.old && ['Online', 'Minerando', 'Ocioso', 'Atenção'].includes(row.reportedState); });
+    const powered = eligible.filter(function(row) { return row.power !== null; });
+    const workers = model.rows.filter(function(row) { return row.kind === 'pool' && row.hash !== null; }).sort(function(a, b) { return b.hash - a.hash || a.name.localeCompare(b.name); });
+    const primary = (Array.isArray(snap.all_workers) ? snap.all_workers : []).find(function(worker) { return worker.is_primary; });
+    const selected = snap.worker || primary || {};
+    return { workers: workers, powered: powered.length, power: powered.length ? powered.reduce(function(sum, row) { return sum + row.power; }, 0) : null, lastShareAge: consoleAge(selected.lastSubmission, Date.now()/1000), recent: model.recent, unknown: model.unknown };
+  }
+
+  function consoleHistoryValue(value, metric) {
+    if (value === null) return '—';
+    return metric === 'hashrate' ? fmt.hashrate(value) : value.toFixed(metric === 'temperature' ? 1 : 0) + (metric === 'temperature' ? ' °C' : ' W');
+  }
+  function consoleHistoryTime(ts) { return new Date(ts * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }); }
+
+  async function loadConsoleHistory(force) {
+    const id = _consoleHistoryDevice;
+    if (!id || document.body.dataset.activeModule !== 'dashboard' || document.getElementById('operation-console').dataset.source !== 'fleet') return;
+    if (!force && _consoleHistory.id === id && (_consoleHistory.pending || Date.now() - _consoleHistory.readAt < 30000)) return;
+    const request = ++_consoleHistoryRequest;
+    const previous = _consoleHistory.id === id ? _consoleHistory.rows : [];
+    _consoleHistory = { id: id, rows: previous, readAt: Date.now(), pending: true, error: false };
+    renderConsoleHistory();
+    try {
+      const response = await authFetch('/api/axe-fleet/devices/' + encodeURIComponent(id) + '/history?limit=120');
+      if (request !== _consoleHistoryRequest || id !== _consoleHistoryDevice) return;
+      if (!response.ok) {
+        // Authorization failures must not retain data from an earlier session.
+        if (response.status === 401 || response.status === 403 || response.status === 404) _consoleHistory.rows = [];
+        throw new Error('history unavailable');
+      }
+      const data = await response.json();
+      if (request !== _consoleHistoryRequest || id !== _consoleHistoryDevice) return;
+      if (String(data.device_id) !== id || !Array.isArray(data.history)) throw new Error('history scope mismatch');
+      _consoleHistory.rows = data.history;
+    } catch (_) {
+      if (request !== _consoleHistoryRequest || id !== _consoleHistoryDevice) return;
+      _consoleHistory.error = true;
+    } finally {
+      if (request === _consoleHistoryRequest && id === _consoleHistoryDevice) {
+        _consoleHistory.pending = false;
+        if (document.getElementById('operation-console').dataset.source === 'fleet') renderConsoleHistory();
+      }
+    }
+  }
+
+  function renderConsoleHistory() {
+    const target = document.getElementById('console-visual');
+    if (!target || document.getElementById('operation-console').dataset.source !== 'fleet') return;
+    const state = _consoleHistory;
+    const series = buildConsoleHistorySeries(state.rows, _consoleHistoryMetric);
+    target.setAttribute('aria-busy', String(state.pending));
+    document.getElementById('console-history-refresh').disabled = state.pending;
+    document.getElementById('console-history-stats').hidden = !series.measured.length;
+    document.getElementById('console-history-data').hidden = !series.points.length;
+    const note = document.getElementById('console-visual-note');
+    if (state.pending && !series.measured.length) {
+      target.innerHTML = '<div class="console-chart-empty">Carregando o histórico individual…</div>';
+      skelShow(target, 'chart'); note.textContent = 'Consultando a fonte autorizada do equipamento.'; return;
+    }
+    skelHide(target);
+    if (!series.measured.length) {
+      target.innerHTML = '<div class="console-chart-empty"><strong>' + (state.error ? 'Histórico indisponível' : 'Sem amostras para esta métrica') + '</strong><span>' + (state.error ? 'Confira sua sessão e a comunicação do agente. A tabela mantém seu próprio estado de consulta.' : 'O gráfico aparecerá quando o equipamento enviar observações válidas.') + '</span></div>';
+      note.textContent = 'Nenhuma curva foi estimada a partir do snapshot.'; return;
+    }
+    const start = series.points[0].ts; const end = series.points[series.points.length - 1].ts;
+    const lastMeasured = series.measured[series.measured.length - 1];
+    const width = Math.max(320, target.clientWidth || 720); const height = 180; const left = 82; const right = 20; const top = 16; const bottom = 36;
+    const maximum = series.max > 0 ? series.max * 1.12 : 1;
+    const x = ts => left + (end === start ? 0.5 : (ts - start) / (end - start)) * (width - left - right);
+    const y = value => height - bottom - value / maximum * (height - top - bottom);
+    let svg = '<svg viewBox="0 0 ' + width + ' ' + height + '" role="img" aria-labelledby="console-history-svg-title"><title id="console-history-svg-title">' + escapeHtml(document.getElementById('console-history-metric').selectedOptions[0].textContent) + ': ' + series.measured.length + ' amostras individuais. Lacunas acima de 150 segundos não são conectadas.</title>';
+    for (let i = 0; i <= 3; i++) {
+      const value = maximum * i / 3; const pos = y(value);
+      svg += '<line class="console-chart-grid" x1="' + left + '" x2="' + (width-right) + '" y1="' + pos + '" y2="' + pos + '"/><text class="console-chart-label" x="' + (left-12) + '" y="' + (pos+4) + '" text-anchor="end">' + escapeHtml(consoleHistoryValue(value, _consoleHistoryMetric)) + '</text>';
+    }
+    series.segments.forEach(function(segment) {
+      if (segment.length > 1) svg += '<polyline class="console-chart-line" points="' + segment.map(function(point) { return x(point.ts)+','+y(point.value); }).join(' ') + '"/>';
+      segment.forEach(function(point) { svg += '<circle class="console-chart-point" cx="' + x(point.ts) + '" cy="' + y(point.value) + '" r="3"><title>' + escapeHtml(consoleHistoryTime(point.ts) + ' · ' + consoleHistoryValue(point.value, _consoleHistoryMetric)) + '</title></circle>'; });
+    });
+    svg += '<text class="console-chart-label" x="' + left + '" y="' + (height-9) + '">' + escapeHtml(consoleHistoryTime(start)) + '</text><text class="console-chart-label" x="' + (width-right) + '" y="' + (height-9) + '" text-anchor="end">' + escapeHtml(consoleHistoryTime(end)) + '</text></svg>';
+    setHtmlIfChanged(target, svg);
+    note.textContent = (state.error ? 'Consulta indisponível · últimas observações. ' : state.pending ? 'Atualizando · últimas observações. ' : '') + series.measured.length + ' amostras · última medição válida ' + consoleAgeText(consoleAge(lastMeasured.ts, Date.now()/1000)) + ' · lacunas >150 s não conectadas';
+    document.getElementById('console-history-stats').innerHTML = [['Mínimo', series.min], ['Máximo', series.max], ['Última medição válida', lastMeasured.value]].map(function(item) { return '<div><span>' + item[0] + '</span><strong>' + escapeHtml(consoleHistoryValue(item[1], _consoleHistoryMetric)) + '</strong></div>'; }).join('');
+    document.getElementById('console-history-samples').innerHTML = '<p>Todas as ' + escapeHtml(String(series.points.length)) + ' amostras do gráfico. Horário local do navegador.</p><table><thead><tr><th>Horário</th><th>Medição</th></tr></thead><tbody>' + series.points.map(function(point) { return '<tr><td>' + escapeHtml(consoleHistoryTime(point.ts)) + '</td><td>' + escapeHtml(consoleHistoryValue(point.value, _consoleHistoryMetric)) + '</td></tr>'; }).join('') + '</tbody></table>';
+  }
+
+  function renderPremiumOperation(model, snap) {
+    const premium = buildPremiumOperationModel(model, snap);
+    const put = function(id, value) { document.getElementById(id).textContent = value; };
+    put('console-worker-count', model.mode === 'pool' ? model.rows.length : '—');
+    put('console-worker-count-scope', premium.workers.length + ' com hashrate informado');
+    put('console-last-share', premium.lastShareAge === null ? '—' : fmt.secsToHuman(premium.lastShareAge));
+    put('console-last-share-scope', 'última submissão do worker');
+    put('console-power', premium.power === null ? '—' : premium.power.toLocaleString(undefined, { maximumFractionDigits: 0 }) + ' W');
+    put('console-power-scope', premium.powered + ' de ' + model.localRows.length + ' equipamentos com leitura recente');
+    const controls = document.getElementById('console-history-controls');
+    controls.hidden = model.mode !== 'fleet';
+    put('console-visual-title', model.mode === 'fleet' ? 'Evolução do equipamento' : 'Produção por worker');
+    put('console-visual-origin', model.mode === 'fleet' ? 'Histórico individual' : 'Últimos valores da pool');
+    put('console-observation-origin', model.mode === 'fleet' ? 'Local' : 'Pool');
+    const target = document.getElementById('console-visual');
+    if (model.mode === 'fleet') {
+      const select = document.getElementById('console-history-device');
+      if (!model.localRows.some(function(row) { return row.id === _consoleHistoryDevice; })) _consoleHistoryDevice = (model.localRows.find(function(row) { return !row.old && row.reportedState !== 'Offline'; }) || model.localRows[0] || {}).id || '';
+      setHtmlIfChanged(select, model.localRows.map(function(row) { return '<option value="' + escapeHtml(row.id) + '">' + escapeHtml(row.name) + '</option>'; }).join(''));
+      select.value = _consoleHistoryDevice;
+      // A changed entity cannot render the previous entity's series even briefly.
+      if (_consoleHistory.id !== _consoleHistoryDevice) { ++_consoleHistoryRequest; _consoleHistory = { id: _consoleHistoryDevice, rows: [], readAt: 0, pending: false, error: false }; }
+      renderConsoleHistory(); loadConsoleHistory(false);
+    } else {
+      skelHide(target); target.setAttribute('aria-busy', 'false');
+      document.getElementById('console-history-stats').hidden = true;
+      document.getElementById('console-history-data').hidden = true;
+      const maximum = premium.workers.length ? premium.workers[0].hash : 0;
+      setHtmlIfChanged(target, premium.workers.length ? '<div class="console-bars">' + premium.workers.slice(0, 6).map(function(row, index) { return '<div class="console-bar"><div><span><span class="console-bar-rank">' + String(index+1).padStart(2,'0') + '</span> ' + escapeHtml(row.name) + '</span><strong>' + escapeHtml(fmt.hashrate(row.hash)) + '</strong></div><div class="console-bar-track" aria-hidden="true"><span style="width:' + (maximum > 0 ? row.hash / maximum * 100 : 0) + '%"></span></div></div>'; }).join('') + '</div>' : '<div class="console-chart-empty"><strong>Sem medições de workers</strong><span>Conecte o endereço observado pela pool para comparar a produção.</span></div>');
+      put('console-visual-note', (model.rows.some(function(row) { return row.old; }) ? 'Dados antigos · ' : '') + Math.min(6, premium.workers.length) + ' de ' + model.rows.length + ' workers exibidos · comparação de valores reportados, sem histórico individual');
+    }
+    const observed = model.mode === 'fleet' ? model.localRows : model.rows;
+    let context = '';
+    if (model.mode === 'fleet') {
+      const total = observed.length;
+      const verified = model.verified;
+      context += '<div class="console-coverage-summary"><strong>' + verified + '<span> / ' + total + '</span></strong><span>estados com amostra recente confirmada</span></div><div class="console-coverage-track" aria-hidden="true"><span style="width:' + (total ? verified/total*100 : 0) + '%"></span></div><p class="console-context-note">' + model.unknown + ' sem confirmação atual · não representa uptime</p>';
+      const exceptions = observed.filter(function(row) { return row.attention; }).slice(0,3);
+      context += '<ul class="console-activity">' + (exceptions.length ? exceptions.map(function(row) { return '<li><span class="console-activity-dot console-activity-dot--' + row.tone + '"></span><div><strong>' + escapeHtml(row.name) + '</strong><span>' + escapeHtml(row.state) + '</span></div><small>' + escapeHtml(consoleAgeText(row.age)) + '</small></li>'; }).join('') : '<li><div><strong>Sem exceções nas amostras verificadas</strong><span>Consulte a idade de cada equipamento.</span></div></li>') + '</ul>';
+      context += '<div class="console-local-context"><span>Inventário local</span><strong id="console-total">' + (model.total === null ? '—' : model.total) + '</strong><small>equipamentos cadastrados</small></div>';
+    } else {
+      context += '<ul class="console-activity">' + observed.slice().sort(function(a,b) { return (a.age === null ? Infinity : a.age) - (b.age === null ? Infinity : b.age); }).slice(0,3).map(function(row) { return '<li><span class="console-activity-dot"></span><div><strong>' + escapeHtml(row.name) + '</strong><span>última share informada</span></div><small>' + escapeHtml(consoleAgeText(row.age)) + '</small></li>'; }).join('') + '</ul><p class="console-local-context"><strong>Telemetria dos equipamentos</strong><span>' + (model.localRows.length ? model.localRows.length + ' equipamentos cadastrados · selecione Telemetria local' : 'Telemetria local não configurada.') + '</span></p>';
+    }
+    // Inventory ID exists in both modes for the original renderer contract.
+    if (model.mode === 'pool') context += '<span id="console-total" hidden>' + (model.total === null ? '—' : model.total) + '</span>';
+    setHtmlIfChanged(document.getElementById('console-observations-body'), context);
+    const net = snap.network || {}; const btc = snap.btc_price || {};
+    const price = consoleNumber(btc.usd); const height = consoleNumber(net.height); const difficulty = consoleNumber(net.difficulty);
+    put('console-btc-price', price === null ? '—' : '$' + price.toLocaleString(undefined, { maximumFractionDigits: 0 }));
+    put('console-btc-scope', !price ? 'preço não informado' : btc.stale || btc._stale ? 'fonte BTC · dados em cache' : 'cotação informada · snapshot');
+    put('console-network-height', height === null ? '—' : '#' + height.toLocaleString());
+    put('console-network-diff', difficulty === null ? '—' : fmt.diff(difficulty));
+    put('console-network-scope', height === null ? 'rede não informada' : net.stale || net._stale ? 'rede · dados em cache' : 'última altura informada');
+    document.querySelectorAll('[data-console-mirror]').forEach(function(mirror) {
+      const source = document.getElementById(mirror.getAttribute('data-console-mirror'));
+      if (source) mirror.textContent = source.textContent;
+    });
+  }
+
   function renderOperationConsole(snap, fleetData, fleetError) {
     const root = document.getElementById('operation-console');
     if (!root) return;
@@ -271,7 +473,7 @@
     if (model.loading) skelShow(tableWrap, 'table'); else skelHide(tableWrap);
     const put = function(id, value) { const node = document.getElementById(id); if (node) node.textContent = value; };
     put('console-title', model.title); put('console-coverage', model.coverage);
-    put('console-total', model.total === null ? '—' : model.total);
+    renderPremiumOperation(model, snap);
     put('console-attention-count', model.attention === null ? '—' : model.attention);
     put('console-attention-coverage', model.attention === null ? 'estado atual não verificado' : 'entre ' + model.verified + ' amostras verificadas');
     put('console-hashrate', model.hashrate === null ? '—' : fmt.hashrate(model.hashrate));
@@ -299,7 +501,7 @@
     document.getElementById('console-table-head').innerHTML = '<tr>' + labels.map(function(label) { return '<th scope="col">' + label + '</th>'; }).join('') + '</tr>';
     const rows = model.rows.filter(function(row) { return (row.name + ' ' + row.model + ' ' + row.state).toLowerCase().includes(_consoleQuery); });
     const html = rows.map(function(row) {
-      const values = model.mode === 'fleet' ? [null, row.state, row.hash === null ? '—' : fmt.hashrate(row.hash), row.temperature === null ? '—' : row.temperature.toFixed(1) + ' °C', row.power === null ? '—' : row.power.toFixed(0) + ' W', consoleAgeText(row.age)] : [null, row.state, row.hash === null ? '—' : fmt.hashrate(row.hash), consoleAgeText(row.age)];
+      const values = model.mode === 'fleet' ? [null, row.state, row.hash === null ? '—' : fmt.hashrate(row.hash), row.temperature === null ? '' : row.temperature.toFixed(1) + ' °C', row.power === null ? '' : row.power.toFixed(0) + ' W', consoleAgeText(row.age)] : [null, row.state, row.hash === null ? '—' : fmt.hashrate(row.hash), consoleAgeText(row.age)];
       return '<tr class="console-row console-row--' + row.tone + '">' + values.map(function(value, index) {
         if (index === 0) return '<th scope="row"><button class="console-entity" data-console-id="' + escapeHtml(row.id) + '">' + escapeHtml(row.name) + '<span aria-hidden="true">↗</span></button>' + (row.model ? '<small>' + escapeHtml(row.model) + '</small>' : '') + '</th>';
         return '<td data-label="' + labels[index] + '"' + (index > 1 ? ' class="console-numeric"' : '') + '>' + escapeHtml(value) + (index === 1 && row.old && row.kind === 'fleet' ? '<small>' + (fleetError ? 'consulta indisponível' : 'amostra antiga ou idade não informada') + '</small>' : '') + (index === 2 && row.hash !== null ? '<small>' + escapeHtml(row.hashNote) + '</small>' : '') + '</td>';
@@ -317,7 +519,13 @@
 
   function renderConsoleDetail(id) {
     const row = _consoleRows.find(function(item) { return item.id === id; });
-    if (!row) return;
+    if (!row) {
+      // A successful refresh supersedes the old observation. The native close
+      // handler restores focus to the surviving entity or the search fallback.
+      const dialog = document.getElementById('console-detail');
+      if (dialog && dialog.open) dialog.close();
+      return;
+    }
     document.getElementById('console-detail-title').textContent = row.name;
     document.getElementById('console-detail-source').textContent = row.kind === 'fleet' ? 'TELEMETRIA LOCAL' : 'OBSERVAÇÃO PELA POOL';
     document.getElementById('console-detail-status').textContent = row.state + ' · ' + (row.kind === 'pool' ? 'última share ' : 'amostra ') + consoleAgeText(row.age) + (row.old ? ' · último estado informado: ' + row.reportedState : '');
@@ -331,10 +539,27 @@
     const root = document.getElementById('operation-console');
     if (!root) return;
     const update = function() { renderOperationConsole(_lastSnapshot || {}, _operationalFleetData, _operationalFleetError); };
+    const narrow = window.matchMedia('(max-width: 900px)');
+    const disclose = function() { document.getElementById('console-observation-disclosure').open = !narrow.matches; };
+    disclose(); narrow.addEventListener('change', disclose);
     ['pool', 'fleet'].forEach(function(source) { document.getElementById('console-source-' + source).addEventListener('click', function() { _consoleSource = source; update(); }); });
+    document.getElementById('console-history-device').addEventListener('change', function(event) { _consoleHistoryDevice = event.target.value; update(); });
+    document.getElementById('console-history-metric').addEventListener('change', function(event) { _consoleHistoryMetric = event.target.value; renderConsoleHistory(); });
+    document.getElementById('console-history-refresh').addEventListener('click', function() { loadConsoleHistory(true); });
     document.getElementById('console-search').addEventListener('input', function(event) { _consoleQuery = event.target.value.toLowerCase(); update(); });
     document.getElementById('console-open-fleet').addEventListener('click', function() { activateModule('fleet'); });
     document.getElementById('console-open-analysis').addEventListener('click', function() { activateModule('analysis'); });
+    const commandForm = document.getElementById('desk-command');
+    if (commandForm) commandForm.addEventListener('submit', function(event) {
+      event.preventDefault();
+      const input = document.getElementById('desk-command-input');
+      const command = input.value.trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+      input.value = '';
+      if (command === 'pool') { _consoleSource = 'pool'; update(); return; }
+      if (command === 'frota') { _consoleSource = 'fleet'; update(); return; }
+      const modules = { fleet: 'fleet', equipamentos: 'fleet', alerta: 'alerts', alertas: 'alerts', analise: 'analysis', mercado: 'market' };
+      if (Object.prototype.hasOwnProperty.call(modules, command)) activateModule(modules[command]);
+    });
     const dialog = document.getElementById('console-detail');
     const openDetail = function(id, keyboard) { _consoleSelection = id; renderConsoleDetail(id); dialog.classList.toggle('console-detail--instant', keyboard); if (!dialog.open) dialog.showModal(); };
     document.getElementById('console-table-body').addEventListener('click', function(event) { const button = event.target.closest('[data-console-id]'); if (button) openDetail(button.dataset.consoleId, event.detail === 0); });
@@ -537,6 +762,59 @@
     put('op-action-title', model.actionTitle);
     put('op-action-detail', model.actionEnabled ? 'Opens diagnostic only · no command is executed' : 'Advisory only · no command is executed');
     put('op-state', model.stateText);
+    const evidence = snap && snap.operations_overview;
+    const evidenceRoot = document.getElementById('op-evidence-domains');
+    if (evidenceRoot && evidence && Array.isArray(evidence.domains)) {
+      const domains = evidence.domains;
+      const byId = {};
+      domains.forEach(function(domain) { if (domain && domain.id) byId[domain.id] = domain; });
+      const expected = ['mining', 'fleet', 'pool', 'data', 'economics'];
+      const complete = expected.filter(function(id) { return byId[id] && byId[id].status === 'observed'; }).length;
+      put('op-evidence-coverage', complete + '/' + expected.length + ' domains fully observed · ' + String(evidence.status || 'missing').toUpperCase());
+      const valueText = function(value, unit) {
+        if (value === null || value === undefined || value === '') return '—';
+        const n = Number(value);
+        const shown = value && typeof value === 'object'
+          ? JSON.stringify(value)
+          : (isFinite(n)
+            ? (Math.abs(n) >= 1000 ? n.toLocaleString(undefined, { maximumFractionDigits: 2 }) : String(n))
+            : String(value));
+        return shown + (unit ? ' ' + unit : '');
+      };
+      const ageText = function(age) {
+        if (age === null || age === undefined || !isFinite(Number(age))) return 'age unavailable';
+        return fmt.secsToHuman(Number(age)) + ' old';
+      };
+      const html = expected.map(function(id) {
+        const domain = byId[id] || { id: id, label: id.toUpperCase(), status: 'missing', source: 'unavailable', signals: [], missing_signals: [], evidence_target: '' };
+        const status = ['observed', 'partial', 'stale', 'missing'].indexOf(domain.status) !== -1 ? domain.status : 'missing';
+        const signals = Array.isArray(domain.signals) ? domain.signals : [];
+        const signalHtml = signals.map(function(item) {
+          const title = String(item.name || 'signal').replace(/_/g, ' ');
+          const provenance = String(item.source || domain.source || 'source unavailable') + ' · ' + ageText(item.age_seconds) + ' · ' + String(item.window || 'window unavailable');
+          return '<p class="op-evidence__signal">' + escapeHtml(title) + ': <strong>' + escapeHtml(valueText(item.value, item.unit)) + '</strong><small class="op-evidence__provenance">' + escapeHtml(provenance) + '</small></p>';
+        }).join('');
+        const missing = Array.isArray(domain.missing_signals) ? domain.missing_signals : [];
+        const missingHtml = (!signals.length ? '<p class="op-evidence__missing">No signals observed</p>' : '') + (missing.length ? '<p class="op-evidence__missing">Missing: ' + escapeHtml(missing.join(', ').replace(/_/g, ' ')) + '</p>' : '');
+        const target = String(domain.evidence_target || '');
+        const link = target && document.getElementById(target) ? '<button class="op-evidence__open" type="button" data-evidence-target="' + escapeHtml(target) + '">Open evidence</button>' : '';
+        return '<article class="op-evidence__domain" data-status="' + status + '"><div class="op-evidence__domain-head"><strong>' + escapeHtml(domain.label || id.toUpperCase()) + '</strong><span class="op-evidence__status">' + status.toUpperCase() + '</span></div>' + signalHtml + missingHtml + link + '</article>';
+      }).join('');
+      if (typeof setHtmlIfChanged === 'function') setHtmlIfChanged(evidenceRoot, html);
+      else if (evidenceRoot.innerHTML !== html) evidenceRoot.innerHTML = html;
+      const limits = [];
+      if (Array.isArray(evidence.change_comparison) && evidence.change_comparison.length) limits.push(evidence.change_comparison.join('; '));
+      else limits.push((evidence.change_comparison && evidence.change_comparison.reason) || 'Change over time not established');
+      if (Array.isArray(evidence.anomalies) && evidence.anomalies.length) limits.push(evidence.anomalies.map(function(anomaly) { return String(anomaly.count || 1) + ' ' + String(anomaly.status || 'observed').toUpperCase() + ' device exception(s)'; }).join(' · '));
+      else limits.push('No anomaly asserted');
+      if (Array.isArray(evidence.explanations) && evidence.explanations.length) limits.push(evidence.explanations.length + ' supported explanation(s)');
+      else limits.push('No cause inferred');
+      limits.push(evidence.economic_impact_status === 'established' ? 'Economic impact has evidence' : 'Economic impact not established');
+      put('op-evidence-limits', limits.join(' · '));
+    } else {
+      put('op-evidence-coverage', 'Evidence summary unavailable');
+      if (evidenceRoot) evidenceRoot.innerHTML = '<div class="op-evidence__domain" data-status="missing"><div class="op-evidence__domain-head"><strong>OPERATIONS EVIDENCE</strong><span class="op-evidence__status">MISSING</span></div><p class="op-evidence__missing">Backend evidence summary unavailable.</p></div>';
+    }
     const action = document.getElementById('op-action');
     if (action) {
       action.disabled = !model.actionEnabled;
@@ -549,6 +827,20 @@
     initOperationConsoleControls();
     const action = document.getElementById('op-action');
     if (!action) return;
+    const evidenceDomains = document.getElementById('op-evidence-domains');
+    if (evidenceDomains) evidenceDomains.addEventListener('click', function(event) {
+      const button = event.target.closest('[data-evidence-target]');
+      if (!button) return;
+      const targetId = button.dataset.evidenceTarget || '';
+      const panel = document.getElementById(targetId);
+      if (!panel) return;
+      const module = panel.getAttribute('data-module') || 'analysis';
+      activateModule(module.split(/\s+/)[0]);
+      setTimeout(function() {
+        const reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+        panel.scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth', block: 'start' });
+      }, 140);
+    });
     action.addEventListener('click', function() {
       if (action.disabled) return;
       const target = action.dataset.target || '';
@@ -925,6 +1217,7 @@ function renderPool(pool, luck) {
   // renderCharts refresh keeps the user's toolbar choice instead of silently
   // resetting every chart back to 1h (audit: range chips were being ignored).
   const _chartRange = {};
+  const _chartRequest = {};
   function _fmtChartLabel(t, cfg, id) {
     if (cfg.chart === 'share_dist') return String(t); // histogram bucket labels
     const d = new Date(t);
@@ -936,14 +1229,27 @@ function renderPool(pool, luck) {
     }
     return hm;
   }
-  // The Share-Distribution panel badge was hardcoded to "0 shares" in the HTML
-  // and never updated. Reflect the real histogram count from the API.
+  // The Share-Distribution panel badge reflects the real histogram count.
   function _updateShareDistBadge(cfg, data, values) {
     if (!cfg || cfg.chart !== 'share_dist') return;
     const badge = document.getElementById('share-dist-count-badge');
     if (!badge) return;
     const n = (data && data.count != null) ? data.count : values.reduce((a, b) => a + (Number(b) || 0), 0);
     badge.textContent = `${n} shares`;
+  }
+
+
+  function _updateShareDistSummary(data) {
+    const summary = document.getElementById('share-dist-summary');
+    if (!summary) return;
+    const stats = data && data.share_statistics;
+    if (!stats || stats.status === 'NO_DATA') {
+      summary.textContent = 'P50 — · P75 — · P90 — · P95 — · P99 — · MAX — · SAMPLE — · WINDOW —';
+      return;
+    }
+    const value = (number) => number == null ? '—' : fmt.diff(number);
+    const window = stats.observed_window || (stats.window_seconds != null ? `${stats.window_seconds}s` : '—');
+    summary.textContent = `P50 ${value(stats.p50)} · P75 ${value(stats.p75)} · P90 ${value(stats.p90)} · P95 ${value(stats.p95)} · P99 ${value(stats.p99)} · MAX ${value(stats.max)} · SAMPLE ${stats.sample_count == null ? '—' : stats.sample_count} · WINDOW ${window}`;
   }
   // P0-1: overlay the network target difficulty on the share histogram — a
   // solid purple reference line + readable badge so the operator sees how far
@@ -963,18 +1269,39 @@ function renderPool(pool, luck) {
   async function loadChartData(id) {
     const cfg = CHART_METRICS[id];
     if (!cfg) return;
+    const chart = _ensureDashboardChart(id);
+    if (!chart) return;
+    const range = _chartRange[id] || '1h';
+    const request = (_chartRequest[id] || 0) + 1;
+    _chartRequest[id] = request;
+    const isCurrent = () => _chartRequest[id] === request && charts[id] === chart &&
+      chart.canvas === document.getElementById(id) && Chart.getChart(chart.canvas) === chart &&
+      (_chartRange[id] || '1h') === range;
     try {
-      const r = await fetch(`/api/chart-data?chart=${cfg.chart}&range=${_chartRange[id] || '1h'}`);
-      if (r.status === 402) { await handleLicenseRequired(r); _chartRange[id] = '1h'; const _tb = document.getElementById('share-dist-target-badge'); if (_tb) _tb.textContent = 'target —'; return; }
+      const r = await fetch(`/api/chart-data?chart=${cfg.chart}&range=${range}`);
+      if (!isCurrent()) return;
+      if (r.status === 402) {
+        // Consume the async body before surfacing the lock; a newer range may
+        // have been selected while either fetch or JSON was in flight.
+        let locked = {};
+        try { locked = await r.json(); } catch (e) { /* status still proves a lock */ }
+        if (!isCurrent()) return;
+        await handleLicenseRequired({ json: async () => locked });
+        if (!isCurrent()) return;
+        _chartRange[id] = '1h';
+        const target = document.getElementById('share-dist-target-badge');
+        if (target) target.textContent = 'target —';
+        return;
+      }
       if (!r.ok) return;
       const data = await r.json();
-      const chart = charts[id];
-      if (!chart) return;
+      if (!isCurrent()) return;
       const rawLabels = (data.labels || []);
       const values = (data.datasets?.[0]?.data || data.datasets?.[0]?.values || []);
       chart.data.labels = rawLabels.map(t => _fmtChartLabel(t, cfg, id));
       chart.data.datasets[0].data = values;
       _updateShareDistBadge(cfg, data, values);
+      _updateShareDistSummary(data);
       // Fase 2.1: SMA overlay + shares bar + event annotations
       if (chart.data.datasets[1] && cfg.chart !== 'share_dist') {
         chart.data.datasets[1].data = computeSMA(values, Math.max(3, Math.round(values.length / 10)));
@@ -986,7 +1313,9 @@ function renderPool(pool, luck) {
       chart._annotations = buildChartAnnotations(data.events || [], rawLabels);
       _applyShareDistTarget(cfg, data, chart);
       chart.update('none');
-    } catch (e) { /* chart load silently */ }
+    } catch (e) {
+      if (isCurrent()) logMessage('CHART', 'Falha ao carregar ' + cfg.label, 'WARN');
+    }
   }
   // R1: gated chart-data ranges (30d/all) return 402 when the gate is live
   // and no key is present — reset the range to 1h and surface the CTA so the
@@ -1001,18 +1330,13 @@ function renderPool(pool, luck) {
     if (!inModuleMode && !chartsTab.classList.contains('active')) return;
     Object.keys(CHART_METRICS).forEach(id => {
       const canvas = document.getElementById(id);
-      if (!canvas) return;
-      // Pula canvases dentro de painéis ocultos (outro módulo) —
-      // Chart.js não consegue medir display:none
-      if (inModuleMode && canvas.offsetParent === null) return;
-      // init chart if not yet created
-      if (!charts[id]) {
-        const cfg = CHART_METRICS[id];
-        charts[id] = makeChart(id, cfg.label, cfg.color);
-      }
+      // Release removed/replaced canvases even while their module is hidden.
+      if (charts[id] && charts[id].canvas !== canvas) _releaseDashboardChart(id);
+      if (!canvas || (inModuleMode && canvas.offsetParent === null)) return;
       loadChartData(id);
     });
   }
+
   // ── Main render ──
   let prevSnapshot = null;
   function render(snap) {
@@ -1052,7 +1376,7 @@ function renderPool(pool, luck) {
     renderComparison(snap);
     renderSoloStats(snap.proximity);
     renderProximity(snap.proximity);
-    renderQuantumLock(snap.proximity);
+    renderSessionEvidence(snap.proximity);
     renderLiveCalc(snap.proximity);
     renderNetworkGauge(snap);
     renderMilestones(snap.milestones);
@@ -1182,6 +1506,9 @@ function renderPool(pool, luck) {
   function _attachChartZoom(chart) {
     const canvas = chart.canvas;
     if (!canvas) return;
+    const controller = new AbortController();
+    chart._zoomController = controller;
+    const on = (event, handler, options = {}) => canvas.addEventListener(event, handler, { ...options, signal: controller.signal });
     const MIN_POINTS = 5;
     const maxPoints = () => Math.max(MIN_POINTS, (chart.data.labels || []).length);
     const resetZoom = () => {
@@ -1189,7 +1516,7 @@ function renderPool(pool, luck) {
       delete chart.options.scales.x.max;
       chart.update('none');
     };
-    canvas.addEventListener('wheel', e => {
+    on('wheel', e => {
       e.preventDefault();
       const xs = chart.scales.x;
       if (!xs) return;
@@ -1205,7 +1532,7 @@ function renderPool(pool, luck) {
       chart.update('none');
     }, { passive: false });
     let drag = null;
-    canvas.addEventListener('pointerdown', e => {
+    on('pointerdown', e => {
       if (e.button !== 0) return;
       const xs = chart.scales.x;
       if (!xs) return;
@@ -1213,7 +1540,7 @@ function renderPool(pool, luck) {
       try { canvas.setPointerCapture(e.pointerId); } catch (err) { /* ignore */ }
       canvas.style.cursor = 'grabbing';
     });
-    canvas.addEventListener('pointermove', e => {
+    on('pointermove', e => {
       if (!drag) return;
       const xs = chart.scales.x;
       if (!xs || !(xs.max - xs.min)) return;
@@ -1223,15 +1550,15 @@ function renderPool(pool, luck) {
       chart.options.scales.x.max = newMin + (xs.max - xs.min);
       chart.update('none');
     });
-    canvas.addEventListener('pointerup', () => {
+    on('pointerup', () => {
       drag = null;
       canvas.style.cursor = '';
     });
-    canvas.addEventListener('pointercancel', () => {
+    on('pointercancel', () => {
       drag = null;
       canvas.style.cursor = '';
     });
-    canvas.addEventListener('dblclick', resetZoom);
+    on('dblclick', resetZoom);
     canvas.title = 'scroll to zoom · drag to pan · double-click to reset';
   }
 
@@ -1294,48 +1621,45 @@ function renderPool(pool, luck) {
           },
         },
       },
-      plugins: [chartEventAnnotationsPlugin],
+      plugins: [chartEventAnnotationsPlugin, {
+        id: 'dashboardZoomCleanup',
+        afterDestroy(chart) {
+          if (chart._zoomController) chart._zoomController.abort();
+        },
+      }],
     });
     if (!isHistogram) _attachChartZoom(chart);
     return chart;
   }
 
+  function _releaseDashboardChart(id) {
+    const chart = charts[id];
+    delete charts[id];
+    _chartRequest[id] = (_chartRequest[id] || 0) + 1;
+    if (chart && chart.canvas) chart.destroy();
+  }
+
+  function _ensureDashboardChart(id) {
+    const canvas = document.getElementById(id);
+    if (charts[id] && (charts[id].canvas !== canvas ||
+        (typeof Chart !== 'undefined' && Chart.getChart(canvas) !== charts[id]))) {
+      _releaseDashboardChart(id);
+    }
+    if (!canvas || typeof Chart === 'undefined') return null;
+    if (!charts[id]) {
+      const cfg = CHART_METRICS[id];
+      charts[id] = Chart.getChart(canvas) || makeChart(id, cfg.label, cfg.color);
+    }
+    return charts[id];
+  }
+
   async function loadChart(id, metric, range) {
-    try {
-      _chartRange[id] = range || '1h'; // persist the toolbar choice across refreshes
-      const r = await fetch(`/api/chart-data?chart=${metric}&range=${range}`);
-      if (r.status === 402) { await handleLicenseRequired(r); _chartRange[id] = '1h'; const _tb = document.getElementById('share-dist-target-badge'); if (_tb) _tb.textContent = 'target —'; return; }
-      if (!r.ok) return;
-      const data = await r.json();
-      const chart = charts[id];
-      if (!chart) return;
-      const cfg = CHART_METRICS[id] || {};
-      const rawLabels = (data.labels || []);
-      const values = (data.datasets?.[0]?.data || data.datasets?.[0]?.values || []);
-      chart.data.labels = rawLabels.map(t => _fmtChartLabel(t, cfg, id));
-      chart.data.datasets[0].data = values;
-      _updateShareDistBadge(cfg, data, values);
-      // Fase 2.1: SMA overlay + shares bar + event annotations
-      if (chart.data.datasets[1] && cfg.chart !== 'share_dist') {
-        chart.data.datasets[1].data = computeSMA(values, Math.max(3, Math.round(values.length / 10)));
-      }
-      if (chart.data.datasets[2] && Array.isArray(data.shares)) {
-        chart.data.datasets[2].data = data.shares;
-        chart.options.scales.y1.display = data.shares.some(s => s > 0);
-      }
-      chart._annotations = buildChartAnnotations(data.events || [], rawLabels);
-      _applyShareDistTarget(cfg, data, chart);
-      chart.update('none');
-    } catch (e) { /* chart load silently */ }
+    _chartRange[id] = range || '1h';
+    return loadChartData(id);
   }
 
   function initCharts() {
-    charts['chart-hashrate'] = makeChart('chart-hashrate', 'Hashrate', 'rgb(247,147,26)');
-    charts['chart-pool'] = makeChart('chart-pool', 'Pool HR', 'rgb(6,214,240)');
-    charts['chart-bestdiff'] = makeChart('chart-bestdiff', 'Best Diff', 'rgb(16,185,129)');
-    charts['chart-net'] = makeChart('chart-net', 'Net Diff', 'rgb(139,92,246)');
-    charts['chart-cumulative-p'] = makeChart('chart-cumulative-p', 'Cum P(Block)', 'rgb(139,92,246)');
-    charts['chart-share-dist'] = makeChart('chart-share-dist', 'Share Dist', 'rgb(16,185,129)');
+    Object.keys(CHART_METRICS).forEach(_ensureDashboardChart);
   }
 
   // Fase 2.1: clear any manual zoom/pan state so the chart renders the full

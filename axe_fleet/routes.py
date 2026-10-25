@@ -66,7 +66,13 @@ from .models import (
     derive_device_status,
     validate_agent_telemetry,
 )
-from .registry import DeviceRegistry, TelemetryIdempotencyConflict
+from .registry import (
+    DeviceRegistry,
+    TelemetryIdempotencyConflict,
+    DeviceIdentityConflict,
+    DeviceRemoved,
+    normalize_device_mac,
+)
 
 log = logging.getLogger("cypher65.axe.routes")
 
@@ -116,7 +122,7 @@ def _caps_supported_commands(caps) -> list:
     into READ-ONLY; a list passes through (older serializers); junk → []
     (the honest 'no commands' state)."""
     if isinstance(caps, dict):
-        return [k for k, v in caps.items() if v]
+        return [k for k, v in caps.items() if v is True]
     if isinstance(caps, list):
         return [c for c in caps if isinstance(c, str)]
     return []
@@ -243,18 +249,16 @@ def _safety_block_response(device_id: str, command: str, tenant_id: str, reason:
     )
 
 
-def _mark_cache_status(device_id: str, status: str) -> None:
-    """Flip the snapshot-cache entry status so the Fleet card reflects a
-    command immediately (Issue #13 — no wait for the next poll). Best-effort:
-    the poll loop remains the source of truth and confirms on the next cycle."""
-    try:
-        import services.state as _shared_state
+def _mark_cache_status(device_id: str, tenant_id: str) -> None:
+    """Publish committed command state through the telemetry cache boundary.
 
-        entry = _shared_state.axe_telemetry_cache.get(device_id)
-        if isinstance(entry, dict):
-            entry = dict(entry)
-            entry["status"] = status
-            _shared_state.axe_telemetry_cache[device_id] = entry
+    Best-effort UI refresh, without inventing a telemetry sample or device ACK.
+    Reading after the shared publisher lock prevents a delayed telemetry callback
+    from undoing this command's status in the snapshot cache (Issue #814).
+    """
+    try:
+        if _registry is not None:
+            _registry.publish_device_state(device_id, tenant_id)
     except Exception as exc:
         log.warning("[axe] cache status mark failed for %s: %s", device_id, exc)
 
@@ -429,6 +433,19 @@ def add_device(tenant_id: str = ""):
         emit_event("manual_add.failed", tenant_id=tenant_id, reason="duplicate")
         return jsonify({"error": "device already registered", "device": existing}), 409
 
+    if _registry.get_removed_by_ip(ip, tenant_id=tenant_id):
+        emit_event("manual_add.failed", tenant_id=tenant_id, reason="tombstoned")
+        return (
+            jsonify(
+                {
+                    "success": False,
+                    "code": "DEVICE_REMOVED",
+                    "error": "device was removed; use explicit restore with its valid MAC",
+                }
+            ),
+            409,
+        )
+
     # ── SaaS topology guard: on a cloud deploy a private LAN IP is
     #    unreachable by construction — registering it would create a card
     #    that stays OFFLINE forever (the server poll can't reach it either),
@@ -440,10 +457,6 @@ def add_device(tenant_id: str = ""):
     from .scanner import is_private_ip
 
     if is_cloud_deploy() and is_private_ip(ip):
-        # Operator typed this IP on cloud: that is restore intent for a
-        # previously removed miner. Clearing the tombstone does not probe
-        # the address — the agent on the LAN does.
-        restored = _registry.clear_tombstone(ip, tenant_id=tenant_id)
         queued = _registry.enqueue_agent_command(
             "_probe",
             "probe",
@@ -462,20 +475,20 @@ def add_device(tenant_id: str = ""):
             details={
                 "reason": "cloud_private_ip_agent_probe",
                 "queued": bool(queued),
-                "tombstone_cleared": bool(restored),
+                "tombstone_cleared": False,
             },
         )
         response = {
             "success": bool(queued),
             "queued": bool(queued),
             "is_cloud": True,
-            "restored": bool(restored),
+            "restored": False,
             "command_id": (queued or {}).get("id"),
             "error": None if queued else "agent command queue unavailable",
             "message": (
                 "IP privado enfileirado para o AGENTE LOCAL. Com o agente online na mesma LAN, o miner será sondado e registrado automaticamente — o Render nunca conecta em 192.168.x.x."
                 if queued
-                else "Não foi possível enfileirar o probe. O IP foi restaurado; tente novamente quando a fila do agente estiver disponível."
+                else "Não foi possível enfileirar o probe; tente novamente quando a fila do agente estiver disponível."
             ),
         }
         return jsonify(response), (202 if queued else 503)
@@ -510,12 +523,28 @@ def add_device(tenant_id: str = ""):
     # request for DETECT_TIMEOUT × probes, past the Playwright actionTimeout).
     try:
         device = _registry.add_device(ip, name or ip, tenant_id=tenant_id)
+    except DeviceIdentityConflict as exc:
+        emit_event("manual_add.failed", tenant_id=tenant_id, reason="identity_conflict")
+        return jsonify({"success": False, "code": exc.code, "error": str(exc)}), 409
     except Exception as e:
         emit_event(
             "manual_add.failed", tenant_id=tenant_id, reason="registration_error"
         )
         log.error("[axe] add_device error: %s", e)
         return jsonify({"error": f"failed to add device: {str(e)}"}), 500
+
+    if not device:
+        emit_event("manual_add.failed", tenant_id=tenant_id, reason="tombstoned")
+        return (
+            jsonify(
+                {
+                    "success": False,
+                    "code": "DEVICE_REMOVED",
+                    "error": "device identity was removed; explicit MAC-verified restore required",
+                }
+            ),
+            409,
+        )
 
     firmware = ""
     model = ""
@@ -580,11 +609,25 @@ def add_device(tenant_id: str = ""):
                         "firmware_version": version,
                         "status": status,
                     },
+                    tenant_id=tenant_id,
+                    active_only=True,
+                    identity_mac=device.get("mac_address"),
+                    expected_ip=ip,
                 )
                 # Re-fetch so the response carries the enriched fields
                 enriched = _registry.get_device(device["id"], tenant_id=tenant_id)
                 if enriched:
                     device = enriched
+            except DeviceIdentityConflict as exc:
+                emit_event(
+                    "manual_add.failed",
+                    tenant_id=tenant_id,
+                    reason="identity_changed_during_probe",
+                )
+                return (
+                    jsonify({"success": False, "code": exc.code, "error": str(exc)}),
+                    409,
+                )
             except Exception:
                 pass  # enrichment is best-effort; base device is still valid
 
@@ -639,21 +682,62 @@ def list_removed_devices(tenant_id: str = ""):
 @require_tenant
 @_role_required("member")
 def restore_removed_device(tenant_id: str = ""):
-    """Clear a tombstone so the local agent may register the miner again.
+    """Restore one tombstoned row with an explicit, matching MAC identity.
 
-    Body: { "ip_address": "192.168.1.10" }
-
-    This is operator intent. It never probes the IP and never inserts an
-    active device, so a cloud deploy cannot use restore as an SSRF path
-    to private addresses. Auto-resurrection without this call stays blocked.
+    Body: {"ip_address": "192.168.1.10", "mac": "02:00:00:00:00:01"}
+    Restoration never probes the address and retains the original row/history.
     """
     if _registry is None:
         return jsonify({"error": "registry not initialized"}), 500
     data = request.get_json(silent=True) or {}
     ip = (data.get("ip_address") or "").strip()
-    if not ip:
-        return jsonify({"success": False, "error": "ip_address is required"}), 400
-    cleared = _registry.clear_tombstone(ip, tenant_id=tenant_id)
+    mac = normalize_device_mac(data.get("mac"))
+    if not ip or not mac:
+        return (
+            jsonify(
+                {"success": False, "error": "ip_address and verified mac are required"}
+            ),
+            400,
+        )
+    try:
+        tombstone = _registry.get_removed_by_ip(ip, tenant_id=tenant_id)
+        if not tombstone:
+            return (
+                jsonify(
+                    {
+                        "success": False,
+                        "error": "no removed device for this IP",
+                        "ip_address": ip,
+                    }
+                ),
+                404,
+            )
+        if normalize_device_mac(tombstone.get("mac_address")) != normalize_device_mac(
+            mac
+        ):
+            return (
+                jsonify(
+                    {
+                        "success": False,
+                        "error": "MAC does not match tombstoned device",
+                        "code": "DEVICE_IDENTITY_CONFLICT",
+                    }
+                ),
+                409,
+            )
+        cleared = _registry.clear_tombstone(ip, tenant_id=tenant_id, mac_address=mac)
+    except DeviceIdentityConflict as exc:
+        return (
+            jsonify(
+                {
+                    "success": False,
+                    "error": "device identity conflict",
+                    "code": "DEVICE_IDENTITY_CONFLICT",
+                    "detail": str(exc),
+                }
+            ),
+            409,
+        )
     if not cleared:
         return (
             jsonify(
@@ -3216,8 +3300,10 @@ def _execute_device_command(device_id: str, command: str, tenant_id: str = None)
             # Issue #13: reflect the operator's intent immediately even when
             # the command runs on the home LAN — the agent's next telemetry
             # push (carrying mining_paused) confirms and self-heals any gap.
-            _registry.update_device(device_id, {"status": STATUS_PAUSED}, tenant_id=tid)
-            _mark_cache_status(device_id, STATUS_PAUSED)
+            if _registry.update_device(
+                device_id, {"status": STATUS_PAUSED}, tenant_id=tid
+            ):
+                _mark_cache_status(device_id, tid)
         if command == "restart":
             _safety_engine.record_restart(core_device)
         _log_audit(
@@ -3257,11 +3343,13 @@ def _execute_device_command(device_id: str, command: str, tenant_id: str = None)
         elif command == "pause":
             # ESP-Miner: POST /api/system/miningPause (empty body).
             result = conn.pause()
-            # Issue #13: reflect PAUSED immediately — never wait for the next
-            # poll. The DB row + snapshot cache flip together so the Fleet
-            # card shows the truth the moment the command succeeds.
-            _registry.update_device(device_id, {"status": STATUS_PAUSED}, tenant_id=tid)
-            _mark_cache_status(device_id, STATUS_PAUSED)
+            # Reflect the committed PAUSED intent without waiting for a poll.
+            # Cache publication follows any callback already in progress;
+            # telemetry, not this refresh, confirms the physical post-state.
+            if _registry.update_device(
+                device_id, {"status": STATUS_PAUSED}, tenant_id=tid
+            ):
+                _mark_cache_status(device_id, tid)
         elif command == "resume":
             # ESP-Miner: POST /api/system/miningResume (empty body).
             result = conn.resume()
@@ -3273,8 +3361,10 @@ def _execute_device_command(device_id: str, command: str, tenant_id: str = None)
                 tel = {}
             if tel:
                 new_st = derive_device_status(tel)
-                _registry.update_device(device_id, {"status": new_st}, tenant_id=tid)
-                _mark_cache_status(device_id, new_st)
+                if _registry.update_device(
+                    device_id, {"status": new_st}, tenant_id=tid
+                ):
+                    _mark_cache_status(device_id, tid)
         else:
             operation_ledger.update_operation(
                 operation_id,
@@ -4021,25 +4111,42 @@ def agent_heartbeat(agent_tenant_id: str = ""):
 @agent_bp.route("/register", methods=["POST"])
 @_require_agent
 def agent_register_devices(agent_tenant_id: str = ""):
-    """Register devices discovered by the agent (upsert by IP+tenant).
+    """Register devices by valid tenant-scoped MAC; IP is their locator.
     Body: {"devices": [{"ip": ..., "name": ..., "model": ...,
            "firmware": ..., "version": ..., "hostname": ...,
            "type": "bitaxe"|"cgminer", "mac": ...}, ...]}
     Returns the registered device dicts."""
     data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        return jsonify({"error": "object payload required"}), 400
     devices = data.get("devices") or []
     if not isinstance(devices, list) or not devices:
         return jsonify({"error": "devices array required"}), 400
     out = []
     blocked = []
     for d in devices:
-        ip = (d.get("ip") or "").strip()
-        if not ip:
+        if not isinstance(d, dict) or not isinstance(d.get("ip"), str):
+            blocked.append(
+                {"error": "device object with ip required", "code": "INVALID_DEVICE"}
+            )
             continue
-        # Plan worker cap: only NEW devices consume a slot (an upsert refresh
-        # of an already-registered device must never be rejected). Mirrors the
-        # manual POST /devices gate — the agent path must not bypass the plan.
-        existing = _registry.get_device_by_ip(ip, tenant_id=agent_tenant_id)
+        ip = d["ip"].strip()
+        if not ip:
+            blocked.append({"error": "ip required", "code": "INVALID_DEVICE"})
+            continue
+        try:
+            existing = _registry.find_device_for_identity(
+                ip, d.get("mac"), agent_tenant_id
+            )
+        except DeviceIdentityConflict as exc:
+            blocked.append({"ip": ip, "error": str(exc), "code": exc.code})
+            _log_audit(
+                agent_tenant_id,
+                "agent.register_blocked",
+                target=ip,
+                details={"reason": exc.code},
+            )
+            continue
         if not existing and not _can_add_worker(agent_tenant_id):
             plan = _get_tenant_plan(agent_tenant_id)
             blocked.append(
@@ -4057,22 +4164,32 @@ def agent_register_devices(agent_tenant_id: str = ""):
                 details={"reason": "plan_worker_limit"},
             )
             continue
-        dev = _registry.upsert_agent_device(
-            ip,
-            name=(d.get("name") or "").strip(),
-            tenant_id=agent_tenant_id,
-            info={
-                "model": d.get("model"),
-                "firmware": d.get("firmware"),
-                "version": d.get("version"),
-                "hostname": d.get("hostname"),
-                "mac": d.get("mac"),
-                "manufacturer": d.get("manufacturer"),
-                # type drives capabilities (bitaxe restart/identify via :80;
-                # cgminer restart via :4028, no identify).
-                "type": d.get("type"),
-            },
-        )
+        try:
+            dev = _registry.upsert_agent_device(
+                ip,
+                name=(d.get("name") or "").strip(),
+                tenant_id=agent_tenant_id,
+                info={
+                    "model": d.get("model"),
+                    "firmware": d.get("firmware"),
+                    "version": d.get("version"),
+                    "hostname": d.get("hostname"),
+                    "mac": d.get("mac"),
+                    "manufacturer": d.get("manufacturer"),
+                    # type drives capabilities (bitaxe restart/identify via :80;
+                    # cgminer restart via :4028, no identify).
+                    "type": d.get("type"),
+                },
+            )
+        except DeviceIdentityConflict as exc:
+            blocked.append({"ip": ip, "error": str(exc), "code": exc.code})
+            _log_audit(
+                agent_tenant_id,
+                "agent.register_blocked",
+                target=ip,
+                details={"reason": exc.code},
+            )
+            continue
         if not dev:
             # Tombstone: operator removed this IP — the agent must NOT
             # resurrect it. Report it as blocked so the agent drops it from
@@ -4105,15 +4222,25 @@ def agent_register_devices(agent_tenant_id: str = ""):
     )
 
 
+def _agent_identity_error(exc, tenant_id):
+    _log_audit(tenant_id, "agent.telemetry_blocked", details={"reason": exc.code})
+    removed = isinstance(exc, DeviceRemoved)
+    return jsonify(
+        {"success": False, "code": exc.code, "error": str(exc), "removed": removed}
+    ), (410 if removed else 409)
+
+
 @agent_bp.route("/telemetry", methods=["POST"])
 @_require_agent
 def agent_telemetry(agent_tenant_id: str = ""):
     """Push telemetry for one device (agent polling result).
-    Body: {"ip": ..., "telemetry": {...}} — telemetry uses the SAME
+    Body: {"ip": ..., "mac": ..., "telemetry": {...}} — telemetry uses the SAME
     normalized shape as the registry's extract_telemetry (hashrate_hs,
     temperature, fan_rpm, power_watts, best_diff, shares_*, ...)."""
     data = request.get_json(silent=True) or {}
-    ip = (data.get("ip") or "").strip()
+    if not isinstance(data, dict) or not isinstance(data.get("ip"), str):
+        return jsonify({"error": "object with ip required"}), 400
+    ip = data["ip"].strip()
     tel = data.get("telemetry")
     idempotency_key = data.get("idempotency_key", "")
     # Require the explicit key: `telemetry: {}` (empty) is legal (a device
@@ -4131,16 +4258,42 @@ def agent_telemetry(agent_tenant_id: str = ""):
             jsonify({"error": "invalid idempotency_key or missing sample timestamp"}),
             400,
         )
-    device = _registry.get_device_by_ip(ip, tenant_id=agent_tenant_id)
+    identity_mac = data.get("mac")
+    try:
+        device = _registry.find_device_for_identity(ip, identity_mac, agent_tenant_id)
+        if not device or device["ip_address"] != ip:
+            raise DeviceIdentityConflict(
+                "register the identity and current IP locator before telemetry"
+            )
+        if "device_id" in data and data["device_id"] != device["id"]:
+            raise DeviceIdentityConflict("device_id contradicts registered identity")
+        if "device_id" in tel and tel["device_id"] != device["id"]:
+            raise DeviceIdentityConflict(
+                "sample device_id contradicts registered identity"
+            )
+        if "mac" in tel and normalize_device_mac(tel["mac"]) != normalize_device_mac(
+            identity_mac
+        ):
+            raise DeviceIdentityConflict("sample MAC contradicts envelope identity")
+    except DeviceIdentityConflict as exc:
+        return _agent_identity_error(exc, agent_tenant_id)
     errors = validate_agent_telemetry(tel)
     if errors:
         reasons = sorted({error["reason"] for error in errors})
         fields = sorted({error["field"] for error in errors})
         is_new_quarantine = False
         if device:
-            is_new_quarantine = _registry.record_telemetry_quarantine(
-                device["id"], fields, reasons, tenant_id=agent_tenant_id
-            )
+            try:
+                is_new_quarantine = _registry.record_telemetry_quarantine(
+                    device["id"],
+                    fields,
+                    reasons,
+                    tenant_id=agent_tenant_id,
+                    identity_mac=identity_mac,
+                    expected_ip=ip,
+                )
+            except DeviceIdentityConflict as exc:
+                return _agent_identity_error(exc, agent_tenant_id)
         if is_new_quarantine:
             log.warning(
                 "[agent.telemetry_quarantined] tenant=%s ip=%s fields=%s reasons=%s",
@@ -4168,54 +4321,6 @@ def agent_telemetry(agent_tenant_id: str = ""):
             ),
             422,
         )
-    if not device:
-        # Agent reported a device it registered earlier but the row is gone
-        # (e.g. server DB reset). Re-upsert with the telemetry as identity —
-        # but respect the plan worker cap so the telemetry path can't bypass
-        # the limit that register enforces.
-        if not _can_add_worker(agent_tenant_id):
-            plan = _get_tenant_plan(agent_tenant_id)
-            _log_audit(
-                agent_tenant_id,
-                "agent.telemetry_blocked",
-                target=ip,
-                details={"reason": "plan_worker_limit"},
-            )
-            return (
-                jsonify(
-                    {
-                        "success": False,
-                        "error": "plan worker limit reached",
-                        "message": f"O plano {plan['plan']} permite no máximo {plan['max_workers']} workers. Remova um device ou aumente o limite.",
-                        "plan": plan["plan"],
-                        "max_workers": plan["max_workers"],
-                    }
-                ),
-                403,
-            )
-        device = _registry.upsert_agent_device(
-            ip, tenant_id=agent_tenant_id, info={"model": tel.get("model")}
-        )
-        if not device:
-            # Tombstoned: the operator removed this device. Acknowledge
-            # with 410 so the agent stops pushing it (it can never come
-            # back via the agent path — only an explicit operator add).
-            _log_audit(
-                agent_tenant_id,
-                "agent.telemetry_blocked",
-                target=ip,
-                details={"reason": "device_removed"},
-            )
-            return (
-                jsonify(
-                    {
-                        "success": False,
-                        "error": "device removed by operator",
-                        "removed": True,
-                    }
-                ),
-                410,
-            )
     # Echo the PERSISTED status (the registry decides ONLINE/IDLE/PAUSED/
     # STALE/OFFLINE honestly — an empty heartbeat is presence, not health;
     # re-deriving from the raw payload here would fake an IDLE for a miner
@@ -4226,7 +4331,11 @@ def agent_telemetry(agent_tenant_id: str = ""):
             tel,
             tenant_id=agent_tenant_id,
             idempotency_key=idempotency_key,
+            identity_mac=identity_mac,
+            expected_ip=ip,
         )
+    except DeviceIdentityConflict as exc:
+        return _agent_identity_error(exc, agent_tenant_id)
     except TelemetryIdempotencyConflict:
         return (
             jsonify({"success": False, "error": "idempotency key payload conflict"}),
@@ -4267,6 +4376,11 @@ def _valid_agent_probe_target(target) -> bool:
 def agent_pull_commands(agent_tenant_id: str = ""):
     """Pull queued commands (restart/identify) for this tenant's devices.
     Returns [] when nothing is pending."""
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"error": "object payload required"}), 400
+    protocol = data.get("command_protocol")
+    identity_capable = type(protocol) is int and protocol == 1
     cmds = _registry.pending_agent_commands(tenant_id=agent_tenant_id)
     pulled = []
     now = int(time.time())
@@ -4281,7 +4395,12 @@ def agent_pull_commands(agent_tenant_id: str = ""):
             age = now - int(c.get("created_at") or 0)
         except (TypeError, ValueError, OverflowError):
             age = AGENT_COMMAND_TTL_S + 1
-        if age < 0 or age > AGENT_COMMAND_TTL_S:
+        if c.get("status") == "pulled" and command != "probe":
+            # Delivery may have happened before a process/ACK failure. Never
+            # confuse absent acknowledgement with permission to repeat an effect.
+            reason = "delivery_outcome_unknown"
+            terminal_status = "unknown"
+        elif age < 0 or age > AGENT_COMMAND_TTL_S:
             reason = "command_expired"
             terminal_status = "expired"
         elif command == "probe":
@@ -4312,6 +4431,10 @@ def agent_pull_commands(agent_tenant_id: str = ""):
                 continue
         elif not can_execute_physical_command():
             reason = "deployment_policy_disabled"
+        elif not identity_capable:
+            # Old agents ignore new envelope fields. Leave pending until an
+            # upgraded consumer arrives or the operator's intent expires.
+            continue
         elif not dev:
             reason = "device_missing"
         elif not int(dev.get("agent_managed", 0) or 0):
@@ -4325,6 +4448,12 @@ def agent_pull_commands(agent_tenant_id: str = ""):
             reason = "device_ip_missing"
         elif command not in _caps_supported_commands(dev.get("capabilities")):
             reason = "command_capability_missing"
+        elif not normalize_device_mac(dev.get("mac_address")) or (
+            not isinstance(dev.get("capabilities"), dict)
+            or dev["capabilities"].get("agent_protocol")
+            not in {"bitaxe", "cgminer", "braiins"}
+        ):
+            reason = "command_identity_unavailable"
 
         if reason:
             _registry.terminalize_agent_command(
@@ -4357,6 +4486,10 @@ def agent_pull_commands(agent_tenant_id: str = ""):
                     "ip_address": (dev or {}).get("ip_address", ""),
                     "command": c["command"],
                     "params": c.get("params", {}),
+                    "command_protocol": 1,
+                    "expires_at": int(c["created_at"]) + AGENT_COMMAND_TTL_S,
+                    "expected_mac": normalize_device_mac(dev.get("mac_address")),
+                    "expected_type": dev["capabilities"]["agent_protocol"],
                 }
             )
     return jsonify({"success": True, "commands": pulled})

@@ -497,6 +497,47 @@ def collect(
     return events
 
 
+def summarize_coverage(points: list[dict]) -> dict:
+    """Summarize sample quality without treating missing values as zero."""
+    total = len(points or [])
+    valid = sum(
+        1
+        for point in points or []
+        if isinstance(point, dict)
+        and point.get("quality") == "observed"
+        and point.get("hashrate_th") is not None
+        and point.get("delivery_pct") is not None
+        and math.isfinite(_coverage_number(point.get("hashrate_th")))
+        and math.isfinite(_coverage_number(point.get("delivery_pct")))
+    )
+    stamps = [
+        point.get("observed_at")
+        for point in points or []
+        if isinstance(point, dict)
+        and isinstance(point.get("observed_at"), (int, float))
+        and math.isfinite(point["observed_at"])
+    ]
+    start_at = min(stamps) if stamps else None
+    end_at = max(stamps) if stamps else None
+    return {
+        "status": "AVAILABLE" if total else "NO DATA",
+        "observation_count": total,
+        "observed_count": valid,
+        "missing_count": total - valid,
+        "observed_pct": (valid / total * 100.0) if total else None,
+        "window_start": start_at,
+        "window_end": end_at,
+    }
+
+
+def _coverage_number(value: Any) -> float:
+    """Coerce already-validated JSON numeric values for coverage aggregation."""
+    try:
+        return float(value)
+    except (TypeError, ValueError, OverflowError):
+        return float("nan")
+
+
 def read(tenant_id: str, provider: str, rental_id: str) -> dict:
     """Return retained evidence and a fresh verdict for a single tenant.
 
@@ -519,6 +560,7 @@ def read(tenant_id: str, provider: str, rental_id: str) -> dict:
             binding=binding,
             sources=_sources(conn, tenant_id),
             evaluation=evaluate(binding, points, time.time()),
+            coverage=summarize_coverage(points),
             points=points[-20:],
             limitations=LIMITATIONS,
             retention_days=30,

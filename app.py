@@ -13,6 +13,7 @@ import sqlite3
 import threading
 import collections
 import logging
+import math
 import hmac
 import re
 import secrets
@@ -69,7 +70,8 @@ from services.poll_compute import (
 )
 from services.proximity import (
     _compute_quantum_lock,
-)  # FENIX: composite confidence score for the Quantum-Lock panel
+)
+from services.block_probability_lab import share_statistics
 from services.session_manager import SessionManager
 from services.user_polling import (
     UserPollingWorker,
@@ -89,6 +91,7 @@ from agents import (
 from routes.solo_mining_routes import solo_mining_bp
 from routes.device_control import device_control_bp
 from services.probability_engine import register_probability_routes
+from routes.block_probability_lab_routes import dashboard_bp as block_probability_lab_bp
 from services.hashrate_market import (
     PH_TO_TH,
     MIN_PLAUSIBLE_PRICE_BTC_TH_DAY as _MIN_PLAUSIBLE_PRICE,
@@ -274,8 +277,21 @@ if _w:
 app.register_blueprint(solo_mining_bp, url_prefix="/api/solo-mining")
 register_probability_routes(app)
 
+# ── Register Block Probability Lab blueprint ────────────────────────────────
+from routes.block_probability_lab_routes import (
+    dashboard_bp as block_probability_lab_blueprint,
+)
+
+app.register_blueprint(
+    block_probability_lab_blueprint, url_prefix="/api/block-probability-lab"
+)
+
 # ── Register Axe Fleet blueprint ────────────────────────────────────────────
 app.register_blueprint(axe_fleet_bp, url_prefix="/api/axe-fleet")
+
+# Read-only energy scenarios; never dispatches hardware commands (Issue #837).
+from routes.energy_advisor import create_energy_blueprint
+
 # ── Register Agent API blueprint (SaaS: local agent → cloud dashboard) ───
 app.register_blueprint(agent_bp)
 app.register_blueprint(agent_assets_bp)
@@ -716,6 +732,8 @@ def add_cache_headers(response):
 
 
 from services.db import get_db  # noqa: F401 — re-export (era uma duplicata)
+
+app.register_blueprint(create_energy_blueprint(get_db))
 
 # Inject the real get_db factory into the alerts blueprint so it doesn't need
 # to import the app module at runtime (avoids circular dependency).
@@ -1705,13 +1723,18 @@ _axe_registry = DeviceRegistry(get_db)
 _axe_registry.ensure_tables()
 _init_axe_routes(_axe_registry)
 
+# Issue #836: a dedicated allowlisted, read-only projection, not /api/snapshot.
+from routes.mini_war_room import create_mini_war_room_blueprint
+
+app.register_blueprint(create_mini_war_room_blueprint(lambda: _axe_registry))
+
 # ── Fleet snapshot cache: write-through + boot seed ──────────────────────
 # The /api/snapshot fleet block is assembled from axe_telemetry_cache, which
 # used to be fed ONLY by the server-side poll — a poll that SKIPS
 # agent-managed devices (the cloud can't reach the user's LAN). Result:
 # every agent push landed in the database but never reached the dashboard
 # (empty fleet → "miners not found" + "telemetry missing"). Fix at the
-# single choke point: save_telemetry() is the ONLY writer of axe_telemetry,
+# Committed registry telemetry is the write-through boundary for axe_telemetry,
 # so wrapping it here makes EVERY push (agent, server poll, manual) feed the
 # cache — it can no longer diverge from the database.
 
@@ -1776,15 +1799,24 @@ def _seed_axe_telemetry_cache(registry) -> None:
 _axe_save_telemetry_orig = _axe_registry.save_telemetry
 
 
-def _axe_save_telemetry_write_through(device_id, telemetry, tenant_id="default"):
-    _axe_save_telemetry_orig(device_id, telemetry, tenant_id=tenant_id)
+def _axe_telemetry_committed(device_id, telemetry, status=""):
     try:
-        _cache_axe_telemetry(device_id, telemetry)
+        _cache_axe_telemetry(device_id, telemetry, status=status)
     except Exception as e:
         log.warning("[axe] telemetry cache write-through failed: %s", e)
 
 
+def _axe_save_telemetry_write_through(
+    device_id, telemetry, tenant_id="default", idempotency_key=""
+):
+    inserted = _axe_save_telemetry_orig(
+        device_id, telemetry, tenant_id=tenant_id, idempotency_key=idempotency_key
+    )
+    return inserted
+
+
 _axe_registry.save_telemetry = _axe_save_telemetry_write_through
+_axe_registry.on_telemetry_committed = _axe_telemetry_committed
 
 # ── Auto-seed Axe Fleet with test devices if registry is empty ──
 _auto_seed_axe_fleet(_axe_registry)
@@ -3305,14 +3337,17 @@ def _poll_axe_fleet(ts: int) -> None:
                 if ts - last >= _axe_poll_interval(errors):
                     _shared_state.axe_last_poll_ts[did] = ts
                     try:
-                        tel = _axe_registry.poll_device(did)
+                        tel = _axe_registry.poll_device(
+                            did, tenant_id=device.get("tenant_id") or "default"
+                        )
                     except Exception as e:
                         _shared_state.axe_poll_error_counts[did] = errors + 1
                         log.warning("[axe poll] error for device %s: %s", did, e)
                         continue
                     if tel:
                         _shared_state.axe_poll_error_counts.pop(did, None)
-                        _cache_axe_telemetry(did, tel)
+                        # Registry publishes committed current state under its lock.
+                        # Re-caching this return value could overwrite a newer sample.
                     else:
                         _shared_state.axe_poll_error_counts[did] = errors + 1
     except Exception as e:
@@ -3702,6 +3737,7 @@ def _do_poll():
                 # target). When that's missing, fall back to best_diff / 2
                 # (vardiff typically doubles after every accepted share).
                 share_diff_raw = 0.0
+                estimated = False
                 try:
                     d = worker.get("difficulty")
                     if isinstance(d, (int, float)) and d > 0:
@@ -3712,6 +3748,7 @@ def _do_poll():
                         share_diff_raw = (
                             parse_diff_to_float(worker.get("bestDifficulty")) / 2.0
                         )
+                        estimated = True
                 except Exception:
                     share_diff_raw = 0.0
                 if share_diff_raw and current_difficulty and gap and gap > 0:
@@ -3723,6 +3760,7 @@ def _do_poll():
                         current_difficulty,
                         worker.get("bestDifficulty"),
                         timeline_state["session_share_count"],
+                        estimated=estimated,
                     )
                     timeline_state["share_calc_history"].append(share_calc)
 
@@ -5807,16 +5845,24 @@ def api_device_diagnostics(device_id: str, tenant_id: str = ""):
 
 
 def _add_maintenance_record(
-    device_id: str, record_type: str, notes: str, performed_by: str
+    device_id: str,
+    record_type: str,
+    notes: str,
+    performed_by: str,
+    tenant_id: str | None = None,
 ) -> dict:
-    """Persist a maintenance record to the SQLite database."""
+    """Persist explicit ownership, leaving legacy callers unattributed.
+
+    Example: ``_add_maintenance_record(id, "cleaning", "", "", tenant_id="a")``.
+    """
     ts = int(time.time())
     conn = get_db()
     c = conn.cursor()
     c.execute(
-        """INSERT INTO maintenance_records (ts, device_id, type, notes, performed_by)
-           VALUES (?, ?, ?, ?, ?)""",
-        (ts, device_id, record_type, notes, performed_by),
+        """INSERT INTO maintenance_records
+           (ts, device_id, type, notes, performed_by, tenant_id)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        (ts, device_id, record_type, notes, performed_by, tenant_id),
     )
     conn.commit()
     record_id = c.lastrowid
@@ -5900,7 +5946,9 @@ def api_create_device_maintenance(device_id: str, tenant_id: str = ""):
     if not record_type:
         return jsonify({"error": "type is required", "success": False}), 400
 
-    record = _add_maintenance_record(device_id, record_type, notes, performed_by)
+    record = _add_maintenance_record(
+        device_id, record_type, notes, performed_by, tenant_id=tenant_id
+    )
     return (
         jsonify(
             {
@@ -6285,9 +6333,21 @@ def _sync_market_prices_to_state(offers: list):
         estimated = bool(getattr(offer, "estimated", False))
         if isinstance(offer, dict):
             estimated = bool(offer.get("estimated", False))
+        meta = getattr(offer, "meta", None)
+        if meta is None and isinstance(offer, dict):
+            meta = offer.get("meta")
+        fetched_at = meta.get("fetched_at") if isinstance(meta, dict) else None
+        try:
+            observed_at = int(fetched_at) if fetched_at is not None else None
+        except (TypeError, ValueError, OverflowError):
+            observed_at = None
+        hashrate = getattr(offer, "hashrate", None)
+        if hashrate is None and isinstance(offer, dict):
+            hashrate = offer.get("hashrate")
         _shared_state.last_known_prices[provider] = {
             "price": price_ph,
-            "ts": int(time.time()),
+            "ts": observed_at,
+            "hashrate": hashrate,
             "label": provider.capitalize(),
             "source": source or provider,
             "estimated": estimated,
@@ -6314,7 +6374,12 @@ def api_hashrate_market():
     # HashratePulse Enterprise institutional view
     from services.hashrate_market import compute_institutional_view
 
-    inst_view = compute_institutional_view(offers, network_hashrate, btc_usd)
+    inst_view = compute_institutional_view(
+        offers,
+        network_hashrate,
+        btc_usd,
+        provider_cache=_shared_state.last_known_prices,
+    )
 
     return jsonify(
         {
@@ -6345,7 +6410,12 @@ def api_hashrate_market_institutional():
     return jsonify(
         {
             "success": True,
-            **compute_institutional_view(offers, network_hashrate, btc_usd),
+            **compute_institutional_view(
+                offers,
+                network_hashrate,
+                btc_usd,
+                provider_cache=_shared_state.last_known_prices,
+            ),
         }
     )
 
@@ -7137,13 +7207,13 @@ def api_rentals_detail(tenant_id: str = ""):
         )
         # Economic P/L — expected gross yield (network hashrate) vs paid:
         # the "did this rental make money?" question, computed server-side.
-        # MRR reports price.paid as a STRING — coerce before the ×1e8 math.
-        _paid = _rental_perf._num((raw.get("price") or {}).get("paid"))
+        # Only an explicitly BTC-denominated provider payment becomes sats.
+        _paid_sats = perf.get("paid_sats")
         # Historical-P/L fix: price the rental against the network hashrate
         # OBSERVED at its time (nearest snapshot, current as last resort).
         pl = _rental_perf.attach_pl(
             perf,
-            (_paid * 1e8) if _paid is not None else None,
+            _paid_sats,
             network_hashrate_hs=_rental_perf._resolve_network_hashrate_for_rental(
                 raw.get("start"), raw.get("end")
             ),
@@ -8230,12 +8300,23 @@ def api_chart_data():
                 labels.append(int(e.get("ts") or 0) * 1000)
                 values.append(round(cum * 100, 6))
         else:
-            # Histogram of share difficulty across the session
-            diffs = [
-                float(e.get("share_diff_raw") or 0)
-                for e in sch
-                if e.get("share_diff_raw")
-            ]
+            # Histogram and percentiles use only valid, finite share observations.
+            diffs = []
+            for entry in sch:
+                try:
+                    value = float(entry.get("share_diff_raw"))
+                except (AttributeError, TypeError, ValueError):
+                    continue
+                if math.isfinite(value) and value > 0:
+                    diffs.append(value)
+            share_stats = share_statistics(
+                timeline_state.get("session_share_count"),
+                sch,
+                window_seconds=3600.0,
+                user_hashrate=(latest_snapshot.get("worker") or {}).get("hashrate"),
+                network_hashrate=(latest_snapshot.get("network") or {}).get("hashrate"),
+                observed_now=time.time(),
+            )
             target_diff = None
             target_bucket = None
             if diffs:
@@ -8280,6 +8361,7 @@ def api_chart_data():
                 # purple reference line overlay). Null when unavailable.
                 "target_diff": target_diff if chart == "share_dist" else None,
                 "target_bucket": target_bucket if chart == "share_dist" else None,
+                "share_statistics": share_stats if chart == "share_dist" else None,
                 "datasets": [
                     {
                         "label": (
@@ -8458,7 +8540,11 @@ _FULL_ACCESS_WALLETS = frozenset(
 )
 
 
+from services.operator_wallet import operator_wallet_required
+
+
 @app.route("/api/set-address", methods=["POST"])
+@operator_wallet_required("admin")
 @require_tenant
 @role_required("member")
 def api_set_address(tenant_id: str = ""):

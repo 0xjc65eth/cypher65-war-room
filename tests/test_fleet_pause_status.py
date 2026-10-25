@@ -131,8 +131,18 @@ def _make_registry(tmp_path):
 class TestRegistryPollPaused:
     def test_poll_device_marks_paused(self, tmp_path):
         reg, _ = _make_registry(tmp_path)
-        dev = reg.add_device("192.168.1.99", "Paused-Bitaxe", tenant_id="t1")
-        assert dev["status"] == STATUS_OFFLINE
+        with patch("axe_fleet.registry.AxeOSConnector") as connector:
+            connector.return_value.fetch_info.return_value = {
+                "ASICModel": "Bitaxe",
+                "macAddr": "02:00:00:00:01:99",
+                "hashRate": 100.0,
+                "miningPaused": False,
+            }
+            connector.return_value.detect_capabilities.return_value = {
+                "telemetry": True
+            }
+            dev = reg.add_device("192.168.1.99", "Paused-Bitaxe", tenant_id="t1")
+        assert dev["status"] == "ONLINE"  # 100 GH/s from the verified probe
 
         class FakeConn:
             def __init__(self, ip):
@@ -140,6 +150,7 @@ class TestRegistryPollPaused:
 
             def extract_telemetry(self):
                 tel = new_telemetry(dev["id"])
+                tel["mac"] = dev["mac_address"]
                 tel["hashrate_hs"] = 0
                 tel["mining_paused"] = True
                 return tel
@@ -154,7 +165,16 @@ class TestRegistryPollPaused:
         """The exact Issue #13 regression: firmware reports a stale hashrate
         while paused — the card must still flip to PAUSED."""
         reg, _ = _make_registry(tmp_path)
-        dev = reg.add_device("192.168.1.98", "Stale-HR", tenant_id="t1")
+        with patch("axe_fleet.registry.AxeOSConnector") as connector:
+            connector.return_value.fetch_info.return_value = {
+                "ASICModel": "Bitaxe",
+                "macAddr": "02:00:00:00:01:98",
+                "hashRate": 100.0,
+            }
+            connector.return_value.detect_capabilities.return_value = {
+                "telemetry": True
+            }
+            dev = reg.add_device("192.168.1.98", "Stale-HR", tenant_id="t1")
 
         class FakeConn:
             def __init__(self, ip):
@@ -162,6 +182,7 @@ class TestRegistryPollPaused:
 
             def extract_telemetry(self):
                 tel = new_telemetry(dev["id"])
+                tel["mac"] = dev["mac_address"]
                 tel["hashrate_hs"] = 1.4e12  # stale reading
                 tel["mining_paused"] = True
                 return tel
@@ -172,7 +193,16 @@ class TestRegistryPollPaused:
 
     def test_save_agent_telemetry_marks_paused(self, tmp_path):
         reg, _ = _make_registry(tmp_path)
-        dev = reg.add_device("192.168.1.97", "Agent-Paused", tenant_id="t2")
+        with patch("axe_fleet.registry.AxeOSConnector") as connector:
+            connector.return_value.fetch_info.return_value = {
+                "ASICModel": "Bitaxe",
+                "macAddr": "02:00:00:00:01:97",
+                "hashRate": 100.0,
+            }
+            connector.return_value.detect_capabilities.return_value = {
+                "telemetry": True
+            }
+            dev = reg.add_device("192.168.1.97", "Agent-Paused", tenant_id="t2")
         tel = {"hashrate_hs": 0, "mining_paused": True, "ts": 1700000000}
         reg.save_agent_telemetry(dev["id"], tel, tenant_id="t2")
         assert reg.get_device(dev["id"], tenant_id="t2")["status"] == STATUS_PAUSED
@@ -202,9 +232,7 @@ def _confirmed_post(client, endpoint):
     prepared = client.post(endpoint, json={"dry_run": False})
     assert prepared.status_code == 202
     token = prepared.get_json()["confirmation_token"]
-    return client.post(
-        endpoint, json={"dry_run": False, "confirmation_token": token}
-    )
+    return client.post(endpoint, json={"dry_run": False, "confirmation_token": token})
 
 
 @pytest.fixture
@@ -240,37 +268,24 @@ class TestPauseResumeRoutes:
         assert call[0][0] == "dev-pause-1"
         assert call[0][1]["status"] == STATUS_PAUSED
 
-    def test_pause_updates_snapshot_cache(self, client):
+    def test_pause_publishes_committed_state_for_request_tenant(self, client):
         reg = _mock_registry()
-        import services.state as _shared_state
 
-        _shared_state.axe_telemetry_cache["dev-pause-1"] = {
-            "device_id": "dev-pause-1",
-            "hashrate_hs": 1.4e12,
-            "status": "ONLINE",
-            "hashrate": 1.4e12,
-        }
-        try:
+        class FakeConn:
+            def __init__(self, ip):
+                pass
 
-            class FakeConn:
-                def __init__(self, ip):
-                    pass
+            def pause(self):
+                return {"success": True}
 
-                def pause(self):
-                    return {"success": True}
-
-            with patch("axe_fleet.routes._registry", reg), patch(
-                "axe_fleet.routes.AxeOSConnector", FakeConn
-            ):
-                resp = _confirmed_post(
-                    client, "/api/axe-fleet/devices/dev-pause-1/pause"
-                )
-            assert resp.status_code == 200
-            cached = _shared_state.axe_telemetry_cache["dev-pause-1"]
-            assert cached["status"] == STATUS_PAUSED
-        finally:
-            # Module-level cache: never leak the entry into later tests.
-            _shared_state.axe_telemetry_cache.pop("dev-pause-1", None)
+        with patch("axe_fleet.routes._registry", reg), patch(
+            "axe_fleet.routes.AxeOSConnector", FakeConn
+        ):
+            resp = _confirmed_post(client, "/api/axe-fleet/devices/dev-pause-1/pause")
+        assert resp.status_code == 200
+        tenant = reg.update_device.call_args.kwargs["tenant_id"]
+        assert tenant
+        reg.publish_device_state.assert_called_once_with("dev-pause-1", tenant)
 
     def test_resume_repolls_and_derives_online(self, client):
         reg = _mock_registry()
@@ -293,9 +308,7 @@ class TestPauseResumeRoutes:
         with patch("axe_fleet.routes._registry", reg), patch(
             "axe_fleet.routes.AxeOSConnector", FakeConn
         ):
-            resp = _confirmed_post(
-                client, "/api/axe-fleet/devices/dev-pause-1/resume"
-            )
+            resp = _confirmed_post(client, "/api/axe-fleet/devices/dev-pause-1/resume")
         assert resp.status_code == 200
         calls = reg.update_device.call_args_list
         assert len(calls) >= 1
@@ -333,9 +346,7 @@ class TestPauseResumeRoutes:
         with patch("axe_fleet.routes._registry", reg), patch(
             "axe_fleet.routes.AxeOSConnector", FakeConn
         ):
-            resp = _confirmed_post(
-                client, "/api/axe-fleet/devices/dev-pause-1/resume"
-            )
+            resp = _confirmed_post(client, "/api/axe-fleet/devices/dev-pause-1/resume")
         assert resp.status_code == 200
         assert reg.update_device.call_args[0][1]["status"] == "IDLE"
 
@@ -358,9 +369,7 @@ class TestPauseResumeRoutes:
         with patch("axe_fleet.routes._registry", reg), patch(
             "axe_fleet.routes.AxeOSConnector", FakeConn
         ):
-            resp = _confirmed_post(
-                client, "/api/axe-fleet/devices/dev-pause-1/resume"
-            )
+            resp = _confirmed_post(client, "/api/axe-fleet/devices/dev-pause-1/resume")
         assert resp.status_code == 200
         assert resp.get_json()["success"] is True
 
@@ -373,10 +382,12 @@ class TestPauseResumeRoutes:
 class TestAgentTelemetryPaused:
     def test_agent_telemetry_response_reports_paused(self, client):
         reg = _mock_registry()
-        reg.get_device_by_ip.return_value = {
+        reg.find_device_for_identity.return_value = {
             "id": "dev-pause-1",
             "name": "T",
             "ip_address": "192.168.1.55",
+            "mac_address": "02:00:00:00:01:55",
+            "removed_at": 0,
         }
         reg.save_agent_telemetry.return_value = STATUS_PAUSED
 
@@ -389,6 +400,7 @@ class TestAgentTelemetryPaused:
                 "/api/agent/telemetry",
                 json={
                     "ip": "192.168.1.55",
+                    "mac": "02:00:00:00:01:55",
                     "telemetry": {"hashrate_hs": 0, "mining_paused": True},
                 },
                 headers={"Authorization": "Bearer fake-agent-token"},

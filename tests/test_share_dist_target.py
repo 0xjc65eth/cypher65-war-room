@@ -55,6 +55,9 @@ class TestShareDistTarget:
         assert d["target_diff"] == 3e11
         assert d["target_bucket"] is not None
         assert 0 <= d["target_bucket"] < len(d["datasets"][0]["data"])
+        assert d["share_statistics"]["sample_count"] == 5
+        assert d["share_statistics"]["p50"] == 3e11
+        assert d["share_statistics"]["max"] == 5e11
 
     def test_target_below_histogram_clamps_to_zero(self):
         _seed_network(5e10)  # below lo=1e11 → bucket 0
@@ -87,3 +90,5 @@ class TestShareDistTarget:
             d = c.get("/api/chart-data?chart=share_dist&range=1h").get_json()
         assert d["labels"] == []
         assert d["datasets"][0]["data"] == []
+        assert d["share_statistics"]["sample_count"] == 0
+        assert d["share_statistics"]["p50"] is None

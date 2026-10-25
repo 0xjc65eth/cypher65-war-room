@@ -1,6 +1,6 @@
 # iOS release gates 062–077
 
-Last reviewed: 2026-09-01. `PASS` requires reproducible evidence; configuration
+Last reviewed: 2026-10-04. `PASS` requires reproducible evidence; configuration
 or JavaScript export alone is not a native release.
 
 | Gate | State | Current evidence / remaining work |
@@ -10,7 +10,7 @@ or JavaScript export alone is not a native release.
 | 064 Simulator install | PASS | The same run installed the generated `.app` on the iOS 26.2 iPhone 16e simulator. |
 | 065 iOS launch | PASS | Bundle `com.cypher65.warroom` launched as PID `21157`, remained observable after five seconds, and rendered the login UI in the captured screenshot. |
 | 066 Human E2E | FAIL | Human/native journey is not implemented. |
-| 067 Lifecycle | FAIL | Background/foreground/termination matrix not implemented. |
+| 067 Lifecycle | FAIL | Issue #754 adds AppState-aware read-only polling and JavaScript regression evidence; installed-app background/foreground/termination matrix is still absent. See `qa/ISSUE_754_MOBILE_LIFECYCLE_CHECKPOINT.md`. |
 | 068 Networking | FAIL | Latency, packet loss, DNS and recovery matrix not implemented. |
 | 069 Security | FAIL | ATS is declared; native artifact/Keychain/entitlement audit remains. |
 | 070 No secrets | FAIL | Heuristic `.app` scan is defense-in-depth, not full extraction certification. |
@@ -32,3 +32,11 @@ inventory/boot log, process evidence and launch screenshot. This automated
 smoke test is not a substitute for gate 066 human E2E. GitHub retains this
 artifact for 14 days; after expiry, the recorded run and digest remain
 historical evidence, but the artifact itself can no longer be re-inspected.
+
+Current local limitation (2026-10-04): Xcode 26.6 is available, but authorized
+read-only `xcrun simctl list runtimes -j` and `list devices available -j` return
+empty inventories. This is not a passing native lifecycle test. No runtime,
+signing certificate, physical-device operation or external service was installed
+or enabled by Issue #754. Gates 066–075 remain implementation/validation work,
+not universally blocked by Apple signing; only 076–077 have that explicit
+external authorization boundary.

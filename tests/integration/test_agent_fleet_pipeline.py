@@ -1,6 +1,7 @@
 """Local E2E: scan → register → telemetry → Fleet list, no physical miner."""
 
 import sqlite3
+import time
 from unittest.mock import patch
 
 import pytest
@@ -94,7 +95,7 @@ def test_scan_register_telemetry_and_fleet_listing(fleet_pipeline, monkeypatch, 
         pushed = client.post(
             "/api/agent/telemetry",
             headers=agent_headers,
-            json={"ip": host, "telemetry": telemetry},
+            json={"ip": host, "mac": discovered[0]["mac"], "telemetry": telemetry},
         )
         assert pushed.status_code == 200
         assert pushed.get_json()["status"] in ("ONLINE", "HASHING")
@@ -129,7 +130,12 @@ def test_scan_register_telemetry_and_fleet_listing(fleet_pipeline, monkeypatch, 
         # Exercise a real command/reboot/error/recovery sequence against only
         # the loopback virtual device, never a physical miner.
         restarted = agent._exec_command(
-            {"ip_address": host, "command": "restart"},
+            {
+                "id": "sim-command-842", "device_id": device["id"],
+                "ip_address": host, "command": "restart", "command_protocol": 1,
+                "expires_at": int(time.time()) + 300,
+                "expected_mac": discovered[0]["mac"], "expected_type": "bitaxe",
+            },
             known={host: {"type": "bitaxe"}},
         )
         assert restarted == (True, "HTTP 200")
@@ -138,7 +144,7 @@ def test_scan_register_telemetry_and_fleet_listing(fleet_pipeline, monkeypatch, 
         outage_push = client.post(
             "/api/agent/telemetry",
             headers=agent_headers,
-            json={"ip": host, "telemetry": outage_sample},
+            json={"ip": host, "mac": discovered[0]["mac"], "telemetry": outage_sample},
         )
         assert outage_push.status_code == 200
         during_outage = client.get("/api/axe-fleet/devices", headers=viewer_headers)
@@ -151,7 +157,7 @@ def test_scan_register_telemetry_and_fleet_listing(fleet_pipeline, monkeypatch, 
         recovery_push = client.post(
             "/api/agent/telemetry",
             headers=agent_headers,
-            json={"ip": host, "telemetry": recovered},
+            json={"ip": host, "mac": discovered[0]["mac"], "telemetry": recovered},
         )
         assert recovery_push.status_code == 200
         after_recovery = client.get("/api/axe-fleet/devices", headers=viewer_headers)

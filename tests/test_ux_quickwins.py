@@ -24,10 +24,12 @@ def client():
 
 def _db():
     from app import get_db
+
     return get_db()
 
 
 # ── POST /api/settings/test-webhook ───────────────────────────────────────
+
 
 class TestTestWebhook:
     def test_400_when_no_webhook_configured(self, client, monkeypatch):
@@ -41,29 +43,33 @@ class TestTestWebhook:
         assert "not configured" in r.get_json()["error"]
 
     def test_403_when_not_pro(self, client, monkeypatch):
-        monkeypatch.setattr(settings_routes, "load_settings",
-                            lambda tenant_id="": {"webhook_url": "https://hooks.example.com/abc"})
+        monkeypatch.setattr(
+            settings_routes,
+            "load_settings",
+            lambda tenant_id="": {"webhook_url": "https://hooks.example.com/abc"},
+        )
         monkeypatch.setattr(settings_routes, "is_pro", lambda: False)
         r = client.post("/api/settings/test-webhook")
         assert r.status_code == 403
         assert "PRO" in r.get_json()["error"]
 
     def test_posts_sample_payload_and_reports_status(self, client, monkeypatch):
-        monkeypatch.setattr(settings_routes, "load_settings",
-                            lambda tenant_id="": {"webhook_url": "https://hooks.example.com/abc"})
+        monkeypatch.setattr(
+            settings_routes,
+            "load_settings",
+            lambda tenant_id="": {"webhook_url": "https://hooks.example.com/abc"},
+        )
         monkeypatch.setattr(settings_routes, "is_pro", lambda: True)
         sent = {}
 
-        class FakeResp:
-            status_code = 204
-
-        def fake_post(url, json=None, timeout=4):
+        def fake_delivery(url, payload):
             sent["url"] = url
-            sent["payload"] = json
-            sent["timeout"] = timeout
-            return FakeResp()
+            sent["payload"] = payload
+            return 204
 
-        monkeypatch.setattr("requests.post", fake_post)
+        monkeypatch.setattr(
+            "services.webhook_delivery.deliver_test_webhook", fake_delivery
+        )
         r = client.post("/api/settings/test-webhook")
         assert r.status_code == 200
         data = r.get_json()
@@ -74,25 +80,30 @@ class TestTestWebhook:
         assert sent["payload"]["event"] == "cypher65_war_room_alert"
         assert sent["payload"]["severity"] == "TEST"
         assert "message" in sent["payload"]
-        assert "worker" in sent["payload"]
-        assert "address" in sent["payload"]
-        assert sent["timeout"] > 0
+        assert sent["payload"]["worker"] == "cypher65-test"
+        assert sent["payload"]["address"] == ""
 
     def test_502_on_network_error(self, client, monkeypatch):
-        monkeypatch.setattr(settings_routes, "load_settings",
-                            lambda tenant_id="": {"webhook_url": "https://hooks.example.com/abc"})
+        monkeypatch.setattr(
+            settings_routes,
+            "load_settings",
+            lambda tenant_id="": {"webhook_url": "https://hooks.example.com/abc"},
+        )
         monkeypatch.setattr(settings_routes, "is_pro", lambda: True)
 
-        def boom(url, json=None, timeout=4):
-            raise ConnectionError("no route to host")
+        from services.webhook_delivery import WebhookDeliveryError
 
-        monkeypatch.setattr("requests.post", boom)
+        def boom(url, payload):
+            raise WebhookDeliveryError("delivery_unavailable")
+
+        monkeypatch.setattr("services.webhook_delivery.deliver_test_webhook", boom)
         r = client.post("/api/settings/test-webhook")
         assert r.status_code == 502
         assert r.get_json()["success"] is False
 
 
 # ── GET /api/automation-executions ────────────────────────────────────────
+
 
 class TestAutomationExecutions:
     @pytest.fixture(autouse=True)
@@ -113,15 +124,25 @@ class TestAutomationExecutions:
             " condition_value, action_command, action_parameters, is_enabled, "
             " min_interval_seconds, tenant_id) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (rule_id, f"rule-{rule_id}", "dev-1", "temperature", ">", 80,
-             "restart", "{}", 1, 60, tenant_id),
+            (
+                rule_id,
+                f"rule-{rule_id}",
+                "dev-1",
+                "temperature",
+                ">",
+                80,
+                "restart",
+                "{}",
+                1,
+                60,
+                tenant_id,
+            ),
         )
         conn.execute(
             "INSERT INTO automation_execution_log "
             "(ts, rule_id, rule_name, device_id, action_command, status, reason, result) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (ts, rule_id, f"rule-{rule_id}", "dev-1", "restart",
-             "ok", "", "{}"),
+            (ts, rule_id, f"rule-{rule_id}", "dev-1", "restart", "ok", "", "{}"),
         )
         conn.commit()
 
@@ -159,7 +180,9 @@ class TestAutomationExecutions:
     def test_deleted_rule_hides_orphaned_execution(self, client):
         conn = _db()
         self._seed(conn, tenant_id="default", rule_id=9200, ts=1700000200)
-        conn.execute("DELETE FROM automation_rules WHERE id=9200 AND tenant_id='default'")
+        conn.execute(
+            "DELETE FROM automation_rules WHERE id=9200 AND tenant_id='default'"
+        )
         conn.commit()
         conn.close()
         r = client.get("/api/automation-executions")

@@ -14,6 +14,7 @@ Unit tests against REAL mock servers (ephemeral ports) for the local agent
 import json
 import socket
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
@@ -279,7 +280,9 @@ class TestTelemetry:
             lambda ip, command: {"SUMMARY": [{"GHS av": float("inf")}]},
         )
 
-        tel = agent._poll_telemetry({"ip": "127.0.0.1", "type": "cgminer"})
+        tel = agent._poll_telemetry(
+            {"ip": "127.0.0.1", "type": "cgminer", "mac": "02:00:00:00:02:01"}
+        )
 
         assert tel == {"_invalid_fields": ["hashrate_hs"]}
 
@@ -288,7 +291,12 @@ class TestTelemetry:
     ):
         monkeypatch.setattr(agent, "CGMINER_PORT", cgminer_mock)
         tel = agent._poll_telemetry(
-            {"ip": "127.0.0.1", "type": "cgminer", "model": "Antminer S19j Pro"}
+            {
+                "ip": "127.0.0.1",
+                "type": "cgminer",
+                "model": "Antminer S19j Pro",
+                "mac": "02:00:00:00:02:01",
+            }
         )
         assert tel["hashrate_hs"] == 91_200_000_000  # GHS 5s 91.2 × 1e9
         assert tel["temperature"] == 62.5  # from stats temp2_0
@@ -302,7 +310,12 @@ class TestTelemetry:
     def test_axeos_poll_is_full_telemetry(self, monkeypatch, axeos_mock):
         monkeypatch.setattr(agent, "AXEOS_PORT", axeos_mock)
         tel = agent._poll_telemetry(
-            {"ip": "127.0.0.1", "type": "bitaxe", "model": "Gamma 900"}
+            {
+                "ip": "127.0.0.1",
+                "type": "bitaxe",
+                "model": "Gamma 900",
+                "mac": _AXEOS_INFO["mac"],
+            }
         )
         assert tel["hashrate_hs"] == 912345678901
         assert tel["temperature"] == 53.2
@@ -319,9 +332,9 @@ class TestTelemetry:
         (miningResume) desliga o flag e devolve o hashrate."""
         monkeypatch.setattr(agent, "AXEOS_PORT", axeos_mock)
         known = {"127.0.0.1": {"type": "bitaxe"}}
-        dev = {"ip": "127.0.0.1", "type": "bitaxe"}
+        dev = agent._identity_from_axeos("127.0.0.1", _AXEOS_INFO)
         ok, _ = agent._exec_command(
-            {"ip_address": "127.0.0.1", "command": "pause"}, known=known
+            _physical_command("pause"), known=known
         )
         assert ok is True
         try:
@@ -330,7 +343,7 @@ class TestTelemetry:
             assert tel["hashrate_hs"] == 0
         finally:
             agent._exec_command(
-                {"ip_address": "127.0.0.1", "command": "resume"}, known=known
+                _physical_command("resume"), known=known
             )
         tel = agent._poll_telemetry(dev)
         assert tel["mining_paused"] is False
@@ -339,12 +352,29 @@ class TestTelemetry:
     def test_unreachable_cgminer_returns_empty_not_crash(self, monkeypatch):
         # No server on this port → poll must return {} (agent pushes {}).
         monkeypatch.setattr(agent, "CGMINER_PORT", 1)
-        tel = agent._poll_telemetry({"ip": "127.0.0.1", "type": "cgminer"})
+        tel = agent._poll_telemetry(
+            {"ip": "127.0.0.1", "type": "cgminer", "mac": "02:00:00:00:02:01"}
+        )
         assert tel == {}
 
 
 # ── command execution (Fix 1: server sends ip_address, agent opens a REAL
 #    socket on the LAN — AxeOS HTTP :80 vs cgminer JSON-over-TCP :4028) ────
+
+
+def _physical_command(action, device_type="bitaxe"):
+    """Explicit fixture identity; never infer a physical MAC from an IP."""
+    return {
+        "id": "contract-command-842",
+        "device_id": "contract-device-842",
+        "ip_address": "127.0.0.1",
+        "command": action,
+        "command_protocol": 1,
+        "expires_at": int(time.time()) + 300,
+        "expected_mac": _AXEOS_INFO["mac"],
+        "expected_type": device_type,
+        "params": {},
+    }
 
 
 class TestExecCommand:
@@ -399,7 +429,7 @@ class TestExecCommand:
     def test_axeos_restart_http(self, monkeypatch, axeos_mock):
         monkeypatch.setattr(agent, "AXEOS_PORT", axeos_mock)
         ok, result = agent._exec_command(
-            {"ip_address": "127.0.0.1", "command": "restart"},
+            _physical_command("restart"),
             known={"127.0.0.1": {"type": "bitaxe"}},
         )
         assert ok is True
@@ -408,26 +438,28 @@ class TestExecCommand:
     def test_axeos_identify_http(self, monkeypatch, axeos_mock):
         monkeypatch.setattr(agent, "AXEOS_PORT", axeos_mock)
         ok, _ = agent._exec_command(
-            {"ip_address": "127.0.0.1", "command": "identify"},
+            _physical_command("identify"),
             known={"127.0.0.1": {"type": "bitaxe"}},
         )
         assert ok is True
 
-    def test_cgminer_restart_via_tcp_api(self, monkeypatch, cgminer_mock):
+    def test_cgminer_macless_discovery_blocks_restart(self, monkeypatch, cgminer_mock):
         monkeypatch.setattr(agent, "CGMINER_PORT", cgminer_mock)
+        monkeypatch.setattr(agent, "_probe_axeos", lambda ip: None)
+        monkeypatch.setattr(agent, "_probe_braiins_rest", lambda ip: None)
         ok, result = agent._exec_command(
-            {"ip_address": "127.0.0.1", "command": "restart"},
+            _physical_command("restart", "cgminer"),
             known={"127.0.0.1": {"type": "cgminer"}},
         )
-        assert ok is True
-        assert "accepted" in result
+        assert ok is False
+        assert "identity" in result
 
     def test_cgminer_identify_rejected(self, monkeypatch, cgminer_mock):
         """cgminer has NO identify command — honest failure, not a phantom
         success (the server no longer advertises the capability either)."""
         monkeypatch.setattr(agent, "CGMINER_PORT", cgminer_mock)
         ok, result = agent._exec_command(
-            {"ip_address": "127.0.0.1", "command": "identify"},
+            _physical_command("identify", "cgminer"),
             known={"127.0.0.1": {"type": "cgminer"}},
         )
         assert ok is False
@@ -436,7 +468,7 @@ class TestExecCommand:
     def test_axeos_pause_http(self, monkeypatch, axeos_mock):
         monkeypatch.setattr(agent, "AXEOS_PORT", axeos_mock)
         ok, result = agent._exec_command(
-            {"ip_address": "127.0.0.1", "command": "pause"},
+            _physical_command("pause"),
             known={"127.0.0.1": {"type": "bitaxe"}},
         )
         assert ok is True
@@ -445,7 +477,7 @@ class TestExecCommand:
     def test_axeos_resume_http(self, monkeypatch, axeos_mock):
         monkeypatch.setattr(agent, "AXEOS_PORT", axeos_mock)
         ok, _ = agent._exec_command(
-            {"ip_address": "127.0.0.1", "command": "resume"},
+            _physical_command("resume"),
             known={"127.0.0.1": {"type": "bitaxe"}},
         )
         assert ok is True
@@ -455,7 +487,7 @@ class TestExecCommand:
         pause/resume para devices AxeOS)."""
         monkeypatch.setattr(agent, "CGMINER_PORT", cgminer_mock)
         ok, result = agent._exec_command(
-            {"ip_address": "127.0.0.1", "command": "pause"},
+            _physical_command("pause", "cgminer"),
             known={"127.0.0.1": {"type": "cgminer"}},
         )
         assert ok is False
@@ -465,7 +497,7 @@ class TestExecCommand:
         """No server → restart fails with a result string, never a crash."""
         monkeypatch.setattr(agent, "AXEOS_PORT", 1)
         ok, result = agent._exec_command(
-            {"ip_address": "127.0.0.1", "command": "restart"},
+            _physical_command("restart"),
             known={"127.0.0.1": {"type": "bitaxe"}},
         )
         assert ok is False

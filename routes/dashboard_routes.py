@@ -24,7 +24,7 @@ import config
 import services.state as state
 from services.db import get_db
 from services.licensing import pro_required
-from services.snapshot_enrichment import enrich_snapshot
+from services.snapshot_enrichment import build_operations_overview, enrich_snapshot
 from services.sli import sli as _sli  # Issue #206: SLIs de completude de dados
 from helpers import coerce_ts, fmt_diff
 from services.tenant import get_tenant_id, require_tenant
@@ -101,6 +101,9 @@ def api_snapshot(tenant_id: str = ""):
     # epoch-0.
     _sli.record_market(coerce_ts((snap.get("market_data") or {}).get("updated_at")))
     snap.setdefault("health", {})["sli"] = _sli.summary()
+    # Compose evidence only after tenant filtering: this summary must never
+    # reintroduce operator-private worker or economics data for named tenants.
+    snap["operations_overview"] = build_operations_overview(snap)
     return jsonify(snap)
 
 

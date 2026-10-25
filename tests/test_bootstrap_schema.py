@@ -81,6 +81,8 @@ BOOT_ONLY_TABLES = {"devices", "axe_agent_commands"}
 # Índices que o init_db precisa garantir (os criados pelos módulos de
 # telemetria entram pelas chamadas ensure_table/ensure_degradation_table).
 EXPECTED_INDEXES = {
+    "idx_axe_telemetry_tenant_device_ts",
+    "idx_maintenance_tenant_device_ts",
     "idx_alerts_active",
     "idx_alerts_device",
     "idx_alerts_ts",

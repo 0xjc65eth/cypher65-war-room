@@ -9,9 +9,7 @@ import logging
 import os
 import time
 
-from flask import Blueprint, jsonify, request
-
-from config import BTC_ADDRESS, WORKER_NAME
+from flask import Blueprint, g, jsonify, request, session
 
 log = logging.getLogger("cypher65.settings")
 from services.settings import (
@@ -24,6 +22,7 @@ from services.settings import (
 )
 from services.tenant import require_tenant, role_required, log_audit
 from services.licensing import is_pro
+from services.operator_wallet import operator_wallet_required
 
 settings_bp = Blueprint("settings", __name__, url_prefix="/api")
 
@@ -253,14 +252,53 @@ def api_settings_test_mrr(tenant_id: str = ""):
 @require_tenant
 @role_required("member")
 def api_settings_test_webhook(tenant_id: str = ""):
-    """Send a sample alert payload to the configured webhook_url.
+    """Send a synthetic, tenant-safe probe to public HTTPS on port 443.
 
-    UX audit Quick Win: lets the operator validate the notification channel
-    (Discord/Telegram) without waiting for a real alert event. Same payload
-    shape the polling loop fires on every alert, same PRO gate as webhook_url.
+    Example: POST /api/settings/test-webhook with the member's credentials.
+    No operator wallet/worker, redirects, proxy inheritance or blind retries.
+    A transport timeout is an unknown delivery, not success.
     """
+    from services.auth import resolve_tenant_for_api_key, verify_token
+    from services.tenant import ROLE_PRIORITY, get_current_role
+    from services.webhook_delivery import WebhookDeliveryError, deliver_test_webhook
+
+    if not isinstance(tenant_id, str) or not tenant_id.strip():
+        return jsonify({"success": False, "error": "Autenticação necessária"}), 401
+    # Explicit invalid or conflicting credentials never inherit open/local
+    # operator authority. The existing decorators still enforce member RBAC.
+    subject = None
+    authorization = request.headers.get("Authorization")
+    if authorization is not None:
+        payload = (
+            verify_token(authorization[7:], expected_type="access")
+            if authorization.startswith("Bearer ")
+            else None
+        )
+        subject = payload.get("sub") if payload else None
+        if not isinstance(subject, str) or not subject.strip() or subject != tenant_id:
+            return jsonify({"success": False, "error": "Autenticação necessária"}), 401
+        g.auth_payload = payload
+    api_key = request.headers.get("X-API-Key")
+    if api_key is not None:
+        try:
+            key_tenant = resolve_tenant_for_api_key(api_key)
+        except (ValueError, TypeError):
+            key_tenant = None
+        if (
+            not key_tenant
+            or key_tenant != tenant_id
+            or (subject and key_tenant != subject)
+        ):
+            return jsonify({"success": False, "error": "Autenticação necessária"}), 401
+    if (
+        session.get("authenticated")
+        and session.get("tenant_id", "default") != tenant_id
+    ):
+        return jsonify({"success": False, "error": "Autenticação necessária"}), 401
+    if ROLE_PRIORITY.get(get_current_role(), 0) < ROLE_PRIORITY["member"]:
+        return jsonify({"success": False, "error": "Permissão insuficiente"}), 403
     s = load_settings(tenant_id=tenant_id)
-    url = (s.get("webhook_url") or "").strip()
+    url = s.get("webhook_url") or ""
     if not url:
         return (
             jsonify({"error": "webhook_url not configured — set it in Settings first"}),
@@ -274,16 +312,38 @@ def api_settings_test_webhook(tenant_id: str = ""):
         "category": "test",
         "message": "🧪 Teste do CYPHER65 — se você leu esta mensagem, seu webhook está configurado corretamente",
         "ts": int(time.time()),
-        "worker": WORKER_NAME,
-        "address": BTC_ADDRESS,
+        "worker": "cypher65-test",
+        "address": "",
     }
     try:
-        import requests  # lazy: this module stays dependency-free at import time
-
-        r = requests.post(url, json=payload, timeout=6)
-        return jsonify({"success": True, "status_code": r.status_code})
-    except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 502
+        status = deliver_test_webhook(url, payload)
+    except WebhookDeliveryError as exc:
+        if str(exc) == "invalid_destination":
+            return (
+                jsonify({"success": False, "error": "Destino HTTPS público inválido"}),
+                400,
+            )
+        return (
+            jsonify(
+                {
+                    "success": False,
+                    "error": "Entrega não confirmada; evite reenvio automático",
+                }
+            ),
+            502,
+        )
+    if not 200 <= status < 300:
+        return (
+            jsonify(
+                {
+                    "success": False,
+                    "status_code": status,
+                    "error": "Webhook de teste não foi aceito pelo destino",
+                }
+            ),
+            502,
+        )
+    return jsonify({"success": True, "status_code": status})
 
 
 @settings_bp.route("/settings/test-auto-exclude-alert", methods=["POST"])
@@ -393,6 +453,7 @@ def api_settings_test_auto_exclude_alert(tenant_id: str = ""):
 
 
 @settings_bp.route("/wallet/history", methods=["GET"])
+@operator_wallet_required("viewer")
 @require_tenant
 @role_required("viewer")
 def get_wallet_history(tenant_id: str = ""):

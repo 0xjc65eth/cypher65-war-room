@@ -71,7 +71,11 @@
   function _parseNum(txt) { if (!txt) return NaN; const m = String(txt).match(/([\d.,]+)/); if (!m) return NaN; return parseFloat(m[1].replace(/,/g, '')); }
   function countUpValue(el, targetText, durationMs) {
     durationMs = durationMs || 420;
-    if (!el || window.matchMedia('(prefers-reduced-motion: reduce)').matches) { if (el) el.textContent = targetText; return; }
+    if (!el) return;
+    const existing = _countUpState.get(el);
+    if (existing && existing.raf != null) cancelAnimationFrame(existing.raf);
+    _countUpState.delete(el);
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) { el.textContent = targetText; return; }
     const num = _parseNum(targetText);
     if (isNaN(num)) { el.textContent = targetText; return; }
     const prefix = String(targetText).replace(/^([^\d]*).*/, '$1');
@@ -79,17 +83,18 @@
     const decimals = (String(targetText).match(/\.(\d+)/) || ['', ''])[1].length;
     const start = performance.now();
     const from = isNaN(_parseNum(el.textContent)) ? 0 : _parseNum(el.textContent);
-    const existing = _countUpState.get(el);
-    if (existing && existing.raf) cancelAnimationFrame(existing.raf);
+    const state = { raf: null };
+    _countUpState.set(el, state);
     const step = () => {
+      if (_countUpState.get(el) !== state) return;
       const t = Math.min(1, (performance.now() - start) / durationMs);
       const eased = 1 - Math.pow(1 - t, 3);
       const current = from + (num - from) * eased;
       el.textContent = prefix + current.toFixed(decimals) + suffix;
-      if (t < 1) { const rafInner = requestAnimationFrame(step); _countUpState.set(el, { raf: rafInner }); }
+      if (t < 1) state.raf = requestAnimationFrame(step);
       else { el.textContent = targetText; _countUpState.delete(el); }
     };
-    const rafOuter = requestAnimationFrame(step);
+    state.raf = requestAnimationFrame(step);
   }
 
   // ── Skeleton loading (design-motion-principles) ──
@@ -1214,6 +1219,83 @@
     'admin':       { title: 'ADMIN · CFO',   desc: 'Operador: pool health + funil PRO + LTV/CAC' },
   };
 
+  const MODULE_SOURCES = {
+    dashboard: 'Fonte: seleção Pool ou Fleet. Cada equipamento mantém sua origem e idade da observação.',
+    analysis: 'Fontes: rede Bitcoin, pool e entradas do operador. Custos e cenários dependem das premissas informadas.',
+    wallet: 'Fonte: wallet conectada e status do provedor. Conexão não comprova saldo liquidado nem envia fundos.',
+    fleet: 'Fonte: registro e telemetria local via agente. A API cloud não descobre diretamente a LAN do cliente.',
+    live: 'Fontes: resumo Fleet e eventos reportados. Cache ou falha de consulta não confirmam estado físico atual.',
+    probability: 'Fontes: rede, pool e entradas manuais. Estatísticas por janela são modelos, sem prazo ou previsão.',
+    market: 'Fontes: provedores configurados de mercado e hashprice. Disponibilidade e idade pertencem a cada cotação.',
+    rentals: 'Fontes: contratos MRR/Braiins e observações disponíveis. Hashrate contratado e observado são distintos.',
+    alerts: 'Fonte: alertas reportados. Uma lista vazia não estabelece a saúde dos equipamentos ou dos provedores.',
+    automations: 'Fontes: regras, advisory e dry runs. Acesso, capacidades e confirmação limitam ações operacionais.',
+    docs: 'Fonte: documentação local do projeto. Use as seções para configuração, limites e procedimentos.',
+    learning: 'Fontes: material educacional e referências externas. Conteúdo de estudo não é telemetria operacional.',
+    support: 'Fonte: métodos de apoio configurados pelo operador. Escolher um método não comprova pagamento.',
+    admin: 'Fontes: endpoints restritos do operador. Cada dataset pode falhar separadamente; falha não significa zero.',
+  };
+
+  function openSupportModal(panel) {
+    openModalAnimated(panel);
+    const close = panel.querySelector('.modal__close');
+    if (close) close.focus({ preventScroll: true });
+    renderSupportMethods();
+  }
+
+  function renderModuleSections(name) {
+    const context = document.getElementById('module-evidence-context');
+    const destination = document.getElementById(name === 'dashboard' ? 'operation-console' : 'module-header');
+    if (context && destination && context.parentElement !== destination) destination.appendChild(context);
+    const source = document.getElementById('module-source-context');
+    const nav = document.getElementById('module-section-nav');
+    if (source) source.textContent = MODULE_SOURCES[name] || '';
+    if (!nav) return;
+    nav.replaceChildren();
+    let targets = Array.from(document.querySelectorAll('[data-module].panel, section[data-module].section, .operation-console[data-module], .operational-overview[data-module]'));
+    if (name === 'docs') targets = Array.from(document.querySelectorAll('#section-docs .doc-section[id]'));
+    if (name === 'learning') targets = Array.from(document.querySelectorAll('#learning-panel .doc-section[id]'));
+    if (name === 'support') targets = [document.getElementById('support-panel')].filter(Boolean);
+    // Closed disclosures expose their visible summary; navigation opens them.
+    targets = Array.from(new Set(targets.map(target => {
+      const disclosure = target.closest('details');
+      return disclosure && !disclosure.open && disclosure.id ? disclosure : target;
+    })));
+    targets.filter(target => {
+      if (!target.id || target.hidden || target.classList.contains('module-hidden')) return false;
+      if (name !== 'docs' && name !== 'learning' && name !== 'support' && !(target.getAttribute('data-module') || '').split(/\s+/).includes(name)) return false;
+      if (name === 'support') return true;
+      const pane = target.closest('.tab-pane');
+      if (pane && !pane.classList.contains('active')) return false;
+      return target.getClientRects().length > 0;
+    }).forEach(target => {
+      const heading = target.querySelector('h2, h3, .modal__title');
+      const label = (heading && heading.textContent.trim()) || target.getAttribute('aria-label') || (MODULE_MAP[name] || {}).title;
+      if (!label) return;
+      const link = document.createElement('a');
+      link.className = 'module-section-link';
+      link.href = '#' + target.id;
+      link.textContent = label;
+      link.addEventListener('click', event => {
+        event.preventDefault();
+        if (name === 'support') { openSupportModal(target); return; }
+        // Section navigation is frequent and keyboard-accessible: no motion.
+        const disclosure = target.closest('details');
+        if (disclosure) disclosure.open = true;
+        if (target.classList.contains('panel--collapsible')) {
+          target.classList.remove('collapsed');
+          const toggle = target.querySelector('.panel__toggle');
+          if (toggle) { toggle.classList.remove('collapsed'); toggle.setAttribute('aria-expanded', 'true'); }
+        }
+        target.setAttribute('tabindex', '-1');
+        target.focus({ preventScroll: true });
+        target.scrollIntoView({ block: 'start', behavior: 'instant' });
+      });
+      nav.appendChild(link);
+    });
+    nav.hidden = !nav.children.length;
+  }
+
   function openSidebar() {
     sidebar.classList.add('open');
     if (sidebarBackdrop) sidebarBackdrop.classList.add('visible');
@@ -1419,7 +1501,10 @@
     // Depois que a visibilidade estabiliza: resize dos charts já criados
     // E cria/atualiza charts dos canvases que acabaram de ficar visíveis
     // (renderCharts pula canvases ocultos, então é seguro chamá-lo aqui)
+    renderModuleSections(name);
     requestAnimationFrame(function() {
+      if (document.body.dataset.activeModule !== name) return;
+      if (name === 'automations') { _apRefreshStatus(); _apRefreshAutoStatus(); }
       // Motion: staggered enter for the panels that just became visible
       // (opacity + translateY + blur, 200ms, 24ms stagger — Emil <300ms).
       if (!reduceMotion) {
@@ -1498,8 +1583,7 @@
       if (name === 'support') {
         const panel = document.getElementById('support-panel');
         if (panel) {
-          openModalAnimated(panel);
-          renderSupportMethods();  // also fills the LN recipient row
+          openSupportModal(panel);  // also fills the LN recipient row
         }
       }
     });

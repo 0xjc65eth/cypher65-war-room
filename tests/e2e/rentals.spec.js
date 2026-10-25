@@ -359,11 +359,13 @@ test.describe('RENTALS — performance dos aluguéis (P2)', () => {
     await cards.first().click();
     await expect(page.locator('#rentals-detail')).toBeVisible({ timeout: 5000 });
     await expect(page.locator('#rentals-detail-title')).toHaveText(/Braiins contract #B123/);
-    // Banner de performance com as 7 células (incl. YIELD, P/L e VS MARKET)
+    // Banner de performance with separate provider-average cost label.
     const cells = page.locator('#rentals-detail-perf .rentals-perf__cell');
     await expect(cells).toHaveCount(7, { timeout: 5000 });
     const perfText = await page.locator('#rentals-detail-perf').textContent();
     expect(perfText).toMatch(/95\.0%/);
+    expect(perfText).toMatch(/COST \(PROVIDER AVG\)/);
+    await expect(cells.nth(2)).toHaveAttribute('title', /provider-reported average/);
     expect(perfText).toMatch(/sats\/TH\/h/);
     expect(perfText).toMatch(/TH·h/);
     // P/L: 0.5 BTC paid → −48.2M sats de prejuízo estimado (is-bad)

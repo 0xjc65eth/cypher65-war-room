@@ -433,7 +433,13 @@ def test_profitability_pool_mode_math():
     assert p["net_btc_per_day_pool"] == pytest.approx(round(net_pool, 8))
     assert p["pool_fee_info"] == "Pool fee: 1.5% · Orphan rate: 0.5% · Reward: 3.125+0.05 BTC/block"
     assert p["solo_expected_time_to_block_days"] is not None
-    assert p["decision_matrix"]  # P0-2 unified matrix present
+    assert p["decision_matrix"]  # P0-2 unified matrix remains backward compatible
+    scenarios = p["economic_scenarios"]
+    assert scenarios["horizon"] == "24h"
+    assert set(scenarios["scenarios"]) == {"POOL", "SOLO", "RENTAL", "LEASE"}
+    assert scenarios["scenarios"]["POOL"]["direct_cost_usd_per_day"]["status"] == "NOT CONFIGURED"
+    assert scenarios["scenarios"]["POOL"]["modeled_net_usd_per_day"]["status"] == "NOT CONFIGURED"
+    assert scenarios["scenarios"]["LEASE"]["modeled_net_usd_per_day"]["status"] == "NOT CONFIGURED"
     assert "lender_market_rate_btc_per_th_day" in p
 
 
@@ -451,6 +457,8 @@ def test_profitability_rental_mode_costs_subtracted():
     assert p["cost_mode"] == "rental"
     assert p["cost_model_configured"] is True
     assert p["cost_per_day_usd"] == pytest.approx(100.0, abs=0.001)  # 100 TH × $1
+    assert p["economic_scenarios"]["scenarios"]["RENTAL"]["direct_cost_usd_per_day"]["value"] == pytest.approx(100.0)
+    assert p["economic_scenarios"]["scenarios"]["RENTAL"]["modeled_net_usd_per_day"]["status"] == "AVAILABLE"
     # USD conversion needs a BTC price — present.
     assert p["pool_net_usd_per_day"] is not None
     assert p["rental_net_usd_per_day"] is not None

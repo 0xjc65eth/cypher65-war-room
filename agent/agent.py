@@ -178,12 +178,17 @@ def _post_retry(path, payload, timeout=10.0, attempts=4):
     return last
 
 
-def _build_telemetry_event(ip, telemetry):
-    """Build a timestamped sample with one ID reused by all retry attempts."""
+def _build_telemetry_event(ip, telemetry, mac=""):
+    """Carry reported MAC evidence with one sample ID reused by all retries."""
     sample = dict(telemetry or {})
     if not sample.get("ts"):
         sample["ts"] = int(time.time())
-    return {"ip": ip, "telemetry": sample, "idempotency_key": uuid.uuid4().hex}
+    return {
+        "ip": ip,
+        "mac": mac,
+        "telemetry": sample,
+        "idempotency_key": uuid.uuid4().hex,
+    }
 
 
 def _push_telemetry_event(event):
@@ -355,12 +360,33 @@ def _pending_identity(ip):
     }
 
 
+def _normalize_device_mac(value):
+    """Stdlib-only mirror of the server's six-octet unicast identity contract."""
+    if not isinstance(value, str):
+        return None
+    raw = value.strip()
+    if re.fullmatch(r"[0-9A-Fa-f]{12}", raw):
+        compact = raw
+    elif re.fullmatch(r"[0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5}", raw):
+        compact = raw.replace(":", "")
+    elif re.fullmatch(r"[0-9A-Fa-f]{2}(?:-[0-9A-Fa-f]{2}){5}", raw):
+        compact = raw.replace("-", "")
+    else:
+        return None
+    octets = [int(compact[i : i + 2], 16) for i in range(0, 12, 2)]
+    if not any(octets) or octets[0] & 1:
+        return None
+    return ":".join(f"{octet:02X}" for octet in octets)
+
+
 def _identity_unresolved(dev):
-    if not dev:
-        return True
-    if dev.get("pending"):
-        return True
-    return str(dev.get("type") or "").lower() in ("", "unknown")
+    return (
+        not dev
+        or dev.get("pending")
+        or dev.get("identity_conflict")
+        or str(dev.get("type") or "").lower() in ("", "unknown")
+        or not _normalize_device_mac(dev.get("mac"))
+    )
 
 
 def _extract_json_lenient(raw):
@@ -553,7 +579,9 @@ def _probe_host(ip):
                     miner.get("model") or miner.get("miner_type") or "Braiins OS+"
                 ),
                 "firmware": "Braiins OS+",
-                "version": str(miner.get("version") or miner.get("firmware_version") or ""),
+                "version": str(
+                    miner.get("version") or miner.get("firmware_version") or ""
+                ),
                 "hostname": "",
                 "mac": "",
                 "hashrate_hs": int(hashrate_hs),
@@ -785,6 +813,11 @@ def _poll_telemetry(dev):
         info = _probe_axeos(ip)
         if not isinstance(info, dict):
             return {}
+        observed_mac = info.get("macAddr") if "macAddr" in info else info.get("mac")
+        if _normalize_device_mac(observed_mac) != _normalize_device_mac(dev.get("mac")):
+            log.warning("[FLEET_IDENTITY] rejected missing or changed observed MAC")
+            dev["identity_conflict"] = True
+            return {}
         tel = {}
         if _extract_axeos_telemetry is not None:
             try:
@@ -805,6 +838,7 @@ def _poll_telemetry(dev):
             return tel
         ident = _identity_from_axeos(ip, info)
         fallback_tel = {
+            "mac": observed_mac,
             "hashrate_hs": ident.get("hashrate_hs"),
             "temperature": _finite_number(info.get("temp")),
             "best_diff": _best_diff(info.get("bestDiff")),
@@ -828,7 +862,9 @@ def _poll_telemetry(dev):
             "shares_rejected": ("sharesRejected",),
             "uptime_seconds": ("uptimeSeconds", "uptime"),
         }.items():
-            raw = next((info.get(key) for key in keys if info.get(key) is not None), None)
+            raw = next(
+                (info.get(key) for key in keys if info.get(key) is not None), None
+            )
             if raw is not None and _finite_number(raw) is None:
                 invalid_fields.append(field)
         if invalid_fields:
@@ -854,6 +890,7 @@ def _poll_telemetry(dev):
     # Parse defensively: real firmwares occasionally return non-numeric
     # strings ("N/A") or non-dict entries — a crash here would kill the
     # whole agent loop, so malformed data degrades to {} instead.
+    invalid_fields = []
     try:
         s = (
             summary["SUMMARY"][0]
@@ -882,12 +919,13 @@ def _poll_telemetry(dev):
                 "temperature": ("temp2_0", "temp"),
                 "fan_rpm": ("fan1", "fan2"),
             }.items():
-                raw = next((_st[1].get(key) for key in keys if _st[1].get(key) is not None), None)
+                raw = next(
+                    (_st[1].get(key) for key in keys if _st[1].get(key) is not None),
+                    None,
+                )
                 if raw is not None and _finite_number(raw) is None:
                     invalid_fields.append(field)
-            temperature = _finite_number(
-                _st[1].get("temp2_0") or _st[1].get("temp")
-            )
+            temperature = _finite_number(_st[1].get("temp2_0") or _st[1].get("temp"))
             fan_rpm = _finite_number(_st[1].get("fan1") or _st[1].get("fan2"))
 
         pool_url = ""
@@ -917,9 +955,21 @@ def _poll_telemetry(dev):
             "fan_rpm": fan_rpm,
             "power_watts": None,
             "best_diff": _best_diff(s.get("Best Share")),
-            "shares_accepted": int(_finite_number(s.get("Accepted"))) if _finite_number(s.get("Accepted")) is not None else None,
-            "shares_rejected": int(_finite_number(s.get("Rejected"))) if _finite_number(s.get("Rejected")) is not None else None,
-            "uptime_seconds": int(_finite_number(s.get("Elapsed"))) if _finite_number(s.get("Elapsed")) is not None else None,
+            "shares_accepted": (
+                int(_finite_number(s.get("Accepted")))
+                if _finite_number(s.get("Accepted")) is not None
+                else None
+            ),
+            "shares_rejected": (
+                int(_finite_number(s.get("Rejected")))
+                if _finite_number(s.get("Rejected")) is not None
+                else None
+            ),
+            "uptime_seconds": (
+                int(_finite_number(s.get("Elapsed")))
+                if _finite_number(s.get("Elapsed")) is not None
+                else None
+            ),
             "pool_url": pool_url,
             "pool_user": pool_user,
             "model": dev.get("model") or "cgminer",
@@ -934,7 +984,73 @@ def _poll_telemetry(dev):
 # ── Command execution ────────────────────────────────────────────────────
 
 
-def _exec_command(cmd, known=None):
+def _validate_command_identity(cmd, received_at=None):
+    """Return a freshly observed target or a safe rejection before dispatch.
+
+    Example: a command for MAC A is rejected if DHCP moved MAC B onto the IP.
+    Cached discovery is never physical identity evidence. MAC comparison is
+    operational protection, not cryptographic attestation of the device.
+    """
+    protocol = cmd.get("command_protocol")
+    target = cmd.get("ip_address")
+    expected_mac = _normalize_device_mac(cmd.get("expected_mac"))
+    expected_type = cmd.get("expected_type")
+    expires_at = cmd.get("expires_at")
+    supported = {
+        "bitaxe": {"restart", "identify", "pause", "resume"},
+        "cgminer": {"restart"},
+        "braiins": {"restart", "identify"},
+    }
+    if (
+        type(protocol) is not int
+        or protocol != 1
+        or not isinstance(cmd.get("id"), str)
+        or not cmd["id"]
+        or not isinstance(cmd.get("device_id"), str)
+        or not cmd["device_id"]
+        or not isinstance(expected_type, str)
+        or expected_type not in supported
+        or not expected_mac
+        or not isinstance(target, str)
+        or target != target.strip()
+        or cmd.get("params", {}) != {}
+        or type(expires_at) is not int
+    ):
+        return None, "command identity envelope is invalid"
+    expiry = _finite_number(expires_at)
+    if expiry is None:
+        return None, "command expiry is invalid"
+    wall, monotonic = received_at or (time.time(), time.monotonic())
+    remaining = expiry - wall
+    deadline = monotonic + remaining
+    if remaining <= 0 or time.time() >= expiry or time.monotonic() >= deadline:
+        return None, "command expired before identity verification"
+    if cmd.get("command") not in supported[expected_type]:
+        return None, "command not supported by the expected protocol"
+    try:
+        if ipaddress.ip_address(target).version != 4:
+            return None, "command identity target is invalid"
+    except ValueError:
+        return None, "command identity target is invalid"
+    try:
+        observed = _probe_host(target)
+    except Exception:
+        return None, "command identity could not be verified"
+    # Batch processing and a slow probe cannot extend the original intent.
+    # Monotonic time also prevents a wall-clock rollback during the probe.
+    if time.time() >= expires_at or time.monotonic() >= deadline:
+        return None, "command expired during identity verification"
+    if (
+        not isinstance(observed, dict)
+        or observed.get("ip") != target
+        or observed.get("type") != expected_type
+        or _normalize_device_mac(observed.get("mac")) != expected_mac
+    ):
+        return None, "command identity changed or is unavailable"
+    return observed, ""
+
+
+def _exec_command(cmd, known=None, *, received_at=None):
     """Execute a queued command on the local device. Returns (success, result).
 
     The server now sends the device's LAN ip_address in the payload (the
@@ -978,9 +1094,11 @@ def _exec_command(cmd, known=None):
             return True, f"registered {target}"
         return False, f"register HTTP {code}"
     if name in ("restart", "identify", "pause", "resume"):
-        # Resolve device type from the agent's own discovery map when known
-        # (the server does not persist type; the agent probed it directly).
-        dev = (known or {}).get(dev_ip, {})
+        dev, identity_error = _validate_command_identity(cmd, received_at=received_at)
+        if identity_error:
+            return False, identity_error
+        # Use only the just-observed target, never a cached IP occupant.
+        dev_ip = dev["ip"]
         dev_type = str(dev.get("type") or "").lower()
         if dev_type == "cgminer":
             if name != "restart":
@@ -1128,7 +1246,12 @@ def _run_main():
             if ip in blocked_ips or _identity_unresolved(dev):
                 continue
             tel = _poll_telemetry(dev)
-            telemetry_event = _build_telemetry_event(ip, tel)
+            if dev.get("identity_conflict"):
+                continue  # Rescan must resolve contradictory physical evidence first.
+            # Preserve current sample evidence when present; a cached discovery
+            # MAC must not hide a changed or missing MAC in the device response.
+            sample_mac = tel.get("mac") if "mac" in tel else dev.get("mac") or ""
+            telemetry_event = _build_telemetry_event(ip, tel, mac=sample_mac)
             # Push UNCONDITIONALLY: `telemetry: {}` is legal presence evidence,
             # not proof of device health. The server preserves/degrades status
             # according to the last real reading. Empty heartbeats
@@ -1148,7 +1271,10 @@ def _run_main():
         for ip in drop:
             known.pop(ip, None)
         # 3 · Pull queued commands and execute them locally.
-        code, resp = _post("/api/agent/commands/pull", {})
+        # One clock pair for the whole pull, including network and earlier
+        # commands. Never renew a later command's budget after clock rollback.
+        pull_started = (time.time(), time.monotonic())
+        code, resp = _post("/api/agent/commands/pull", {"command_protocol": 1})
         if code == 200:
             for cmd in resp.get("commands") or []:
                 log.info(
@@ -1157,7 +1283,7 @@ def _run_main():
                     cmd.get("device_id"),
                     cmd.get("ip_address") or "no-ip",
                 )
-                ok, result = _exec_command(cmd, known)
+                ok, result = _exec_command(cmd, known, received_at=pull_started)
                 _post(
                     f"/api/agent/commands/{cmd['id']}/ack",
                     {"success": ok, "result": result},

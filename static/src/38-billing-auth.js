@@ -54,6 +54,7 @@
   // aqui: ele ignorava `licenseKey()`, então o header `X-License-Key` (tier
   // PRO) não era coberto.
   const AUTH_SESSION_KEY = '_cypher65_auth_session';
+  let _authSessionGeneration = 0;
 
   function authLoadSession() {
     try {
@@ -64,10 +65,14 @@
     } catch (e) { return null; }
   }
   function authSaveSession(s) {
+    _authSessionGeneration++;
     try { localStorage.setItem(AUTH_SESSION_KEY, JSON.stringify(s)); } catch (e) {}
+    if (typeof syncOperationalEvidenceSession === 'function') syncOperationalEvidenceSession(s && s.tenant_id, !!(s && s.access_token));
   }
   function authClearSession() {
+    _authSessionGeneration++;
     try { localStorage.removeItem(AUTH_SESSION_KEY); } catch (e) {}
+    if (typeof syncOperationalEvidenceSession === 'function') syncOperationalEvidenceSession('default', false);
   }
 
   // R1 (PRO tier): the operator's license key rides along on every API call
@@ -768,28 +773,39 @@
   // safety margin), so the isolated tenant is never dropped at the refresh
   // boundary. The 401-retry below is a belt-and-suspenders for routes that
   // DO hard-require auth.
+  function authSameSession(before, after) {
+    if (!before || !after) return !before && !after;
+    return (before.tenant_id || 'default') === (after.tenant_id || 'default') &&
+      (before.refresh_token ? before.refresh_token === after.refresh_token : before.access_token === after.access_token);
+  }
+
   async function authFetch(url, opts) {
     opts = opts || {};
     const session = authLoadSession();
     if (session && session.refresh_token && authIsExpired(session.expires_at)) {
       await authRefresh();
     }
+    if (!authSameSession(session, authLoadSession())) throw new Error('Session changed during request');
     const token = authGetToken();
     const headers = Object.assign({}, opts.headers || {}, authBuildHeaders(token));
     let res = await fetch(url, Object.assign({}, opts, { headers }));
+    if (!authSameSession(session, authLoadSession())) throw new Error('Session changed during request');
     if (res.status === 401 && token) {
       const refreshed = await authRefresh();
+      if (!authSameSession(session, authLoadSession())) throw new Error('Session changed during request');
       if (refreshed) {
         const headers2 = Object.assign({}, opts.headers || {}, authBuildHeaders(authGetToken()));
         res = await fetch(url, Object.assign({}, opts, { headers: headers2 }));
       }
     }
+    if (!authSameSession(session, authLoadSession())) throw new Error('Session changed during request');
     return res;
   }
 
   async function authRefresh() {
     const s = authLoadSession();
     if (!s || !s.refresh_token) return false;
+    const generation = _authSessionGeneration;
     try {
       const r = await fetch('/api/auth/refresh', {
         method: 'POST',
@@ -798,7 +814,7 @@
       });
       if (!r.ok) return false;
       const data = await r.json();
-      if (!data.access_token) return false;
+      if (generation !== _authSessionGeneration || !authSameSession(s, authLoadSession()) || !data.access_token) return false;
       authSaveSession({
         access_token: data.access_token,
         refresh_token: s.refresh_token,
@@ -811,6 +827,7 @@
 
   async function authLogin(apiKey) {
     if (!apiKey) return { ok: false, error: 'API key is required' };
+    const generation = ++_authSessionGeneration;
     try {
       const r = await fetch('/api/auth/login', {
         method: 'POST',
@@ -818,7 +835,9 @@
         body: JSON.stringify({ api_key: apiKey }),
       });
       const data = await r.json().catch(() => ({}));
-      if (!r.ok) return { ok: false, error: data.error || ('login failed (' + r.status + ')') };
+      if (generation !== _authSessionGeneration) return { ok: false, error: 'Session changed; retry login' };
+      if (!r.ok || !data.access_token) return { ok: false, error: data.error || ('login failed (' + r.status + ')') };
+      if (typeof syncOperationalEvidenceSession === 'function') syncOperationalEvidenceSession(data.tenant_id || 'default', true, true);
       authSaveSession({
         access_token: data.access_token,
         refresh_token: data.refresh_token,
@@ -834,6 +853,8 @@
 
   async function authLogout() {
     const s = authLoadSession();
+    authClearSession();
+    authUpdateUi();
     if (s && s.access_token) {
       try {
         await fetch('/api/auth/logout', {
@@ -843,14 +864,14 @@
         });
       } catch (e) {}
     }
-    authClearSession();
-    authUpdateUi();
   }
 
   function authUpdateUi() {
     const s = authLoadSession();
     const connected = authSessionValid(s);
     const tenant = connected ? (s.tenant_id || 'default') : 'default';
+    if (typeof syncConsoleHistorySession === 'function') syncConsoleHistorySession(tenant, connected);
+    if (typeof syncOperationalEvidenceSession === 'function') syncOperationalEvidenceSession(tenant, connected);
     const toggle = dom.authToggle;
     if (toggle) {
       toggle.innerHTML = _ic('key', 12, true) + escapeHtml(connected ? tenant.toUpperCase() : 'LOGIN');
@@ -870,7 +891,8 @@
   }
 
   function initAuth() {
-    authUpdateUi();
+    // boot() starts before the later stateful UI fragments are initialized.
+    Promise.resolve().then(authUpdateUi);
     const toggle = dom.authToggle;
     const modal = dom.authModal;
     if (toggle && modal) {

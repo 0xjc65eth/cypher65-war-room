@@ -169,7 +169,7 @@ const authSessionValid = _auth.authSessionValid;
 // topo — é o único domínio extraído sem nenhum (ver o cabeçalho dele) —, então
 // roda num contexto vazio; as outras funções só tocam `dom`/`document` quando
 // CHAMADAS, e `poolDetectionView` não toca nenhum dos dois.
-const _dashboard = loadFragment('39b-dashboard.js', '{ poolDetectionView }');
+const _dashboard = loadFragment('39b-dashboard.js', '{ poolDetectionView, _updateShareDistSummary }');
 
 // ── FONTE REAL do domínio Fleet/AXE (RFC 478 · PR 4b · Issue #523) ──────────
 // `agentRevokeView` (Issue #582) é a view-model pura da revogação de tokens de
@@ -238,6 +238,39 @@ function assertFalsy(label, actual) {
     failures.push(`  ❌ ${label}: expected falsy, got ${JSON.stringify(actual)}`);
   }
 }
+
+(function testRenderSessionEvidence() {
+  const rendered = {};
+  const renderSessionEvidence = loadFragment(
+    '42-probability.js',
+    'renderSessionEvidence',
+    {
+      window: {},
+      document: { getElementById: (id) => (rendered[id] = { textContent: '' }) },
+      fmt: { diff: (value) => value == null ? '—' : 'diff:' + value },
+    }
+  );
+  renderSessionEvidence({ session_evidence: {
+    session_shares: 22, valid_modeled_shares: 2, observed_window: '120s',
+    last_share_age: '60s', data_gaps: null, avg_share_difficulty: 4,
+    share_difficulty_trend: 'INCREASING', sample_count: 2, evidence_state: 'PARTIAL',
+  } });
+  assertEqual('[session evidence] session shares rendered', rendered['se-session-shares'].textContent, '22');
+  assertEqual('[session evidence] unknown gaps stay unknown', rendered['se-data-gaps'].textContent, '—');
+  assertEqual('[session evidence] distribution formatted', rendered['se-avg-share-diff'].textContent, 'diff:4');
+  const summary = { textContent: '' };
+  const dashboard = loadFragment(
+    '39b-dashboard.js',
+    '_updateShareDistSummary',
+    {
+      document: { getElementById: (id) => id === 'share-dist-summary' ? summary : null },
+      fmt: { diff: (value) => value == null ? '—' : 'd' + value },
+    }
+  );
+  dashboard({ share_statistics: { status: 'SOLVED', p50: 1, p75: 2, p90: 3, p95: 4, p99: 5, max: 5, sample_count: 9, observed_window: '120s' } });
+  assertTruthy('[share distribution] percentiles appear in panel', summary.textContent.includes('P99 d5'));
+  assertTruthy('[share distribution] sample count and observed window appear', summary.textContent.includes('SAMPLE 9') && summary.textContent.includes('WINDOW 120s'));
+})();
 
 
 
@@ -5616,6 +5649,14 @@ const consoleFleet = {fleet_stats:{total_devices:2},device_health:[
 const consoleLive = consoleModel(consoleSnap,consoleFleet,false,'',consoleNow,consoleNow);
 assertEqual('default uses observed Fleet entities', consoleLive.mode, 'fleet');
 assertEqual('attention first sorting', consoleLive.rows[0].id, 'off');
+const rankedFleet = {fleet_stats:{total_devices:4},device_health:[
+  {id:'on',name:'Online',status:'ONLINE',telemetry:{ts:consoleNow-10,hashrate_hs:1e12}},
+  {id:'off',name:'Offline',status:'OFFLINE',telemetry:{ts:consoleNow-10,hashrate_hs:1e12}},
+  {id:'stale',name:'Stale',status:'STALE',telemetry:{ts:consoleNow-10,hashrate_hs:1e12}},
+  {id:'pause',name:'Paused',status:'PAUSED',telemetry:{ts:consoleNow-10,hashrate_hs:1e12}}
+]};
+const rankedRows = consoleModel(consoleSnap,rankedFleet,false,'fleet',consoleNow,consoleNow).rows.map(function(row) { return row.id; });
+assertEqual('paused, stale and offline outrank a healthy machine', rankedRows.join(','), 'pause,stale,off,on');
 assertEqual('offline historical HR remains visible', consoleLive.rows[0].hash, 2e12);
 assertEqual('offline historical HR excluded from current sum', consoleLive.hashrate, 1e12);
 assertEqual('attention count requires recent evidence', consoleLive.attention, 1);
@@ -5630,8 +5671,187 @@ const consoleFuture = {fleet_stats:{total_devices:1},device_health:[{id:'future'
 assertEqual('future timestamp cannot become fresh via age fallback', consoleModel(consoleSnap,consoleFuture,false,'fleet',consoleNow,consoleNow).recent, 0);
 assertEqual('explicit pool choice survives available Fleet', consoleModel(consoleSnap,consoleFleet,false,'pool',consoleNow,consoleNow).mode, 'pool');
 
+// Premium visualization: real source regressions (zero, gaps and current scope).
+const consoleHistorySeries = loadFragment('39b-dashboard.js', 'buildConsoleHistorySeries');
+const historySeries = consoleHistorySeries([
+  {ts:consoleNow-100,hashrate:0,temperature:51},
+  {ts:consoleNow-80,hashrate:null},
+  {ts:consoleNow-60,hashrate:2e12},
+  {ts:consoleNow-40,hashrate:'3e12'},
+  {ts:consoleNow-20,hashrate:true},
+  {ts:consoleNow+1,hashrate:8e12},
+  {ts:'invalid',hashrate:9e12}
+], 'hashrate', consoleNow);
+assertEqual('history retains genuine zero hashrate', historySeries.measured[0].value, 0);
+assertEqual('history ignores future and invalid timestamps', historySeries.points.length, 5);
+assertEqual('absent/boolean measurements create gaps', historySeries.measured.length, 3);
+assertEqual('unknown points do not become continuous curves', historySeries.segments.length, 2);
+assertEqual('history min includes zero', historySeries.min, 0);
+assertEqual('history max includes numeric source string', historySeries.max, 3e12);
+const separatedHistory = consoleHistorySeries([{ts:(consoleNow-1000)*1000,hashrate:1e12},{ts:consoleNow-500,hashrate:2e12}], 'hashrate', consoleNow);
+assertEqual('millisecond timestamps normalize', separatedHistory.points[0].ts, consoleNow-1000);
+assertEqual('telemetry gaps over 150s are not connected', separatedHistory.segments.length, 2);
+assertEqual('one-point history has one observation without invented points', consoleHistorySeries([{ts:consoleNow-5,hashrate:1e12}], 'hashrate', consoleNow).points.length, 1);
+assertEqual('missing metric does not fall back to another measurement', consoleHistorySeries([{ts:consoleNow-5,hashrate:1e12}], 'temperature', consoleNow).measured.length, 0);
+const premiumModel = loadFragment('39b-dashboard.js', 'buildPremiumOperationModel');
+const poweredFleet = structuredClone(consoleFleet);
+poweredFleet.device_health[0].telemetry.power_watts = 19;
+poweredFleet.device_health[1].telemetry.power_watts = 3500;
+const premiumLive = premiumModel(consoleModel(consoleSnap,poweredFleet,false,'fleet',consoleNow,consoleNow),consoleSnap);
+assertEqual('offline power excluded from measured fleet total', premiumLive.power, 19);
+assertEqual('power coverage counts only current contributing devices', premiumLive.powered, 1);
+assertEqual('failed Fleet query cannot report current power', premiumModel(consoleModel(consoleSnap,poweredFleet,true,'fleet',consoleNow,consoleNow),consoleSnap).power, null);
+assertEqual('stale Fleet query cannot report current power', premiumModel(consoleModel(consoleSnap,poweredFleet,false,'fleet',consoleNow,consoleNow+300),consoleSnap).power, null);
+const comparisonRows = {rows:[{kind:'pool',name:'unknown',hash:null},{kind:'pool',name:'zero',hash:0},{kind:'pool',name:'high',hash:10}],localRows:[],recent:0,unknown:0};
+assertEqual('worker comparison excludes unknown but retains zero', premiumModel(comparisonRows,{}).workers.length, 2);
+assertEqual('comparison sorting uses absolute source hashrate', premiumModel(comparisonRows,{}).workers[0].name, 'high');
+
+const historySession = loadFragment('39b-dashboard.js', '{syncConsoleHistorySession,seed:()=>{_consoleHistory.rows=[{ts:1,hashrate:1}];_consoleHistory.id="one";},state:()=>_consoleHistory,request:()=>_consoleHistoryRequest}', {document:{getElementById:()=>null}});
+historySession.syncConsoleHistorySession('one',true);historySession.seed();
+historySession.syncConsoleHistorySession('one',true);
+assertEqual('same session keeps history observations',historySession.state().rows.length,1);
+historySession.syncConsoleHistorySession('two',true);
+assertEqual('tenant switch drops cached individual history',historySession.state().rows.length,0);
+assertEqual('tenant switch invalidates pending history request',historySession.request(),1);
+historySession.seed();historySession.syncConsoleHistorySession('default',false);
+assertEqual('logout drops individual history cache',historySession.state().rows.length,0);
+// Issue #750: Celsius is signed and bounded, unlike power/rate/counter values.
+for (const temperature of [-40, -5, 0, 150, '-5', '53.5']) {
+  const sample = {device_health:[{id:'signed',status:'ONLINE',telemetry:{ts:consoleNow,temperature,hashrate_hs:-1,power_watts:-1,shares_accepted:-1}}]};
+  const observed = consoleModel(consoleSnap,sample,false,'fleet',consoleNow,consoleNow).rows[0];
+  assertEqual('console retains valid Celsius '+temperature, observed.temperature, Number(temperature));
+  assertEqual('signed Celsius does not permit negative power '+temperature, observed.power, null);
+  assertEqual('signed Celsius does not permit negative rate '+temperature, observed.hash, null);
+  assertEqual('signed Celsius does not permit negative shares '+temperature, observed.accepted, null);
+}
+for (const temperature of [-41, 151, Infinity, NaN, null, undefined, true, false, '', ' ', [], {}, 'invalid']) {
+  const sample = {device_health:[{id:'invalid',status:'ONLINE',telemetry:{ts:consoleNow,temperature}}]};
+  assertEqual('console rejects invalid Celsius '+String(temperature), consoleModel(consoleSnap,sample,false,'fleet',consoleNow,consoleNow).rows[0].temperature, null);
+}
+
+// Issue #798: exercise the actual chart owner, async loaders and zoom cleanup.
+{
+  const canvases = {};
+  const registry = new Map();
+  const requests = [];
+  const warnings = [];
+  let created = 0;
+  let licenseCalls = 0;
+  function canvas(id) {
+    const target = new EventTarget();
+    target.id = id;
+    target.offsetParent = {};
+    target.style = {};
+    target.getContext = () => ({canvas: target});
+    return target;
+  }
+  class TestChart {
+    static getChart(target) { return registry.get(target); }
+    constructor(ctx, config) {
+      if (registry.has(ctx.canvas)) throw new Error('Canvas is already in use');
+      this.id = created++;
+      this.canvas = ctx.canvas;
+      this.data = config.data;
+      this.options = config.options;
+      this.plugins = config.plugins;
+      this.scales = {x: {min: 0, max: 10}};
+      this.updates = 0;
+      registry.set(this.canvas, this);
+    }
+    update() { this.updates++; }
+    destroy() {
+      registry.delete(this.canvas);
+      for (const plugin of this.plugins) plugin.afterDestroy?.(this);
+      this.canvas = null;
+    }
+  }
+  const lifecycle = loadFragment('39b-dashboard.js', '{initCharts, renderCharts, loadChartData, loadChart, charts, _releaseDashboardChart}', {
+    Chart: TestChart, AbortController, fmt, cssVar: () => '', chartEventAnnotationsPlugin: {},
+    computeSMA: () => [], buildChartAnnotations: () => [],
+    handleLicenseRequired: async () => { licenseCalls++; },
+    logMessage: (...args) => warnings.push(args),
+    document: {getElementById: id => canvases[id] || null},
+    fetch: url => new Promise(resolve => requests.push({url,resolve})),
+  });
+  const id = 'chart-hashrate';
+  canvases[id] = canvas(id);
+  lifecycle.initCharts();
+  const first = lifecycle.charts[id];
+  lifecycle.initCharts();
+  assertEqual('repeated chart init keeps one owner', lifecycle.charts[id], first);
+  assertEqual('repeated chart init does not allocate', created, 1);
+  const oldCanvas = canvases[id];
+  canvases[id] = canvas(id);
+  lifecycle.initCharts();
+  assertEqual('replaced canvas destroys prior chart', first.canvas, null);
+  assertEqual('destroy releases zoom handlers', first._zoomController.signal.aborted, true);
+  const beforeUpdates = first.updates;
+  oldCanvas.dispatchEvent(new Event('dblclick'));
+  assertEqual('old canvas cannot invoke destroyed chart', first.updates, beforeUpdates);
+  assertEqual('new canvas obtains its own owner', lifecycle.charts[id].canvas, canvases[id]);
+  const second = lifecycle.charts[id];
+  second.destroy();
+  lifecycle.initCharts();
+  assertEqual('externally destroyed chart is recreated', created, 3);
+  const current = lifecycle.charts[id];
+  const reply = value => ({ok:true, status:200, json: async () => ({labels:['2026-10-10T10:00:00Z'], datasets:[{data:[value]}]})});
+  const older = lifecycle.loadChartData(id);
+  const newer = lifecycle.loadChartData(id);
+  requests[1].resolve(reply(222)); await newer;
+  requests[0].resolve(reply(111)); await older;
+  assertEqual('out-of-order reply cannot overwrite newest data', current.data.datasets[0].data[0], 222);
+  const oldRange = lifecycle.loadChart(id, 'hashrate', '24h');
+  const newRange = lifecycle.loadChart(id, 'hashrate', '7d');
+  assertEqual('range requests retain selected range', requests[3].url.endsWith('range=7d'), true);
+  requests[3].resolve(reply(333)); await newRange;
+  requests[2].resolve({ok:false,status:402}); await oldRange;
+  assertEqual('stale 402 cannot reset range or open license CTA', licenseCalls, 0);
+  assertEqual('stale range response cannot overwrite data', current.data.datasets[0].data[0], 333);
+  const removedResponse = lifecycle.loadChartData(id);
+  delete canvases[id]; lifecycle.initCharts();
+  requests[4].resolve(reply(444)); await removedResponse;
+  assertEqual('removed canvas owner is released', lifecycle.charts[id], undefined);
+  assertEqual('late response never updates destroyed chart', current.data.datasets[0].data[0], 333);
+  // Response headers may be current while its JSON body is still pending.
+  canvases[id] = canvas(id); lifecycle.initCharts();
+  let releaseBody;
+  const body = new Promise(resolve => { releaseBody = resolve; });
+  const pendingBody = lifecycle.loadChartData(id);
+  requests[5].resolve({ok:true,status:200,json:() => body});
+  await Promise.resolve(); await Promise.resolve();
+  const previous = lifecycle.charts[id];
+  canvases[id] = canvas(id); lifecycle.initCharts();
+  releaseBody({labels:[],datasets:[{data:[555]}]}); await pendingBody;
+  assertEqual('delayed JSON cannot affect replacement canvas', lifecycle.charts[id].data.datasets[0].data.length, 0);
+  assertEqual('delayed JSON cannot update destroyed owner', previous.updates, 0);
+  let releaseLocked;
+  const lockedBody = new Promise(resolve => { releaseLocked = resolve; });
+  const lateLock = lifecycle.loadChart(id, 'hashrate', 'all');
+  requests[6].resolve({ok:false,status:402,json:() => lockedBody});
+  await Promise.resolve(); await Promise.resolve();
+  const afterLock = lifecycle.loadChart(id, 'hashrate', '24h');
+  requests[7].resolve(reply(777)); await afterLock;
+  releaseLocked({error:'locked'}); await lateLock;
+  assertEqual('delayed 402 body cannot surface an obsolete lock', licenseCalls, 0);
+  assertEqual('delayed 402 body cannot revert selected chart data', lifecycle.charts[id].data.datasets[0].data[0], 777);
+  assertEqual('normal chart lifecycle emits no warnings', warnings.length, 0);
+  const failedRead = lifecycle.loadChartData(id);
+  requests[8].resolve({ok:true,status:200,json:async()=>{throw new Error('invalid response');}});
+  await failedRead;
+  assertEqual('active chart fetch error is surfaced', warnings.length, 1);
+  lifecycle._releaseDashboardChart(id);
+}
+
 //  RESULTS
 // ═══════════════════════════════════════════════════════════════════════════
+
+// Issue #836: run async controller tests in an awaited child; importing node:test
+// here would let the legacy process.exit below discard pending test callbacks.
+{
+  const miniTests = spawnSync(process.execPath, ['--test', path.join(__dirname, 'test_mini_war_room_js.js')], { encoding: 'utf8' });
+  assertEqual('Mini War Room production controller suite', miniTests.status, 0);
+  if (miniTests.status !== 0) console.error(miniTests.stdout, miniTests.stderr);
+}
 
 console.log(`\n${'═'.repeat(50)}`);
 if (failed === 0) {
@@ -5641,4 +5861,7 @@ if (failed === 0) {
   failures.forEach(f => console.log(f));
 }
 
+// Execute the actual Energy Advisor module tests as part of the existing CI gate.
+const energySuite = spawnSync(process.execPath, ['--test', path.join(__dirname, 'test_energy_advisor_js.js')], { stdio: 'inherit' });
+if (energySuite.status !== 0) failed++;
 process.exit(failed > 0 ? 1 : 0);

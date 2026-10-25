@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { clickToolbarAction } from './support/toolbar.js';
 test.use({serviceWorkers:'block'});
 
 const now = () => Date.now()/1000;
@@ -11,6 +12,11 @@ function fleet(stale=false) {
 async function fixture(page, {local=null,address=true,workers=true}={}) {
   await page.route('**/api/stream*',r=>r.abort());
   await page.route('**/api/axe-fleet/health*',r=>r.fulfill({json:local||{fleet_stats:{total_devices:0},device_health:[]}}));
+  await page.route('**/api/axe-fleet/devices/*/history*',r=>{
+    const id=decodeURIComponent(new URL(r.request().url()).pathname.split('/')[4]);
+    const base=id==='desk-01'?1.2e12:200e12;
+    r.fulfill({json:{device_id:id,history:Array.from({length:18},(_,i)=>({ts:now()-((18-i)*60),hashrate:i===8?0:base*(.96+Math.sin(i*.8)*.04),temperature:51+i*.15,power_watts:id==='desk-01'?19+i*.1:3500}))}});
+  });
   await page.route('**/api/snapshot*',r=>r.fulfill({json:{
     ts:now(),btc_address:address?'bc1qpc3832jcu6m8qpqjvz5lkuydwjzv8v5vq5t5rs':'',
     worker:workers?{name:'worker-01',hashrate:82e12,bestDifficulty:85e9,lastSubmission:now()-60}:null,
@@ -39,11 +45,24 @@ test('pool-only operation has one summary and identified workers',async({page},i
   await expect(page.locator('#console-table-body tr').nth(1)).toContainText('14.00 TH/s');
   await expect(page.locator('#console-fleet-source')).toContainText('nenhum cadastrado');
   await expect(page.locator('#console-source-fleet')).toBeDisabled();
-  for(const id of ['hero-worker','operational-overview','network-panel','pool-overview','console-fleet-summary','tbar-status','tbar-hr']) await expect(page.locator('#'+id)).toBeHidden();
+  for(const id of ['hero-worker','network-panel','pool-overview','console-fleet-summary','tbar-status','tbar-hr']) await expect(page.locator('#'+id)).toBeHidden();
+  // PR7 (#797) deliberately exposes the evidence overview on dashboard.
+  await expect(page.locator('#operational-overview')).toBeVisible();
+  await expect(page.locator('#operational-overview')).toHaveAttribute('aria-busy', 'false');
   expect(await page.locator('.console-entity').first().evaluate(e=>parseFloat(getComputedStyle(e).fontSize))).toBeGreaterThanOrEqual(12);
   await noOverflow(page);
-  const firstRow = await page.locator('#console-table-body tr').first().boundingBox();
-  expect(firstRow.y + firstRow.height).toBeLessThan(page.viewportSize().height);
+  await expect(page.locator('.desk-workspace > .desk-inventory')).toHaveCount(1);
+  await expect(page.locator('.desk-workspace > .desk-secondary')).toHaveCount(1);
+  const visual = await page.locator('#console-visual').boundingBox();
+  expect(visual.y + visual.height).toBeLessThan(page.viewportSize().height);
+  if(info.project.name==='chromium') {
+    const firstRow=await page.locator('#console-table-body tr').first().boundingBox();
+    expect(firstRow.y+firstRow.height).toBeLessThan(page.viewportSize().height);
+  }
+  await expect(page.locator('#console-worker-count')).toHaveText('2');
+  await expect(page.locator('.console-bar')).toHaveCount(2);
+  await expect(page.locator('#console-visual')).toContainText('82.00 TH/s');
+  await expect(page.locator('#console-visual')).toContainText('14.00 TH/s');
   await expect(page.locator('#console-worker-scope')).toHaveText('worker · worker-01');
   await page.screenshot({path:info.outputPath('pool-operation.png'),fullPage:true});
   await page.locator('#console-search').fill('worker-02');
@@ -63,6 +82,10 @@ test('Fleet prioritizes exceptions and opens an accessible detail without comman
   await expect(page.locator('#console-table-body tr').first()).toContainText('última observação');
   await expect(page.locator('#console-hashrate')).toHaveText('1.20 TH/s');
   await expect(page.locator('#console-attention-count')).toHaveText('1');
+  await expect(page.locator('#console-power')).toHaveText('19 W');
+  await expect(page.locator('#console-visual circle')).toHaveCount(18);
+  await expect(page.locator('#console-history-device')).toHaveValue('desk-01');
+  await expect(page.locator('#console-history-stats')).toContainText('0.00 H/s');
   await expect(page.locator('#kpi-row')).toBeHidden();
   await noOverflow(page);
   await page.screenshot({path:info.outputPath('fleet-operation.png'),fullPage:true});
@@ -82,6 +105,36 @@ test('Fleet prioritizes exceptions and opens an accessible detail without comman
   expect(writes).toEqual([]);
   await page.locator('#console-source-pool').click();
   await expect(page.locator('#operation-console')).toHaveAttribute('data-source','pool');
+});
+
+test('dashboard snapshot refresh reuses one Chart.js instance per canvas', async ({ page }) => {
+  const pageErrors = [];
+  page.on('pageerror', error => pageErrors.push(error.message));
+  let chartReads = 0;
+  await page.route('**/api/chart-data*', r => {
+    chartReads++;
+    return r.fulfill({json:{labels:['2026-10-10T10:00:00Z'],datasets:[{data:[chartReads]}]}});
+  });
+  await fixture(page);
+  const chartIds = ['chart-hashrate', 'chart-pool', 'chart-bestdiff', 'chart-net', 'chart-cumulative-p', 'chart-share-dist'];
+  await expect.poll(() => page.evaluate(ids => ids.map(id => !!window.Chart?.getChart(id)), chartIds)).toEqual(chartIds.map(() => true));
+  const chartInstanceIds = await page.evaluate(ids => ids.map(id => window.Chart.getChart(id).id), chartIds);
+  const expectSameChartInstances = async () => {
+    await expect.poll(() => page.evaluate(ids => ids.map(id => window.Chart?.getChart(id)?.id ?? null), chartIds)).toEqual(chartInstanceIds);
+  };
+  for (let i = 0; i < 3; i++) {
+    const refreshed = page.waitForResponse(response => response.url().includes('/api/snapshot') && response.request().method() === 'GET');
+    await page.locator('#refresh-now').click();
+    await refreshed;
+    await expectSameChartInstances();
+  }
+  await openModule(page, 'live');
+  await expectSameChartInstances();
+  await openModule(page, 'probability');
+  await expectSameChartInstances();
+  await expect.poll(() => page.evaluate(() => window.Chart.getChart('chart-share-dist').data.datasets[0].data.length)).toBe(1);
+  expect(chartReads).toBeGreaterThan(0);
+  expect(pageErrors).toEqual([]);
 });
 
 test('old Fleet observations do not present current health or current hashrate',async({page},info)=>{
@@ -140,4 +193,201 @@ test('empty pool retains setup and does not invent healthy equipment',async({pag
   await expect(page.locator('#console-fleet-source')).toContainText('nenhum cadastrado');
   await page.locator('#wallet-cta-open').click();await expect(page.locator('#wallet-modal')).toBeVisible();
   await page.locator('#wallet-modal .modal__close').click();await expect(page.locator('#wallet-modal')).toBeHidden();await noOverflow(page);
+});
+
+test('individual history switches metrics and never connects missing or delayed samples',async({page},info)=>{
+  await fixture(page,{local:fleet()});
+  await expect(page.locator('#console-visual circle')).toHaveCount(18);
+  await page.locator('#console-history-metric').selectOption('temperature');
+  await expect(page.locator('#console-history-stats')).toContainText('°C');
+  await expect(page.locator('#console-history-stats')).not.toContainText('TH/s');
+  await page.locator('#console-history-metric').selectOption('power_watts');
+  await expect(page.locator('#console-history-stats')).toContainText(' W');
+  await page.route('**/api/axe-fleet/devices/rack-02/history*',r=>r.fulfill({json:{device_id:'rack-02',history:[
+    {ts:now()-700,hashrate:200e12},{ts:now()-650,hashrate:null},{ts:now()-600,hashrate:0},{ts:now()-550,hashrate:180e12},{ts:now()-10,hashrate:190e12}
+  ]}}));
+  await page.locator('#console-history-metric').selectOption('hashrate');
+  await page.locator('#console-history-device').selectOption('rack-02');
+  await expect(page.locator('#console-visual circle')).toHaveCount(4);
+  await expect(page.locator('#console-visual polyline')).toHaveCount(1);
+  await expect(page.locator('#console-history-stats')).toContainText('200.0 TH/s');
+  await expect(page.locator('#console-visual-note')).toContainText('lacunas >150 s não conectadas');
+  await page.locator('#console-history-data summary').click();
+  await expect(page.locator('#console-history-samples')).toContainText('0.00 H/s');
+  await expect(page.locator('#console-history-samples')).toContainText('—');
+  await noOverflow(page);
+  await page.screenshot({path:info.outputPath('fleet-history-gaps.png'),fullPage:true});
+});
+
+test('one observation draws one point and failed refresh retains clearly dated history',async({page},info)=>{
+  await fixture(page,{local:fleet()});
+  await page.route('**/api/axe-fleet/devices/desk-01/history*',r=>r.fulfill({json:{device_id:'desk-01',history:[{ts:now()-600,hashrate:1e12}]}}));
+  await page.locator('#console-history-refresh').click();
+  await expect(page.locator('#console-visual circle')).toHaveCount(1);
+  await expect(page.locator('#console-visual polyline')).toHaveCount(0);
+  await expect(page.locator('#console-visual-note')).toContainText('1 amostras');
+  await page.route('**/api/axe-fleet/devices/desk-01/history*',r=>r.fulfill({status:503,json:{error:'unavailable'}}));
+  await page.locator('#console-history-refresh').click();
+  await expect(page.locator('#console-visual-note')).toContainText('Consulta indisponível');
+  await expect(page.locator('#console-visual circle')).toHaveCount(1);
+  await expect(page.locator('#console-hashrate')).toHaveText('1.20 TH/s');
+  await page.screenshot({path:info.outputPath('history-failed.png'),fullPage:true});
+  await page.route('**/api/axe-fleet/devices/desk-01/history*',r=>r.fulfill({status:403,json:{error:'denied'}}));
+  await page.locator('#console-history-refresh').click();
+  await expect(page.locator('#console-visual')).toContainText('Histórico indisponível');
+  await expect(page.locator('#console-visual circle')).toHaveCount(0);
+});
+
+test('history is scoped to the selected equipment and late responses cannot replace it',async({page})=>{
+  await fixture(page,{local:fleet()});
+  await expect(page.locator('#console-visual circle')).toHaveCount(18);
+  let release; const gate=new Promise(resolve=>release=resolve);
+  await page.route('**/api/axe-fleet/devices/desk-01/history*',async r=>{await gate;await r.fulfill({json:{device_id:'desk-01',history:[{ts:now()-10,hashrate:99e12}]}}).catch(()=>{});});
+  await page.locator('#console-history-refresh').click();
+  await page.locator('#console-history-device').selectOption('rack-02');
+  await expect(page.locator('#console-visual circle')).toHaveCount(18);
+  await expect(page.locator('#console-history-stats')).toContainText('TH/s');
+  const late=page.waitForResponse(r=>r.url().includes('/desk-01/history'));
+  release();await late;
+  await expect(page.locator('#console-history-device')).toHaveValue('rack-02');
+  await expect(page.locator('#console-history-stats')).not.toContainText('99.00 TH/s');
+  await page.route('**/api/axe-fleet/devices/rack-02/history*',r=>r.fulfill({json:{device_id:'another-device',history:[{ts:now()-5,hashrate:999e12}]}}));
+  await page.locator('#console-history-refresh').click();
+  await expect(page.locator('#console-visual-note')).toContainText('Consulta indisponível');
+  await expect(page.locator('#console-history-stats')).not.toContainText('999');
+});
+
+
+test('history age follows the last valid metric and all plotted samples have a text alternative',async({page},info)=>{
+  await fixture(page,{local:fleet()});
+  await expect(page.locator('#console-visual circle')).toHaveCount(18);
+  const fixed=now();
+  const rows=Array.from({length:120},(_,i)=>({ts:fixed-1000+i*5,hashrate:1e12+i*1e9}));
+  rows.push({ts:fixed-10,hashrate:null});
+  await page.route('**/api/axe-fleet/devices/desk-01/history*',r=>r.fulfill({json:{device_id:'desk-01',history:rows}}));
+  await page.locator('#console-history-refresh').click();
+  await expect(page.locator('#console-visual-note')).toContainText('última medição válida há');
+  await expect(page.locator('#console-visual-note')).not.toContainText('há 10.0s');
+  const note=await page.locator('#console-visual-note').textContent();
+  expect(note).toMatch(/última medição válida há [6-9]\.\d+m/);
+  await page.locator('#console-history-data summary').click();
+  await expect(page.locator('#console-history-samples tbody tr')).toHaveCount(120);
+  await expect(page.locator('#console-history-samples')).toContainText('Todas as 120 amostras');
+  await page.screenshot({path:info.outputPath('history-text-alternative.png'),fullPage:true});
+});
+
+test('summary cards use native keyboard navigation with destinations matching their labels',async({page})=>{
+  await fixture(page);
+  const lastShare=page.locator('#kpi-row button.kpi-card').nth(3);
+  await expect(lastShare).toContainText('Última share');
+  await lastShare.focus();await lastShare.press('Enter');
+  await expect(page.locator('body')).toHaveAttribute('data-active-module','live');
+  await openModule(page,'dashboard');
+  const workers=page.locator('#kpi-row button.kpi-card').nth(2);
+  await workers.focus();await workers.press('Space');
+  await expect(page.locator('body')).toHaveAttribute('data-active-module','live');
+});
+
+
+test('real login and logout invalidate a pending history response across tenants',async({page})=>{
+  await fixture(page,{local:fleet()});
+  await expect(page.locator('#console-visual circle')).toHaveCount(18);
+  let release;const gate=new Promise(resolve=>release=resolve);
+  await page.route('**/api/axe-fleet/devices/desk-01/history*',async r=>{await gate;await r.fulfill({json:{device_id:'desk-01',history:[{ts:now()-10,hashrate:99e12}]}}).catch(()=>{});});
+  await page.locator('#console-history-refresh').click();
+  const next={fleet_stats:{total_devices:1},device_health:[{id:'acme-one',name:'ACME miner',status:'ONLINE',telemetry:{ts:now()-5,hashrate_hs:2e12}}]};
+  // Model the real tenant boundary: ACME observations require its bearer.
+  await page.route('**/api/axe-fleet/health*',r=>r.fulfill({json:r.request().headers().authorization === 'Bearer fixture-acme' ? next : {fleet_stats:{total_devices:0},device_health:[]}}));
+  await page.route('**/api/axe-fleet/devices/acme-one/history*',r=>r.fulfill({json:{device_id:'acme-one',history:[{ts:now()-10,hashrate:2e12}]}}));
+  await page.route('**/api/auth/login',r=>r.fulfill({json:{success:true,access_token:'fixture-acme',refresh_token:'fixture-refresh',expires_at:Math.floor(now())+3600,tenant_id:'acme'}}));
+  await page.route('**/api/auth/logout',r=>r.fulfill({json:{success:true}}));
+  await clickToolbarAction(page,'#auth-toggle');
+  await page.locator('#auth-api-key').fill('fixture-key');await page.locator('#auth-login').click();
+  await expect(page.locator('#console-history-device')).toHaveValue('acme-one');
+  await expect(page.locator('#console-history-stats')).toContainText('2.00 TH/s');
+  const late=page.waitForResponse(r=>r.url().includes('/desk-01/history'));release();await late;
+  await expect(page.locator('#console-history-stats')).not.toContainText('99.00 TH/s');
+  await clickToolbarAction(page,'#auth-toggle');await page.locator('#auth-logout').click();
+  await expect(page.locator('#console-visual circle')).toHaveCount(0);
+});
+
+// Issue #750: exercise the actual render/refresh path with synthetic telemetry.
+for (const reducedMotion of ['no-preference', 'reduce']) {
+  test('signed Celsius remains observed in table and detail ('+reducedMotion+')',async({page},info)=>{
+    await page.emulateMedia({reducedMotion});
+    const local=fleet();local.device_health[0].telemetry.temperature=-5;
+    await fixture(page,{local});
+    const row=page.locator('#console-table-body tr').filter({has:page.locator('[data-console-id="desk-01"]')});
+    const temperature=await row.locator('[data-label="Temperatura"]').textContent();
+    await page.locator('[data-console-id="desk-01"]').click();
+    await expect(page.locator('#console-detail')).toBeVisible();
+    await page.screenshot({path:info.outputPath('signed-celsius.png'),fullPage:true});
+    expect.soft(temperature).toContain('-5.0 °C');
+    await expect(page.locator('#console-detail-fields')).toContainText('-5.0 °C');
+  });
+
+  test('removed observation dismisses current-looking detail and restores focus ('+reducedMotion+')',async({page},info)=>{
+    await page.emulateMedia({reducedMotion});
+    const local=fleet();let reads=0;
+    const writes=[];page.on('request',r=>{if(r.url().includes('/api/axe-fleet')&&r.method()!=='GET')writes.push(r.method());});
+    await fixture(page,{local});
+    await page.locator('[data-console-id="desk-01"]').focus();
+    await page.locator('[data-console-id="desk-01"]').press('Enter');
+    await expect(page.locator('#console-detail-status')).toContainText('Online');
+    await page.route('**/api/axe-fleet/health*',r=>{reads++;return r.fulfill({json:{fleet_stats:{total_devices:1},device_health:[local.device_health[1]]}});});
+    // Same refresh handler as the existing polling test, not a synthetic renderer.
+    await page.evaluate(()=>document.getElementById('refresh-now').click());
+    await expect.poll(()=>reads).toBeGreaterThan(0);
+    await expect(page.locator('#console-table-body tr')).toHaveCount(1);
+    await expect(page.locator('[data-console-id="desk-01"]')).toHaveCount(0);
+    await page.screenshot({path:info.outputPath('removed-observation.png'),fullPage:true});
+    await expect(page.locator('#console-detail')).toBeHidden();
+    await expect(page.locator('#console-search')).toBeFocused();
+    expect(writes).toEqual([]);
+  });
+}
+
+test('detail motion is restrained for pointer, instant for keyboard and reduced motion',async({page})=>{
+  await page.emulateMedia({reducedMotion:'no-preference'});
+  await fixture(page,{local:fleet()});
+  const entity=page.locator('[data-console-id="desk-01"]');
+  await entity.click();
+  const timing=await page.locator('#console-detail').evaluate(e=>({name:getComputedStyle(e).animationName,duration:getComputedStyle(e).animationDuration}));
+  expect(timing.name).toBe('console-detail-enter');expect(timing.duration).toBe('0.16s');
+  await page.keyboard.press('Escape');
+  for(let i=0;i<20;i++) {
+    await entity.press('Enter');
+    await expect(page.locator('#console-detail')).toBeVisible();
+    expect(await page.locator('#console-detail').evaluate(e=>getComputedStyle(e).animationName)).toBe('none');
+    await page.keyboard.press('Escape');await expect(entity).toBeFocused();
+  }
+  await page.emulateMedia({reducedMotion:'reduce'});
+  await entity.click();
+  expect(await page.locator('#console-detail').evaluate(e=>getComputedStyle(e).animationName)).toBe('none');
+  await page.keyboard.press('Escape');await expect(entity).toBeFocused();
+  await noOverflow(page);
+});
+
+test('desk quote stays above the register and commands open the shift',async({page})=>{
+  await fixture(page,{local:fleet()});
+  const quote=await page.locator('.desk-quote').boundingBox();
+  const table=await page.locator('#console-table').boundingBox();
+  expect(quote.y).toBeLessThan(table.y);
+  await expect(page.locator('.desk-quote #console-btc-price')).toHaveCSS('color','rgb(247, 147, 26)');
+  await expect(page.locator('#console-btc-price-context')).toHaveText('$84,537');
+  await expect(page.locator('#console-network-height-context')).toHaveText('#969,641');
+  await expect(page.locator('#console-network-diff-context')).not.toHaveText('—');
+  await expect(page.locator('script[src="/static/app.js?v763"]')).toHaveCount(1);
+  await expect(page.locator('link[rel="stylesheet"][href="/static/style.css?v763"]')).toHaveCount(1);
+  await expect(page.locator('#desk-command-input')).not.toHaveCount(0);
+  await expect(page.locator('#console-detail #desk-command-input')).toHaveCount(0);
+  await page.locator('#desk-command-input').fill('pool');
+  await page.locator('#desk-command-input').press('Enter');
+  await expect(page.locator('#operation-console')).toHaveAttribute('data-source','pool');
+  await expect(page.locator('#desk-command-input')).toHaveValue('');
+  await page.locator('#desk-command-input').fill('análise');
+  await page.locator('#desk-command-input').press('Enter');
+  await expect(page.locator('#network-panel')).toBeVisible();
+  await expect(page.locator('#operation-console')).toBeHidden();
+  await noOverflow(page);
 });

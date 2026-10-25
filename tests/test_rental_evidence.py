@@ -306,6 +306,38 @@ def test_late_older_healthy_sample_cannot_rewrite_newer_under_delivery(db, monke
     assert after["evaluation"]["window_start"] == before["window_start"]
 
 
+def test_sample_coverage_distinguishes_zero_missing_invalid_and_unconfigured(db):
+    address = "bc1qtestaddress000"
+    _collect("tenant-a", address, _sample())
+    cfg = _configure()
+    start = cfg["created_at"] + 0.001
+    _collect("tenant-a", address, _sample(hashrate=0), started=start, completed=start + 0.001)
+    missing_start = start + 1
+    _collect("tenant-a", address, {"workerData": [{"id": "pool-worker-1", "hashrate": None}]},
+             started=missing_start, completed=missing_start + 0.001)
+    payload = evidence.read("tenant-a", "mrr", "rental-1")
+    assert payload["coverage"] == {
+        "status": "AVAILABLE",
+        "observation_count": 2,
+        "observed_count": 1,
+        "missing_count": 1,
+        "observed_pct": 50.0,
+        "window_start": start + 0.001,
+        "window_end": missing_start + 0.001,
+    }
+    assert payload["points"][0]["hashrate_th"] == 0
+    assert payload["points"][0]["delivery_pct"] == 0
+    assert payload["points"][1]["hashrate_th"] is None
+    assert payload["coverage"]["status"] != "NOT CONFIGURED"
+
+    evidence.disable("tenant-a", "mrr", "rental-1")
+    unconfigured = evidence.read("tenant-a", "mrr", "rental-1")
+    assert unconfigured["binding"] is None
+    assert unconfigured["evaluation"]["status"] == "unconfigured"
+    assert unconfigured["coverage"]["status"] == "NO DATA"
+    assert unconfigured["coverage"]["observed_pct"] is None
+
+
 def test_observed_pool_point_preserves_unknown_window_and_collection_bounds(db):
     address = "bc1qtestaddress000"
     _collect("tenant-a", address, _sample())

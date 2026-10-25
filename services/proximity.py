@@ -27,6 +27,11 @@ from helpers import (
     human_secs_long,
     isfinite_v,
 )
+from services.block_probability_lab import (
+    positive_share_mean,
+    share_statistics,
+    valid_share_history,
+)
 
 log = logging.getLogger("cypher65")
 
@@ -213,13 +218,51 @@ def _compute_rolling_avg_share_diffs(sch, ts_now, window_seconds=3600):
         "trend_label": "insufficient",
         "window_seconds": window_seconds,
     }
-    if not sch or len(sch) < 2:
+    sch = valid_share_history(sch)
+    if len(sch) < 2:
+        return result
+
+    # Invalid or inconsistent clocks cannot establish rolling time windows.
+    # Untimed observations retain the legacy order-based fallback below.
+    timestamps = []
+    timestamp_present = False
+    for entry in sch:
+        raw_ts = next(
+            (entry[key] for key in ("ts", "timestamp", "time") if key in entry), None
+        )
+        if any(key in entry for key in ("ts", "timestamp", "time")):
+            timestamp_present = True
+            try:
+                value = float(raw_ts)
+            except (TypeError, ValueError, OverflowError):
+                return result
+            if (
+                isinstance(raw_ts, bool)
+                or not math.isfinite(value)
+                or not 0 < value <= ts_now
+            ):
+                return result
+            timestamps.append(value)
+        else:
+            timestamps.append(None)
+    if timestamp_present and (
+        any(value is None for value in timestamps)
+        or any(a > b for a, b in zip(timestamps, timestamps[1:]))
+    ):
         return result
 
     # Split: recent = shares within window, old = shares before that
     cutoff = ts_now - window_seconds
-    recent = [e for e in sch if (e.get("ts") or 0) >= cutoff]
-    old = [e for e in sch if (e.get("ts") or 0) < cutoff]
+    recent = [
+        entry
+        for entry, value in zip(sch, timestamps)
+        if value is not None and value >= cutoff
+    ]
+    old = [
+        entry
+        for entry, value in zip(sch, timestamps)
+        if value is not None and value < cutoff
+    ]
 
     if len(recent) < 2:
         # Not enough recent data — fall back to best-available window
@@ -236,7 +279,7 @@ def _compute_rolling_avg_share_diffs(sch, ts_now, window_seconds=3600):
         ]
         if not vals:
             return None
-        return sum(vals) / len(vals)
+        return positive_share_mean(vals)
 
     recent_avg = _avg(recent)
     old_avg = _avg(old)
@@ -322,7 +365,7 @@ def _compute_quantum_lock(
     # 3. Share power score (0-20)
     #    Avg share diff / best diff → if shares are near best, strong
     if sch and best_diff_raw > 0:
-        avg_share = sum((e.get("share_diff_raw") or 0) for e in sch) / len(sch)
+        avg_share = positive_share_mean([e["share_diff_raw"] for e in sch])
         power_ratio = avg_share / best_diff_raw if best_diff_raw > 0 else 0
         if power_ratio >= 0.5:
             power_score = 20
@@ -405,6 +448,32 @@ def compute_proximity(worker, current_difficulty, net_hashrate, ts):
     included in /api/snapshot. Pure compute: never raises (returns {} on
     insufficient data)."""
     out = {"ts": ts}
+    session_shares = state.timeline_state.get("session_share_count", 0) or 0
+    share_history = list(state.timeline_state.get("share_calc_history") or [])
+    last_submit_ts = state.timeline_state.get("last_submit_ts")
+    submit_age = None
+    try:
+        submitted_at = float(last_submit_ts)
+        observed_at = float(ts)
+        if (
+            not isinstance(last_submit_ts, bool)
+            and not isinstance(ts, bool)
+            and math.isfinite(submitted_at)
+            and math.isfinite(observed_at)
+            and 0 < submitted_at <= observed_at
+        ):
+            submit_age = observed_at - submitted_at
+    except (TypeError, ValueError, OverflowError):
+        pass  # Invalid clocks do not establish a fresh session observation.
+    out["session_evidence"] = share_statistics(
+        session_share_count=session_shares,
+        share_calc_history=share_history,
+        user_hashrate=(worker or {}).get("hashrate"),
+        network_hashrate=net_hashrate,
+        age_seconds=submit_age,
+        observed_now=ts,
+    )
+    out["session_evidence"]["session_shares"] = session_shares
     # Collect missing inputs for validation
     missing_inputs = []
 
@@ -469,7 +538,7 @@ def compute_proximity(worker, current_difficulty, net_hashrate, ts):
             blocks_per_year = seconds_per_year / expected_secs
 
         # ── Trend: rolling avg share difficulty (NOT best diff) ──────
-        sch = list(state.timeline_state.get("share_calc_history") or [])
+        sch = valid_share_history(share_history)
         rolling = _compute_rolling_avg_share_diffs(sch, ts, window_seconds=3600)
 
         # Use rolling trend as primary, best-diff trend as fallback when no share data
@@ -505,9 +574,7 @@ def compute_proximity(worker, current_difficulty, net_hashrate, ts):
         # ── CHANCE per share: use avg_share_diff_raw when available ──
         avg_share_diff_raw = None
         if sch:
-            avg_share_diff_raw = sum((e.get("share_diff_raw") or 0) for e in sch) / len(
-                sch
-            )
+            avg_share_diff_raw = positive_share_mean([e["share_diff_raw"] for e in sch])
 
         chance_per_share_raw = (
             avg_share_diff_raw
@@ -758,6 +825,7 @@ def compute_proximity(worker, current_difficulty, net_hashrate, ts):
                 "ticker": ticker,
                 "session_totals": totals,
                 "charts_data": charts_data,
+                "session_evidence": out["session_evidence"],
             }
         except Exception as e:
             log.warning("[compute_proximity live_calc] error: %s", e)

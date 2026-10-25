@@ -58,6 +58,13 @@ function buildSnapshot() {
       health: { providers_ok: 3, providers_total: 3, last_fetch_ts: Math.floor(Date.now() / 1000) },
       institutional: {
         regime: 'Tight',
+        market_intelligence: {
+          status: 'PARTIAL',
+          available_provider_count: 2,
+          total_provider_count: 3,
+          cache_age_seconds: 30,
+          rankings: { cheapest: 'mrr', best_score: 'mrr', freshest: 'nicehash', most_capacity: 'mrr' },
+        },
         snapshot: {
           best_price_btc_ph_day: 0.000012,
           best_price_sats_th_day: 1.2,
@@ -80,6 +87,13 @@ function buildSnapshot() {
     },
     institutional: {
       regime: 'Tight',
+      market_intelligence: {
+        status: 'PARTIAL',
+        available_provider_count: 2,
+        total_provider_count: 3,
+        cache_age_seconds: 30,
+        rankings: { cheapest: 'mrr', best_score: 'mrr', freshest: 'nicehash', most_capacity: 'mrr' },
+      },
       snapshot: {
         best_price_btc_ph_day: 0.000012,
         best_price_sats_th_day: 1.2,
@@ -195,7 +209,7 @@ test.describe('Hash Market — institutional table + affiliate (HashratePulse)',
       }
     });
 
-    await page.locator('.sidebar__link[data-module="market"]').click();
+    await page.locator('.sidebar__link[data-module="market"]').evaluate(el => el.click());
     await page.waitForTimeout(1000);
     console.log('SNAPSHOT_RESPONSES:', JSON.stringify(snapshots));
 
@@ -239,6 +253,11 @@ test.describe('Hash Market — institutional table + affiliate (HashratePulse)',
     // Executive Snapshot must show best price + venue.
     const snapBest = await page.locator('#mkt-snap-best').textContent();
     expect(snapBest.toLowerCase()).toContain('mrr');
+    await expect(page.locator('#mkt-provider-health')).toContainText('PARTIAL · 2/3 PROVIDERS');
+    await expect(page.locator('#mkt-provider-rankings')).toContainText('CHEAPEST MRR');
+    await expect(page.locator('#mkt-provider-rankings')).toContainText('BEST SCORE MRR');
+    await expect(page.locator('#mkt-provider-rankings')).toContainText('FRESHEST NICEHASH');
+    await expect(page.locator('#mkt-provider-cache-age')).not.toContainText('UNKNOWN');
 
     // Risk tiers must be color-coded.
     const tiers = await page.locator('#mkt-table-body .mkt-table__tier').allTextContents();
@@ -301,7 +320,7 @@ test.describe('Hash Market — institutional table + affiliate (HashratePulse)',
     await page.goto(BASE_URL);
     await page.waitForSelector('#app-shell', { timeout: 15000 });
     await ensureSidebarOpen(page);
-    await page.locator('.sidebar__link[data-module="market"]').click();
+    await page.locator('.sidebar__link[data-module="market"]').evaluate(el => el.click());
 
     // Table renders (cap applied) and the honest note is visible.
     await page.waitForFunction(() => {
@@ -354,7 +373,7 @@ test.describe('Hash Market — institutional table + affiliate (HashratePulse)',
     await page.goto(BASE_URL);
     await page.waitForSelector('#app-shell', { timeout: 15000 });
     await ensureSidebarOpen(page);
-    await page.locator('.sidebar__link[data-module="market"]').click();
+    await page.locator('.sidebar__link[data-module="market"]').evaluate(el => el.click());
     await page.waitForTimeout(800);
 
     const panel = page.locator('#decision-matrix-panel');

@@ -6,7 +6,7 @@
 <title>CYPHER65 // PARASITE POOL WAR ROOM</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
 <!-- Issue #186: defer no Chart.js — CDN nunca mais bloqueia o parse do DOM
      (o retry hack _mktGridRetried no app.js era sintoma deste bloqueio).
      Quem usa Chart guarda com `typeof Chart === 'undefined'` e re-renderiza
@@ -60,7 +60,7 @@
   }
 </script>
 {% endif %}
-<link rel="stylesheet" href="/static/style.css?v746b">
+<link rel="stylesheet" href="/static/style.css?v763">
 <link rel="icon" href="/static/favicon.ico" sizes="any">
 <link rel="icon" type="image/png" sizes="32x32" href="/static/icon-32x32.png">
 <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
@@ -72,7 +72,7 @@
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 </head>
-<body class="terminal-ui operation-ui">
+<body class="terminal-ui operation-ui premium-ui">
 
 <div class="app-shell" id="app-shell">
 
@@ -106,10 +106,15 @@
       <span class="icon"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" x2="2" y1="12" y2="12"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/><line x1="6" x2="6.01" y1="16" y2="16"/><line x1="10" x2="10.01" y1="16" y2="16"/></svg></span>
       <span class="label">Equipamentos</span>
     </button>
+    <a class="sidebar__link energy-entry" href="/energy-advisor" aria-label="Energy Advisor" title="Energy Advisor — cenários somente leitura">
+      <span class="icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2 4 14h7l-1 8 10-12h-7z"/></svg></span>
+      <span class="label">Energy Advisor</span>
+    </a>
     <button class="sidebar__link" data-module="live" aria-label="Live Mining">
       <span class="icon"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2"/></svg></span>
       <span class="label">Eventos</span>
     </button>
+    <a href="/thermal-timeline" id="thermal-timeline-link" class="sidebar__timeline-link" aria-label="Thermal Timeline" title="Thermal Timeline"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M2 2v11h12M3 10l3-5 4 3 3-6" fill="none" stroke="currentColor" stroke-width="1.5"/></svg><span class="sidebar__timeline-label">Thermal Timeline</span></a>
     <div class="sidebar__group">Análise e mercado</div>
     <button class="sidebar__link" data-module="analysis" aria-label="Análise">
       <span class="icon"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg></span>
@@ -215,14 +220,25 @@
      MODULE HEADER — indica o módulo ativo
      ══════════════════════════════════════════════════════════════════════ -->
 <div class="module-header" id="module-header" role="region" aria-label="Cabeçalho do módulo">
-  <span class="module-header__eyebrow">MODULE</span>
+  <span class="module-header__eyebrow">Módulo</span>
   <h1 class="module-header__title" id="module-header-title">DASHBOARD</h1>
   <span class="module-header__desc" id="module-header-desc">Visão geral — pool, worker e rede</span>
+  <div id="module-evidence-context">
+  <p class="module-source-context" id="module-source-context"></p>
+  <nav class="module-section-nav" id="module-section-nav" aria-label="Seções do módulo" hidden></nav></div>
 </div>
 
 <section class="operation-console" id="operation-console" data-module="dashboard" role="main" aria-labelledby="console-title" aria-busy="true">
+  <section class="console-market-strip desk-quote" aria-label="Cotações" tabindex="0">
+    <div class="console-market-heading"><span class="desk-mark" aria-hidden="true"></span><div><strong>CY65</strong><small>Mesa</small></div></div>
+    <div><span>Preço BTC / USD</span><strong id="console-btc-price">—</strong><small id="console-btc-scope">fonte não informada</small></div>
+    <div><span>Altura da rede</span><strong id="console-network-height">—</strong><small id="console-network-scope">fonte não informada</small></div>
+    <div><span>Dificuldade</span><strong id="console-network-diff">—</strong><small>referência da rede Bitcoin</small></div>
+  </section>
+  <div class="desk-workspace">
+  <div class="desk-head">
   <div class="console-heading">
-    <div><p class="console-kicker">VISIBILIDADE DA OPERAÇÃO</p><h2 id="console-title">Carregando fontes…</h2><p id="console-coverage">Aguardando o snapshot da pool e a consulta de equipamentos.</p></div>
+    <div><p class="console-kicker">Turno</p><h1 id="console-title">Carregando fontes…</h1><p id="console-coverage">Aguardando o snapshot da pool e a consulta de equipamentos.</p></div>
   </div>
   <div class="console-source-tabs" role="group" aria-label="Fonte da operação">
     <button id="console-source-pool" aria-pressed="true">Pool</button>
@@ -230,51 +246,87 @@
     <button class="console-button" id="console-open-fleet">Equipamentos <span aria-hidden="true">↗</span></button>
   </div>
   <div class="kpi-row" id="kpi-row" data-module="dashboard" role="region" aria-label="Métricas do worker e da pool">
-  <div class="kpi-card" data-kpi-target="live" title="Ir para Live Mining — telemetria em tempo real">
+  <button type="button" class="kpi-card" data-kpi-target="live" title="Abrir atividade da pool">
     <span class="kpi-label">Hashrate do worker <span class="tip-wrap" data-tip="Taxa de processamento do minerador principal"><span class="tip-wrap__icon">?</span></span></span>
-    <div class="kpi-value-row">
+    <span class="kpi-value-row">
       <span class="kpi-value" id="kpi-hashrate">—</span>
       <span class="kpi-spark" id="kpi-spark-hashrate"></span>
-    </div>
+    </span>
     <span class="kpi-sub" id="console-worker-scope">worker · nome não informado</span>
-  </div>
-  <div class="kpi-card" data-kpi-target="probability" title="Ir para Block Model — estatísticas sem prazo ou previsão">
+  </button>
+  <button type="button" class="kpi-card" data-kpi-target="probability" title="Ir para Block Model — estatísticas sem prazo ou previsão">
     <span class="kpi-label">Melhor share <span class="tip-wrap" data-tip="Maior dificuldade de share já encontrada"><span class="tip-wrap__icon">?</span></span></span>
-    <div class="kpi-value-row">
+    <span class="kpi-value-row">
       <span class="kpi-value kpi-value--gold" id="kpi-bestdiff">—</span>
       <span class="kpi-spark" id="kpi-spark-bestdiff"></span>
-    </div>
+    </span>
     <span class="kpi-sub" id="console-best-scope">histórico do worker</span>
-  </div>
-  <div class="kpi-card" data-kpi-target="live" title="Ir para Live Mining — activity feed de shares">
-    <span class="kpi-label">Shares <span class="tip-wrap" data-tip="Estimativa por hora ou contagem da sessão, conforme a fonte disponível"><span class="tip-wrap__icon">?</span></span></span>
-    <div class="kpi-value-row">
-      <span class="kpi-value" id="kpi-shares">—</span>
+  </button>
+  <button type="button" class="kpi-card" data-kpi-target="live" title="Ver workers da pool em Eventos">
+    <span class="kpi-label">Workers observados</span>
+    <span class="kpi-value-row">
+      <span class="kpi-value" id="console-worker-count">—</span><span id="kpi-shares" hidden>—</span>
       <span class="kpi-spark" id="kpi-spark-shares"></span>
-    </div>
-    <span class="kpi-sub" id="console-shares-scope">sem contagem informada</span>
-  </div>
-  <div class="kpi-card" data-kpi-target="probability" title="Ir para Block Model — estatísticas de rede e pool">
-    <span class="kpi-label">Hashrate da pool <span class="tip-wrap" data-tip="Taxa de processamento total da pool"><span class="tip-wrap__icon">?</span></span></span>
-    <div class="kpi-value-row">
-      <span class="kpi-value kpi-value--cyan" id="kpi-poolhr">—</span>
+    </span>
+    <span class="kpi-sub" id="console-worker-count-scope">nomes informados pela pool</span><span id="console-shares-scope" hidden>sem contagem informada</span>
+  </button>
+  <button type="button" class="kpi-card" data-kpi-target="live" title="Abrir eventos e shares do worker">
+    <span class="kpi-label">Última share do worker</span>
+    <span class="kpi-value-row">
+      <span class="kpi-value" id="console-last-share">—</span>
       <span class="kpi-spark" id="kpi-spark-poolhr"></span>
-    </div>
-    <span class="kpi-sub">total informado pela pool</span>
-  </div>
+    </span>
+    <span class="kpi-sub" id="console-last-share-scope">worker selecionado</span>
+  </button>
 </div>
   <div class="console-fleet-summary" id="console-fleet-summary">
-    <div><span>Inventário local</span><strong id="console-total">—</strong><small>equipamentos cadastrados</small></div>
     <div><span>Exigem atenção</span><strong id="console-attention-count">—</strong><small id="console-attention-coverage">cobertura não verificada</small></div>
     <div><span>Hashrate informado</span><strong id="console-hashrate">—</strong><small id="console-hashrate-coverage">medição local indisponível</small></div>
+    <div><span>Potência medida</span><strong id="console-power">—</strong><small id="console-power-scope">cobertura não verificada</small></div>
     <div><span>Amostras recentes</span><strong id="console-measured">—</strong><small id="console-recent-scope">amostras com até 150 s</small></div>
   </div>
   <div class="console-notice" id="console-notice" hidden><div><strong id="console-notice-title"></strong><p id="console-notice-detail"></p></div><button class="console-button" id="console-notice-action">Ver equipamentos</button></div>
-  <div class="console-table-heading"><div><h3 id="console-table-title">Workers da pool</h3><p id="console-table-note">Dados da pool não incluem temperatura ou potência do equipamento.</p></div><label class="console-search">Filtrar <input id="console-search" type="search" placeholder="Nome ou modelo" autocomplete="off"></label></div>
+  </div>
+  <div class="console-inventory desk-inventory">
+  <div class="console-table-heading"><div><h2 id="console-table-title">Workers da pool</h2><p id="console-table-note">Dados da pool não incluem temperatura ou potência do equipamento.</p></div><label class="console-search">Filtrar <input id="console-search" type="search" placeholder="Nome ou modelo" autocomplete="off"></label></div>
   <div class="console-table-wrap"><table class="console-table" id="console-table"><caption class="sr-only">Entidades observadas pela fonte selecionada</caption><thead id="console-table-head"></thead><tbody id="console-table-body"><tr><td>Aguardando dados…</td></tr></tbody></table></div>
   <div class="console-table-footer"><span id="console-row-count">—</span><span>Selecione uma linha para investigar <span aria-hidden="true">↗</span></span></div>
+  </div>
+  <div class="desk-secondary" id="desk-secondary">
+  <div class="console-insights">
+    <section class="console-performance" aria-labelledby="console-visual-title">
+      <div class="console-card-heading"><div><p class="console-section-label">Produção</p><h2 id="console-visual-title">Hashrate por worker</h2></div><span class="console-origin" id="console-visual-origin">Pool</span></div>
+      <div class="console-history-controls" id="console-history-controls" hidden>
+        <label>Equipamento <select id="console-history-device"></select></label>
+        <label>Métrica <select id="console-history-metric"><option value="hashrate">Hashrate</option><option value="temperature">Temperatura</option><option value="power_watts">Potência</option></select></label>
+        <button class="console-button" id="console-history-refresh" aria-label="Atualizar histórico do equipamento">↻</button>
+      </div>
+      <div class="console-visual" id="console-visual" aria-busy="false"></div>
+      <p class="console-visual-note" id="console-visual-note">Valores reportados pela fonte.</p>
+      <div class="console-history-stats" id="console-history-stats" hidden></div>
+      <details class="console-history-data" id="console-history-data" hidden><summary>Consultar amostras do gráfico</summary><div id="console-history-samples"></div></details>
+    </section>
+    <aside class="console-observations" aria-labelledby="console-observations-title">
+      <div class="console-card-heading"><div><p class="console-section-label">Contexto</p><h2 id="console-observations-title">Atividade e cobertura</h2></div><span class="console-origin" id="console-observation-origin">Pool</span></div>
+      <details class="console-observation-disclosure" id="console-observation-disclosure" open><summary>Atividade e cobertura da operação</summary><div id="console-observations-body"></div>
+      <div class="console-pool-context" id="console-pool-context"><span>Hashrate global da pool</span><strong id="kpi-poolhr">—</strong><small>Contexto da pool, independente dos workers acima.</small></div></details>
+    </aside>
+  </div>
+  </div>
+  </div>
+  <section class="console-market-strip" aria-label="Contexto da rede Bitcoin">
+    <div class="console-market-heading"><span class="console-bitcoin" aria-hidden="true">₿</span><div><strong>Bitcoin</strong><small>Contexto de rede</small></div></div>
+    <div><span>Preço BTC / USD</span><strong id="console-btc-price-context" data-console-mirror="console-btc-price">—</strong><small id="console-btc-scope-context" data-console-mirror="console-btc-scope">fonte não informada</small></div>
+    <div><span>Altura da rede</span><strong id="console-network-height-context" data-console-mirror="console-network-height">—</strong><small id="console-network-scope-context" data-console-mirror="console-network-scope">fonte não informada</small></div>
+    <div><span>Dificuldade</span><strong id="console-network-diff-context" data-console-mirror="console-network-diff">—</strong><small>referência da rede Bitcoin</small></div>
+  </section>
   <div class="console-sources" aria-label="Origem e idade dos dados"><span id="console-pool-source">Pool: aguardando</span><span id="console-fleet-source">Frota: aguardando</span><span id="console-network-source">Rede: aguardando</span></div>
-  <div class="console-context-link"><span>Rede, taxas e cenários ficam em Análise.</span><button class="console-text-button" id="console-open-analysis">Abrir Análise <span aria-hidden="true">→</span></button></div>
+  <div class="console-context-link"><span>Explore taxas, modelos e cenários.</span><button class="console-text-button" id="console-open-analysis">Abrir Análise <span aria-hidden="true">→</span></button></div>
+  <form class="desk-command" id="desk-command" autocomplete="off">
+    <span class="desk-command__mark" aria-hidden="true">CY65</span>
+    <label class="sr-only" for="desk-command-input">Comando</label>
+    <input id="desk-command-input" type="text" placeholder="pool, frota, alerta, análise, mercado" autocomplete="off" spellcheck="false" enterkeyhint="go">
+  </form>
 </section>
 <dialog class="console-detail" id="console-detail" aria-labelledby="console-detail-title">
   <div class="console-detail-header"><span id="console-detail-source">Detalhe da observação</span><button id="console-detail-close" class="console-button" aria-label="Fechar detalhe">Fechar <span aria-hidden="true">×</span></button></div>
@@ -345,7 +397,7 @@
 <!-- Operational decision strip: one scan answers health, loss, cost,
      freshness and the next SAFE diagnostic step. It never dispatches a
      hardware command; the CTA only navigates to an existing module. -->
-<section class="operational-overview" id="operational-overview" data-module="analysis" role="region" aria-labelledby="operational-overview-title" aria-busy="true">
+<section class="operational-overview" id="operational-overview" data-module="dashboard analysis" role="region" aria-labelledby="operational-overview-title" aria-busy="true">
   <div class="operational-overview__header">
     <div>
       <div class="operational-overview__eyebrow">OPERAÇÃO / ASICs</div>
@@ -385,6 +437,16 @@
       <span class="op-signal__detail" id="op-action-detail">Advisory only · no command is executed</span>
       <button class="btn btn--secondary op-signal__button" type="button" id="op-action" disabled>OPEN DIAGNOSTIC</button>
     </div>
+  </div>
+  <div class="op-evidence" id="op-evidence" aria-labelledby="op-evidence-title">
+    <div class="op-evidence__header">
+      <h3 id="op-evidence-title">OPERATIONS EVIDENCE</h3>
+      <span id="op-evidence-coverage">Waiting for domain evidence…</span>
+    </div>
+    <div class="op-evidence__domains" id="op-evidence-domains" aria-live="polite">
+      <div class="op-evidence__loading"><span class="skel skel--line w-60"></span></div>
+    </div>
+    <div class="op-evidence__limits" id="op-evidence-limits">Changes, explanations, anomalies, and economic impact require explicit supporting evidence.</div>
   </div>
   <p class="operational-overview__state" id="op-state" role="status" aria-live="polite">Loading real operational data…</p>
 </section>
@@ -827,6 +889,9 @@
   <details class="mkt-snapshot" id="mkt-snapshot" open>
     <summary class="mkt-snapshot__summary">RESUMO DO MERCADO <span id="mkt-snap-age" class="mkt-snapshot__age"></span><span class="mkt-snapshot__caret"></span></summary>
     <div class="mkt-snapshot__grid">
+      <div class="mkt-snapshot__item"><span class="mkt-snapshot__label">Provider Health</span><span class="mkt-snapshot__val" id="mkt-provider-health">NO DATA · 0/3 PROVIDERS</span></div>
+      <div class="mkt-snapshot__item"><span class="mkt-snapshot__label">Offer Rankings</span><span class="mkt-snapshot__val" id="mkt-provider-rankings">CHEAPEST NO DATA · BEST SCORE NO DATA · FRESHEST NO DATA · CAPACITY NO DATA</span></div>
+      <div class="mkt-snapshot__item"><span class="mkt-snapshot__label">Cache Age</span><span class="mkt-snapshot__val" id="mkt-provider-cache-age">CACHE AGE UNKNOWN</span></div>
       <div class="mkt-snapshot__item"><span class="mkt-snapshot__label">Best Execution</span><span class="mkt-snapshot__val mkt-snapshot__val--green" id="mkt-snap-best">—</span></div>
       <div class="mkt-snapshot__item"><span class="mkt-snapshot__label">Spread vs 2nd</span><span class="mkt-snapshot__val" id="mkt-snap-spread">—</span></div>
       <div class="mkt-snapshot__item"><span class="mkt-snapshot__label">Visible Liquidity</span><span class="mkt-snapshot__val" id="mkt-snap-liquidity">—</span></div>
@@ -900,21 +965,28 @@
       <span class="badge badge--mute" id="dm-breakeven">break-even —</span>
     </div>
   </div>
+  <div class="dm-scenario-meta" id="dm-horizon">SCENARIO DATA UNKNOWN</div>
   <div class="dm-grid">
     <div class="dm-card dm-card--pool">
       <div class="dm-card__title">POOL</div>
       <div class="dm-card__value" id="dm-pool-usd">—</div>
-      <div class="dm-card__sub">net USD/dia (pool mining)</div>
+      <div class="dm-card__sub">modeled net USD/day · cost <span id="dm-pool-cost">UNKNOWN</span></div>
     </div>
     <div class="dm-card dm-card--solo">
       <div class="dm-card__title">SOLO</div>
       <div class="dm-card__value" id="dm-solo-time">—</div>
-      <div class="dm-card__sub" id="dm-solo-sub">tempo esperado até bloco</div>
+      <div class="dm-card__sub" id="dm-solo-sub">model mean · not a deadline</div>
+      <div class="dm-card__sub">cost <span id="dm-solo-cost">UNKNOWN</span></div>
     </div>
     <div class="dm-card dm-card--lease">
       <div class="dm-card__title">LEASE</div>
       <div class="dm-card__value" id="dm-lease-usd">—</div>
-      <div class="dm-card__sub">net USD/dia (alugar hashrate)</div>
+      <div class="dm-card__sub">modeled net USD/day · cost <span id="dm-lease-cost">UNKNOWN</span></div>
+    </div>
+    <div class="dm-card dm-card--rental">
+      <div class="dm-card__title">RENTAL</div>
+      <div class="dm-card__value" id="dm-rental-usd">UNKNOWN</div>
+      <div class="dm-card__sub">modeled net USD/day · cost <span id="dm-rental-cost">UNKNOWN</span></div>
     </div>
   </div>
   <div class="dm-reco" id="dm-reco">Conecte a wallet para comparar estratégias.</div>
@@ -1470,6 +1542,7 @@
         <span class="axe-detail-chart__title">▸ TELEMETRY HISTORY</span>
         <span class="badge badge--mute" id="axe-detail-chart-count">—</span>
       </div>
+      <p id="axe-detail-chart-status" class="operational-source-state" role="status" aria-live="polite"></p>
       <div class="chart-wrap chart-wrap--sm"><canvas id="axe-detail-chart"></canvas></div>
     </div>
   </div>
@@ -2078,7 +2151,7 @@
 
   <!-- LIVE HASH CALCULATOR -->
   <div class="prox-live-calc" id="prox-live-calc">
-    <div class="prox-live-calc__title">⚡ LIVE HASH CALCULATOR · PER-SHARE BREAKDOWN</div>
+    <div class="prox-live-calc__title">⚡ SINGLE-SHARE IMPLIED HASHRATE · PER-SHARE BREAKDOWN <span id="lc-estimated-badge" class="badge badge--yellow" style="display:none;">ESTIMATED</span></div>
     <div class="prox-live-calc__latest">
       <div class="prox-live-calc__latest-head">
         <span class="lc-head-label">⌖ LAST HASH @</span>
@@ -2128,32 +2201,33 @@
     </div>
   </div>
   <div class="chart-wrap"><canvas id="chart-share-dist"></canvas></div>
+  <div class="prox-footnote" id="share-dist-summary">P50 — · P75 — · P90 — · P95 — · P99 — · MAX — · SAMPLE — · WINDOW —</div>
 </section>
 
-<!-- ─── SESSION WORK SIGNAL (legacy API key: quantum_lock) ─── -->
-<section class="panel panel--large" id="quantum-lock-panel" data-module="probability">
-  <div class="panel__header">
-    <div class="panel__eyebrow">◈ SESSION WORK SIGNAL · HEURISTIC <span class="tip-wrap" data-tip="Source: retained session shares; window: session + rolling 1h; unit: 0–100 heuristic. Not block probability, device health or prediction."><span class="tip-wrap__icon">?</span></span></div>
-    <div class="panel__tools">
-      <span class="badge" id="ql-status-badge">NO DATA</span>
-      <span class="badge badge--mute" id="ql-score-badge">0/100</span>
+<!-- ─── SESSION EVIDENCE ─── -->
+<section class="panel panel--large" id="session-evidence-panel" data-module="probability">
+
+    <div class="panel__header">
+      <div class="panel__eyebrow">◈ SESSION EVIDENCE</div>
+      <div class="panel__tools">
+        <span class="badge" id="se-evidence-state">NO DATA</span>
+      </div>
     </div>
-  </div>
-  <div class="ql-grid">
-    <div class="ql-bar-wrap">
-      <div class="ql-bar" id="ql-bar"><div class="ql-bar__fill" id="ql-bar-fill" style="width:0%"></div></div>
-      <div class="ql-bar__labels"><span>0</span><span>25</span><span>50</span><span>75</span><span>100</span></div>
+    <div class="ql-grid">
+      <div class="ql-components" id="ql-components" style="grid-template-columns: repeat(auto-fill, minmax(220px, 1fr))">
+        <div class="ql-comp"><span class="ql-comp__label">SESSION SHARES</span><div class="lc-v" id="se-session-shares">—</div></div>
+        <div class="ql-comp"><span class="ql-comp__label">VALID MODELED SHARES</span><div class="lc-v" id="se-valid-modeled">0</div></div>
+        <div class="ql-comp"><span class="ql-comp__label">OBSERVED WINDOW</span><div class="lc-v" id="se-observed-window">—</div></div>
+        <div class="ql-comp"><span class="ql-comp__label">LAST SHARE AGE</span><div class="lc-v" id="se-last-share-age">—</div></div>
+        <div class="ql-comp"><span class="ql-comp__label">DATA GAPS</span><div class="lc-v" id="se-data-gaps">—</div></div>
+        <div class="ql-comp"><span class="ql-comp__label">AVG SHARE DIFF</span><div class="lc-v" id="se-avg-share-diff">—</div></div>
+        <div class="ql-comp"><span class="ql-comp__label">SHARE DIFF TREND</span><div class="lc-v" id="se-share-trend">—</div></div>
+        <div class="ql-comp"><span class="ql-comp__label">SAMPLE COUNT</span><div class="lc-v" id="se-sample-count">—</div></div>
+        <div class="ql-comp"><span class="ql-comp__label">EVIDENCE STATE</span><div class="lc-v" id="se-evidence-state2">NO DATA</div></div>
+      </div>
+      <div class="prox-footnote">Source: retained session shares. Descriptive evidence, not a prediction or a guarantee.</div>
     </div>
-    <div class="ql-components" id="ql-components">
-      <div class="ql-comp"><span class="ql-comp__label">Shares</span><span class="ql-comp__bar" id="ql-comp-shares"><span style="width:0%"></span></span></div>
-      <div class="ql-comp"><span class="ql-comp__label">Best-share ratio</span><span class="ql-comp__bar" id="ql-comp-prox"><span style="width:0%"></span></span></div>
-      <div class="ql-comp"><span class="ql-comp__label">Power</span><span class="ql-comp__bar" id="ql-comp-power"><span style="width:0%"></span></span></div>
-      <div class="ql-comp"><span class="ql-comp__label">Momentum</span><span class="ql-comp__bar" id="ql-comp-momentum"><span style="width:0%"></span></span></div>
-    </div>
-    <div class="ql-label" id="ql-label">Awaiting share data. This heuristic is not block probability, device health or a prediction.</div>
-    <div class="prox-footnote">Source: retained session shares; window: current session/rolling 1h; unit: 0–100 heuristic. A higher score does not increase the next-hash odds.</div>
-  </div>
-</section>
+  </section>
 
 <!-- ─── HR COMPARISON: REPORTED vs POOL ─── -->
 <section class="panel panel--large" id="hr-compare-panel" data-module="fleet">
@@ -2181,7 +2255,7 @@
       </div>
     </div>
     <div class="fcc-header__badges">
-      <span class="badge badge--green" id="lm-status-badge">LIVE</span>
+      <span class="badge badge--mute" id="lm-status-badge" role="status" aria-live="polite">LOADING</span>
       <span class="badge badge--mute" id="lm-workers-badge">— workers</span>
       <span class="lm-event-log__conn" id="lm-conn-dot" title="connection status"></span>
     </div>
@@ -3315,7 +3389,7 @@
     <span id="next-poll"></span>
   </div>
 
-  <script src="/static/app.js?v64" defer></script>
+  <script src="/static/app.js?v763" defer></script>
 </div> <!-- end #app-main -->
 </div> <!-- end #app-layout -->
   <!-- DESIGN SYSTEM v2: matrix rain canvas removido (zero decorativo) —
