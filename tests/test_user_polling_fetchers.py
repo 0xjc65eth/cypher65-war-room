@@ -591,9 +591,8 @@ def test_dispatch_rental_families_exception_swallowed(monkeypatch):
     up.dispatch_reco_worse_alerts("t1", [("WARN", "cat", "msg")])
 
 
-def test_fire_webhook_async_fallback_on_queue_failure(monkeypatch):
-    """When the retry queue itself blows up, the last-resort direct webhook
-    send runs (never crash the daemon thread)."""
+def test_fire_webhook_async_does_not_replay_after_queue_failure(monkeypatch):
+    """Unknown delivery after a queue exception must not trigger a blind POST."""
     import threading
     calls = []
 
@@ -603,14 +602,14 @@ def test_fire_webhook_async_fallback_on_queue_failure(monkeypatch):
     def _direct(**kw):
         calls.append(kw)
 
-    monkeypatch.setattr(up, "_send_webhook_for_alert", _direct)
+    monkeypatch.setattr("services.push_notifier.send_webhook_for_alert", _direct)
     monkeypatch.setattr("services.webhook_queue.dispatch_webhook_or_queue", _boom)
     up._fire_webhook_async({"severity": "CRIT", "category": "cat", "message": "m"})
-    # Join the daemon thread it spawned (short-lived) so the fallback ran.
+    # Join the daemon thread to observe its completed failure handling.
     for t in threading.enumerate():
         if t.name == "cypher65-webhook" and t.is_alive():
             t.join(timeout=2)
-    assert calls, "fallback webhook must have fired after queue failure"
+    assert calls == [], "queue failure must not blindly replay an unknown delivery"
 
 
 def test_fetch_user_data_and_account_delegate_to_cached_fetch(monkeypatch):

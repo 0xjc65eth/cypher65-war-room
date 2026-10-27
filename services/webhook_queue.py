@@ -28,6 +28,8 @@ import time
 from typing import Any, Dict, Optional
 
 from services.db import get_db
+from services.observability import emit_event
+from services.settings import is_default_tenant
 
 # Top-level imports (monkeypatch-safe): tests patch these module attributes,
 # and dispatch/process call them by reference. Local imports would bypass
@@ -68,8 +70,8 @@ def ensure_table() -> None:
         conn.execute(_QUEUE_INDEX_DDL)
         conn.commit()
         conn.close()
-    except sqlite3.Error as e:
-        log.warning("[webhook_queue] bootstrap failed: %s", e)
+    except sqlite3.Error:
+        emit_event("webhook_queue_bootstrap_failed", outcome="failed")
 
 
 def enqueue_webhook(
@@ -110,8 +112,8 @@ def enqueue_webhook(
             delay,
         )
         return True
-    except Exception as e:  # noqa: BLE001 — queue is best-effort
-        log.warning("[webhook_queue] enqueue failed: %s", e)
+    except Exception:  # noqa: BLE001 — queue is best-effort
+        emit_event("webhook_queue_enqueue_failed", outcome="failed")
         return False
 
 
@@ -130,13 +132,16 @@ def dispatch_webhook_or_queue(
     """Send a webhook now; on failure, persist it for retry.
 
     This is the entry point callers should use instead of the raw
-    ``send_webhook_notification`` when they want delivery guarantees:
+    ``send_webhook_notification`` when they want bounded delayed retries:
       - success → returns True, nothing queued
       - below min_severity / empty url → returns False, NOT queued (it is a
         legitimate skip, not a delivery failure)
       - network/HTTP failure → queued for retry, returns False
 
-    Never raises.
+    Never raises. This is bounded at-least-once attempt semantics, not
+    exactly-once delivery: a timeout can follow acceptance and a later retry
+    can duplicate it. Exhausted attempts or persistence failures can lose it.
+    Example: ``dispatch_webhook_or_queue(url, "WARN", "thermal", "Hot")``.
     """
     try:
         ok = send_webhook_for_alert(
@@ -150,8 +155,8 @@ def dispatch_webhook_or_queue(
             min_severity=min_severity,
             timeout=timeout,
         )
-    except Exception as e:
-        log.warning("[webhook_queue] dispatch error: %s", e)
+    except Exception:
+        emit_event("webhook_queue_dispatch_failed", outcome="unconfirmed")
         ok = False
     if not ok:
         # Only queue genuine delivery failures — a below-threshold alert is a
@@ -189,7 +194,7 @@ def process_due_webhooks(now: Optional[int] = None, max_batch: int = 20) -> int:
         ensure_table()
         conn = get_db()
         rows = conn.execute(
-            "SELECT id, payload, attempts FROM webhook_queue "
+            "SELECT id, payload, attempts, tenant_id FROM webhook_queue "
             "WHERE next_retry_ts <= ? AND attempts < ? "
             "ORDER BY next_retry_ts LIMIT ?",
             (now, WEBHOOK_MAX_ATTEMPTS, max_batch),
@@ -199,6 +204,12 @@ def process_due_webhooks(now: Optional[int] = None, max_batch: int = 20) -> int:
             qid, payload_raw, attempts = row["id"], row["payload"], row["attempts"]
             try:
                 kwargs = json.loads(payload_raw)
+                # Pre-hardening rows may contain operator identity routed to a
+                # named tenant. Their provenance cannot be recovered safely;
+                # retry only the alert, never these optional identity fields.
+                if not is_default_tenant(row["tenant_id"]):
+                    kwargs["worker"] = ""
+                    kwargs["address"] = ""
                 ok = send_webhook_notification(
                     url=kwargs.get("url", ""),
                     severity=kwargs.get("severity", "WARN"),
@@ -209,8 +220,8 @@ def process_due_webhooks(now: Optional[int] = None, max_batch: int = 20) -> int:
                     address=kwargs.get("address", ""),
                     timeout=kwargs.get("timeout", 5),
                 )
-            except Exception as e:  # noqa: BLE001
-                log.warning("[webhook_queue] retry row %d error: %s", qid, e)
+            except Exception:  # noqa: BLE001
+                emit_event("webhook_queue_retry_failed", outcome="unconfirmed")
                 ok = False
             if ok:
                 conn.execute("DELETE FROM webhook_queue WHERE id = ?", (qid,))
@@ -233,8 +244,8 @@ def process_due_webhooks(now: Optional[int] = None, max_batch: int = 20) -> int:
                     )
         conn.commit()
         conn.close()
-    except sqlite3.Error as e:
-        log.warning("[webhook_queue] process error: %s", e)
+    except sqlite3.Error:
+        emit_event("webhook_queue_process_failed", outcome="failed")
     return processed
 
 
@@ -255,6 +266,6 @@ def webhook_queue_loop(interval: int = 30) -> None:
     while True:
         try:
             process_due_webhooks()
-        except Exception as e:  # noqa: BLE001 — loop must never die
-            log.warning("[webhook_queue] loop iteration error: %s", e)
+        except Exception:  # noqa: BLE001 — loop must never die
+            emit_event("webhook_queue_loop_failed", outcome="failed")
         time.sleep(interval)
