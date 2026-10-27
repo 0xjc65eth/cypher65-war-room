@@ -20,12 +20,13 @@ Priority rules, and the reason for them:
 
 Field extraction is deliberately tolerant about *key names* (firmwares and
 forks disagree) and strict about *values*: an unrecognized or unparseable value
-becomes None, and ``fields_found`` records exactly which keys were understood,
+becomes None, and ``fields_found`` records which recognized keys were present,
 so a caller can tell "the pool reported 0" from "we did not understand the
 payload".
 """
 
 from dataclasses import dataclass, field
+import math
 import re
 from typing import Any, Callable, Iterable, Mapping
 
@@ -171,20 +172,18 @@ class PoolWorkerStats:
 
 
 def _to_float(value: Any) -> float | None:
-    """Float from whatever the pool sent, or None. Never invents a number."""
+    """Return a finite, nonnegative metric or None, retaining measured zero."""
     if value is None or isinstance(value, bool):
         return None
-    if isinstance(value, (int, float)):
-        return float(value)
     if isinstance(value, str):
-        text = value.strip().replace(",", "")
-        if not text:
-            return None
-        try:
-            return float(text)
-        except ValueError:
-            return None
-    return None
+        value = value.strip().replace(",", "")
+    elif not isinstance(value, (int, float)):
+        return None
+    try:
+        number = float(value)
+    except (ValueError, OverflowError):
+        return None
+    return number if math.isfinite(number) and number >= 0 else None
 
 
 def _to_int(value: Any) -> int | None:
@@ -204,11 +203,15 @@ def parse_hashrate_to_hs(value: Any) -> float | None:
     reports human strings like ``"1.21T"`` or ``"12 PH/s"``. Both forms reach
     this function, and an unparseable value returns None rather than 0 — a
     real 0 at the pool is a fact, a failed parse is not.
+
+    Negative/nonfinite values and conversion/scaling overflow are unavailable.
+    For example, ``parse_hashrate_to_hs("1.25 TH/s") == 1.25e12`` and
+    ``parse_hashrate_to_hs("1e308T") is None``.
     """
     if value is None or isinstance(value, bool):
         return None
     if isinstance(value, (int, float)):
-        return float(value)
+        return _to_float(value)
     if not isinstance(value, str):
         return None
     text = value.strip().lower().replace(",", "")
@@ -229,7 +232,12 @@ def parse_hashrate_to_hs(value: Any) -> float | None:
         # than a number with an assumed unit.
         return None
     multiplier = _HASHRATE_UNITS.get(unit)
-    return None if multiplier is None else number * multiplier
+    return None if multiplier is None else _to_float(number * multiplier)
+
+
+def _difficulty_text(value: Any) -> str:
+    """Keep valid numeric/SI display text, never an invalid metric string."""
+    return str(value) if parse_hashrate_to_hs(value) is not None else ""
 
 
 def _first(payload: Mapping[str, Any], keys: Iterable[str]) -> tuple[str, Any]:
@@ -246,72 +254,58 @@ def _merge_worker_entries(entries: Iterable[Mapping[str, Any]]) -> dict:
     Solo pools expose one entry per worker name (``address.worker``). The
     dashboard shows the address as a whole, so the aggregate is what it wants;
     summing is correct for counters and max is correct for a difficulty record.
+    A total is available only when every worker reports that metric. Missing,
+    invalid or overflowing contributions never become zero or a partial total.
     """
-    accepted = rejected = stale = 0
+    totals = {
+        "shares_accepted": 0,
+        "shares_rejected": 0,
+        "shares_stale": 0,
+        "hashrate_hs": 0.0,
+    }
+    incomplete: set[str] = set()
+    count = 0
     best: float | None = None
     best_str = ""
     last_share: int | None = None
-    hashrate = 0.0
-    seen = False
     for entry in entries:
         if not isinstance(entry, Mapping):
             continue
-        seen = True
-        accepted += (
-            _to_int(entry.get("shares_accepted"))
-            or _to_int(entry.get("sharesAccepted"))
-            or _to_int(entry.get("accepted"))
-            or _to_int(entry.get("Accepted"))
-            or _to_int(entry.get("shares"))
-            or 0
-        )
-        rejected += (
-            _to_int(entry.get("shares_rejected"))
-            or _to_int(entry.get("sharesRejected"))
-            or _to_int(entry.get("rejected"))
-            or _to_int(entry.get("Rejected"))
-            or 0
-        )
-        stale += (
-            _to_int(entry.get("shares_stale"))
-            or _to_int(entry.get("sharesStale"))
-            or _to_int(entry.get("stale"))
-            or 0
-        )
-        candidate = (
-            _to_float(entry.get("best_diff"))
-            or _to_float(entry.get("bestDifficulty"))
-            or _to_float(entry.get("bestshare"))
-            or _to_float(entry.get("best_share"))
-            or _to_float(entry.get("Best Share"))
-        )
+        count += 1
+        for metric, aliases in (
+            ("shares_accepted", _ACCEPTED_KEYS),
+            ("shares_rejected", _REJECTED_KEYS),
+            ("shares_stale", _STALE_KEYS),
+            ("hashrate_hs", _HASHRATE_KEYS),
+        ):
+            _, raw = _first(entry, aliases)
+            value = (
+                parse_hashrate_to_hs(raw) if metric == "hashrate_hs" else _to_int(raw)
+            )
+            if value is None:
+                incomplete.add(metric)
+            else:
+                totals[metric] += value
+                if metric == "hashrate_hs" and not math.isfinite(totals[metric]):
+                    incomplete.add(metric)
+        _, source_value = _first(entry, _BEST_DIFF_KEYS)
+        candidate = _to_float(source_value)
         if candidate is not None and (best is None or candidate > best):
             best = candidate
-            source_key, source_value = _first(entry, _BEST_DIFF_KEYS)
-            if source_key and isinstance(source_value, str):
-                best_str = source_value
-        last = _to_int(entry.get("lastshare")) or _to_int(entry.get("lastShare"))
+            best_str = _difficulty_text(source_value)
+        _, last_raw = _first(entry, _LAST_SHARE_KEYS)
+        last = _to_int(last_raw)
         if last is not None:
             last_share = last if last_share is None else max(last_share, last)
-        hr = parse_hashrate_to_hs(
-            entry.get("hashrate1m")
-            or entry.get("hashRate")
-            or entry.get("hashrate")
-            or entry.get("hashrate_hs")
-        )
-        if hr:
-            hashrate += hr
     return {
-        "shares_accepted": accepted if seen else None,
-        "shares_rejected": rejected if seen else None,
-        "shares_stale": stale if seen else None,
+        **{
+            metric: value if count and metric not in incomplete else None
+            for metric, value in totals.items()
+        },
         "best_diff": best,
         "best_diff_str": best_str,
         "last_share_ts": last_share,
-        "hashrate_hs": hashrate if hashrate else None,
-        "workers": (
-            len([e for e in entries if isinstance(e, Mapping)]) if seen else None
-        ),
+        "workers": count if count else None,
     }
 
 
@@ -368,11 +362,13 @@ def normalize_ckpool_user(
     merged = _merge_worker_entries(workers_raw) if isinstance(workers_raw, list) else {}
 
     best_key, best_raw = _first(payload, _BEST_DIFF_KEYS)
-    best_diff = _to_float(best_raw) or merged.get("best_diff")
+    best_diff = _to_float(best_raw)
+    if not best_key:
+        best_diff = merged.get("best_diff")
     if best_key:
         found.append(best_key)
     best_str = (
-        str(best_raw) if best_raw is not None else (merged.get("best_diff_str") or "")
+        _difficulty_text(best_raw) if best_key else (merged.get("best_diff_str") or "")
     )
 
     accepted_key, accepted_raw = _first(payload, _ACCEPTED_KEYS)
@@ -393,7 +389,7 @@ def normalize_ckpool_user(
         rejected = merged["shares_rejected"]
 
     last_key, last_raw = _first(payload, _LAST_SHARE_KEYS)
-    last_share = _to_int(last_raw) or merged.get("last_share_ts")
+    last_share = _to_int(last_raw) if last_key else merged.get("last_share_ts")
     if last_key:
         found.append(last_key)
 
@@ -401,13 +397,13 @@ def normalize_ckpool_user(
     workers = _to_int(workers_raw)
     if workers_key:
         found.append(workers_key)
-    if workers is None and merged.get("workers") is not None:
+    if not workers_key and merged.get("workers") is not None:
         workers = merged["workers"]
 
-    if hashrate is None and merged.get("hashrate_hs"):
+    if not top_hr_key and merged.get("hashrate_hs") is not None:
         # Only fall back to the summed worker hashrate when the top-level
-        # hashrate is genuinely absent (unparseable counts as absent here
-        # because ckpool's unit strings are the one thing we always expect).
+        # hashrate is genuinely absent. An explicitly invalid value must not
+        # silently turn into another window or a possibly incomplete aggregate.
         hashrate = merged["hashrate_hs"]
 
     return PoolWorkerStats(
@@ -539,7 +535,7 @@ def normalize_parasite_user(
         shares_accepted=accepted,
         shares_rejected=rejected,
         best_diff=best_diff,
-        best_diff_str=str(best_raw or ""),
+        best_diff_str=_difficulty_text(best_raw),
         last_share_ts=last_share,
         fields_found=tuple(found),
     )
@@ -569,12 +565,12 @@ def normalize_asic_telemetry(
         best_raw = tel.get("bestDiff")
     return PoolWorkerStats(
         **_base(detection, source="asic", stats_url=""),
-        hashrate_hs=parse_hashrate_to_hs(tel.get("hashrate_hs") or tel.get("hashrate")),
+        hashrate_hs=parse_hashrate_to_hs(_first(tel, ("hashrate_hs", "hashrate"))[1]),
         shares_accepted=_to_int(tel.get("shares_accepted")),
         shares_rejected=_to_int(tel.get("shares_rejected")),
         shares_stale=_to_int(tel.get("shares_stale")),
         best_diff=_to_int(best_raw),
-        best_diff_str=str(best_raw or ""),
+        best_diff_str=_difficulty_text(best_raw),
         fields_found=tuple(found),
     )
 
