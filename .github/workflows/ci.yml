@@ -295,6 +295,9 @@ jobs:
       - name: Verify follow-redirects credential isolation
         run: npm run test:security-follow-redirects
 
+      - name: Verify compatible transitive validator and URI fixes
+        run: node --max-old-space-size=128 --test scripts/check-transitive-validation-fixes.test.cjs
+
       - name: Expo SDK compatibility
         run: npm run doctor
 
