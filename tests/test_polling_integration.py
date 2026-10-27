@@ -667,11 +667,11 @@ class TestPollOnceWebhook:
     """Tests webhook firing when alerts are generated."""
 
     def test_webhook_called_on_alert(self, config, mock_state, monkeypatch):
-        """When alerts fire and webhook_url is set, requests.post should be called."""
+        """Alerts reach the shared public-destination transport, never real HTTP."""
         from services import polling
 
-        mock_post = MagicMock()
-        monkeypatch.setattr("requests.post", mock_post)
+        mock_post = MagicMock(return_value=204)
+        monkeypatch.setattr("services.push_notifier.deliver_webhook", mock_post)
         config.load_settings = lambda: {
             "stale_share_minutes": "5",
             "hashrate_drop_pct": "50",
@@ -702,15 +702,15 @@ class TestPollOnceWebhook:
 
         polling.poll_once()
 
-        # requests.post should have been called at least once for the stale submission alert
+        # The real payload builder reaches the injected shared transport.
         assert mock_post.called, "Expected webhook POST to be called when alert fires"
 
     def test_webhook_not_called_without_url(self, config, mock_state, monkeypatch):
-        """Without webhook_url, requests.post should not be called."""
+        """Without webhook_url, no transport should be called."""
         from services import polling
 
         mock_post = MagicMock()
-        monkeypatch.setattr("requests.post", mock_post)
+        monkeypatch.setattr("services.push_notifier.deliver_webhook", mock_post)
         config.load_settings = lambda: {
             "stale_share_minutes": "5",
             "hashrate_drop_pct": "50",

@@ -85,7 +85,10 @@ jobs:
         run: npm run check:lockfile
 
       - name: Run JS core tests (app.js helpers)
-        run: node --test tests/test_app_js_core.js
+        run: |
+          node tests/test_node_child_runner.js
+          node --test tests/test_node_child_runner.js
+          node --test tests/test_app_js_core.js
 
       - name: Verify public-static-only service-worker policy
         run: node --test tests/test_public_static_worker.js
@@ -299,6 +302,9 @@ jobs:
       - name: Verify follow-redirects credential isolation
         run: npm run test:security-follow-redirects
 
+      - name: Verify compatible transitive validator and URI fixes
+        run: node --max-old-space-size=128 --test scripts/check-transitive-validation-fixes.test.cjs
+
       - name: Expo SDK compatibility
         run: npm run doctor
 
@@ -442,6 +448,7 @@ jobs:
 
           npx playwright test tests/e2e/dashboard-telemetry.spec.js tests/e2e/snapshot-ordering.spec.js --project=chromium
           npx playwright test tests/e2e/terminal-console.spec.js tests/e2e/operational-evidence-states.spec.js --project=chromium
+          npx playwright test tests/e2e/fleet-kpi-eligibility.spec.js --project=chromium --project=mobile-chrome
           npx playwright test tests/e2e/comparison-evidence.spec.js --project=chromium
           npx playwright test tests/e2e/energy-advisor.spec.js --project=chromium --project=mobile-chrome
           npx playwright test tests/e2e/private-worker-routes.spec.js --project=chromium --project=mobile-chrome

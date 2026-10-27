@@ -1,7 +1,7 @@
-"""Bounded, public-HTTPS-only delivery for the synthetic channel probe.
+"""Bounded, public-HTTPS-only delivery for probes and live notifications.
 
 No redirects, environment proxies, second hostname lookup, response-body
-download or automatic POST retry. This does not change queued live alerts.
+download or automatic POST retry. Persistent queue policy belongs to callers.
 """
 
 import ipaddress
@@ -119,14 +119,21 @@ def _resolve_addresses(host: str) -> list[str]:
     return addresses
 
 
-def deliver_test_webhook(url: str, payload: dict) -> int:
-    """POST one synthetic probe to a validated public HTTPS destination.
+def deliver_webhook(url: str, payload: dict, timeout: float = 3.0) -> int:
+    """POST once to public HTTPS, with DNS pinning and bounded request phases.
 
-    Example: ``deliver_test_webhook(configured_url, {"severity": "TEST"})``.
+    Example: ``deliver_webhook(configured_url, {"severity": "WARN"})``.
     Return only the HTTP status; raise a redacted WebhookDeliveryError on
     unsafe input or transport failure. POST is never automatically retried:
     after a timeout delivery is unknown and retrying could duplicate it.
+    ``timeout`` bounds each connect/read phase, not total wall-clock duration.
     """
+    if (
+        isinstance(timeout, bool)
+        or not isinstance(timeout, (int, float))
+        or not 0 < timeout <= 5
+    ):
+        raise WebhookDeliveryError("invalid_timeout")
     host, host_header, target = _public_target(url)
     endpoint = PoolEndpoint("https", host, 443, PoolProtocol.UNKNOWN, True, "")
     try:
@@ -145,7 +152,7 @@ def deliver_test_webhook(url: str, payload: dict) -> int:
             assert_hostname=host,
             cert_reqs="CERT_REQUIRED",
             ssl_context=ssl.create_default_context(),
-            timeout=urllib3.Timeout(connect=3.0, read=3.0),
+            timeout=urllib3.Timeout(connect=timeout, read=timeout),
             retries=False,
         )
         response = pool.urlopen(
@@ -173,3 +180,11 @@ def deliver_test_webhook(url: str, payload: dict) -> int:
                     # Cleanup is best-effort; still close the other resource.
                     # Never log provider-controlled URLs, tokens or details.
                     emit_event("webhook_test_cleanup_failed", outcome="cleanup_failed")
+
+
+def deliver_test_webhook(url: str, payload: dict) -> int:
+    """Send a synthetic probe using the same policy as every live webhook.
+
+    Example: ``deliver_test_webhook(configured_url, {"severity": "TEST"})``.
+    """
+    return deliver_webhook(url, payload)

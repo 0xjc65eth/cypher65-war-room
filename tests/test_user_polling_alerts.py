@@ -54,9 +54,11 @@ def sync_webhooks(monkeypatch):
     """Run the worker's fire-and-forget webhook dispatch synchronously (the
     real code spawns a daemon thread per POST; tests need the patched
     send_webhook_for_alert to have run before asserting)."""
+    from services.webhook_queue import dispatch_webhook_or_queue
+
     monkeypatch.setattr(
         _up, "_fire_webhook_async",
-        lambda kwargs: _up._send_webhook_for_alert(**kwargs))
+        lambda kwargs: dispatch_webhook_or_queue(**kwargs))
 
 
 @pytest.fixture
@@ -214,7 +216,7 @@ def test_worker_dispatches_tenant_webhook(monkeypatch, sync_webhooks):
 
     calls = []
     monkeypatch.setattr(
-        _up, "_send_webhook_for_alert",
+        "services.webhook_queue.send_webhook_for_alert",
         lambda **kw: calls.append(kw) or True)
 
     sm = SessionManager()
@@ -258,7 +260,7 @@ def test_worker_no_webhook_when_tenant_has_none(monkeypatch, sync_webhooks):
                         lambda tid: _settings(webhook_url=""))
 
     calls = []
-    monkeypatch.setattr(_up, "_send_webhook_for_alert",
+    monkeypatch.setattr("services.webhook_queue.send_webhook_for_alert",
                         lambda **kw: calls.append(kw) or True)
 
     sm = SessionManager()
@@ -294,7 +296,7 @@ def test_worker_settings_and_webhook_are_isolated_between_tenants(monkeypatch, s
                         lambda tid: settings_by_tenant[tid])
 
     calls = []
-    monkeypatch.setattr(_up, "_send_webhook_for_alert",
+    monkeypatch.setattr("services.webhook_queue.send_webhook_for_alert",
                         lambda **kw: calls.append(kw) or True)
 
     sm = SessionManager()
@@ -328,7 +330,7 @@ def test_worker_delta_baseline_advances(monkeypatch, sync_webhooks):
                             webhook_url="https://discord.com/api/webhooks/delta"))
 
     calls = []
-    monkeypatch.setattr(_up, "_send_webhook_for_alert",
+    monkeypatch.setattr("services.webhook_queue.send_webhook_for_alert",
                         lambda **kw: calls.append(kw) or True)
 
     sm = SessionManager()
@@ -425,6 +427,8 @@ def test_connect_wallet_anonymous_default_tenant(rclient, monkeypatch):
 # ── app._webhook_dispatch resolves alert.tenant_id ──────────────────────────
 
 def test_webhook_dispatch_uses_alert_tenant(monkeypatch):
+    monkeypatch.setattr(_app_module, "WORKER_NAME", "private-operator-worker")
+    monkeypatch.setattr(_app_module, "BTC_ADDRESS", "private-operator-wallet")
     from services import settings as _settings_mod
     _settings_mod.save_setting("webhook_url", "https://operator.example/hook")
     _settings_mod.save_setting("webhook_url",
@@ -444,6 +448,8 @@ def test_webhook_dispatch_uses_alert_tenant(monkeypatch):
     _app_module._webhook_dispatch(alert)
     assert len(calls) == 1
     assert calls[0]["url"] == "https://discord.com/api/webhooks/tenant-x"
+    assert calls[0]["worker"] == ""
+    assert calls[0]["address"] == ""
 
     # No tenant_id → operator's global webhook (legacy behavior).
     calls.clear()
@@ -452,3 +458,5 @@ def test_webhook_dispatch_uses_alert_tenant(monkeypatch):
     _app_module._webhook_dispatch(alert2)
     assert len(calls) == 1
     assert calls[0]["url"] == "https://operator.example/hook"
+    assert calls[0]["worker"] == "private-operator-worker"
+    assert calls[0]["address"] == "private-operator-wallet"

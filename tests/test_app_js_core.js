@@ -32,6 +32,7 @@ import path from 'node:path';
 import vm from 'node:vm';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { runNodeTestFile } from './helpers/node-child-runner.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -3696,56 +3697,14 @@ console.log('\n🖥 SUITE 28: live-mining terminal helpers (badges, filter, scro
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  SUITE 26d: _ccKpiAgg() — FLEET COMMAND CENTER KPI aggregation
-//  Mirrors static/app.js _ccKpiAgg (totalHr, effPct, avgTemp, totalPowerW,
-//  avgEff, avgLatency — honest nulls quando não há dados live).
+//  Loads the canonical production fragment; no hand-copied KPI implementation.
 // ═══════════════════════════════════════════════════════════════════════════
 console.log('⛏ SUITE 26d: _ccKpiAgg() — KPI aggregation do FLEET COMMAND CENTER');
 
-// Mirror of static/app.js _numOrNull() — pure.
-function ccNumOrNullTest(v) {
-  if (v == null || v === '') return null;
-  const n = Number(v);
-  return isFinite(n) ? n : null;
-}
-
-// Mirror of static/app.js _ccKpiAgg() — pure.
-function ccKpiAggTest(fleet) {
-  fleet = fleet || [];
-  const live = fleet.filter(d => d && String(d.status || '').toUpperCase() === 'ONLINE');
-  // TOTAL HR = soma de TODOS os devices; shares/temp/power/eff = só ONLINE
-  // (contadores cumulativos de OFFLINE congelariam a EFFICIENCY histórica).
-  let totalHr = 0, acc = 0, rej = 0, stale = 0;
-  let tempSum = 0, tempN = 0, powerSum = 0, powerN = 0, effSum = 0, effN = 0;
-  fleet.forEach(d => {
-    totalHr += Number((d && d._telemetry && d._telemetry.hashrate_hs) || 0);
-  });
-  live.forEach(d => {
-    const t = (d && d._telemetry) || {};
-    acc += Number(t.shares_accepted) || 0;
-    rej += Number(t.shares_rejected) || 0;
-    stale += Number(t.shares_stale) || 0;
-    const temp = ccNumOrNullTest(t.temperature);
-    if (temp != null) { tempSum += temp; tempN++; }
-    const pw = ccNumOrNullTest(t.power_watts);
-    if (pw != null) { powerSum += pw; powerN++; }
-    const eff = ccNumOrNullTest(t.efficiency_jth);
-    if (eff != null) { effSum += eff; effN++; }
-  });
-  const lats = live.map(d => Number(d && d.latency_ms)).filter(v => v > 0 && isFinite(v));
-  const shareTotal = acc + rej;
-  return {
-    totalHr: totalHr,
-    effPct: shareTotal > 0 ? (acc / shareTotal) * 100 : null,
-    avgTemp: tempN ? tempSum / tempN : null,
-    totalPowerW: powerSum || null,
-    avgEff: effN ? effSum / effN : null,
-    avgLatency: lats.length ? Math.round(lats.reduce((a, b) => a + b, 0) / lats.length) : null,
-    acc: acc, rej: rej, stale: stale,
-  };
-}
+const ccKpiAggTest = loadFragment('48-fleet-cc.js', '_ccKpiAgg');
 
 (function ccKpiSuite() {
-  const EMPTY = JSON.stringify({ totalHr: 0, effPct: null, avgTemp: null, totalPowerW: null, avgEff: null, avgLatency: null, acc: 0, rej: 0, stale: 0 });
+  const EMPTY = JSON.stringify({ totalHr: null, effPct: null, avgTemp: null, totalPowerW: null, avgEff: null, avgLatency: null, acc: 0, rej: 0, stale: 0 });
 
   // Honest telemetry: OFFLINE devices never contribute share counters, even
   // with huge cumulative firmware counters in the DB.
@@ -3789,7 +3748,7 @@ function ccKpiAggTest(fleet) {
   assertEqual('avg latency of live devices', m.avgLatency, 20);
   assertEqual('stale counters summed', ccKpiAggTest([{ status: 'ONLINE', _telemetry: { shares_accepted: 1, shares_rejected: 0, shares_stale: 7 } }]).stale, 7);
 
-  // Latency NaN/0/negative filtered out
+  // A successful rounded TCP probe may report zero; absent/invalid is not zero.
   const badLat = [
     { status: 'ONLINE', _telemetry: { shares_accepted: 1, shares_rejected: 0 }, latency_ms: 0 },
     { status: 'ONLINE', _telemetry: { shares_accepted: 1, shares_rejected: 0 }, latency_ms: -3 },
@@ -3797,13 +3756,70 @@ function ccKpiAggTest(fleet) {
     { status: 'ONLINE', _telemetry: { shares_accepted: 1, shares_rejected: 0 }, latency_ms: 100 },
   ];
   const bl = ccKpiAggTest(badLat);
-  assertEqual('only valid latencies averaged', bl.avgLatency, 100);
+  assertEqual('valid zero and positive latencies averaged', bl.avgLatency, 50);
   assertEqual('efficiency from all live', Math.round(bl.effPct), 100);
 
   // 'NOT AVAILABLE' literal em temp/power → null (não conta nas médias)
   const na = ccKpiAggTest([{ status: 'ONLINE', _telemetry: { shares_accepted: 1, shares_rejected: 0, temperature: 'NOT AVAILABLE', power_watts: 'NOT AVAILABLE' } }]);
   assertEqual('NOT AVAILABLE temp -> avgTemp null', na.avgTemp, null);
   assertEqual('NOT AVAILABLE power -> totalPowerW null', na.totalPowerW, null);
+
+  for (const status of ['ONLINE', 'HASHING', 'WARNING', 'online', 'hashing', 'warning']) {
+    const eligible = ccKpiAggTest([{ status, latency_ms: 20, _telemetry: {
+      hashrate_hs: 1e12, temperature: 60, power_watts: 100, efficiency_jth: 25,
+      shares_accepted: 9, shares_rejected: 1, shares_stale: 2,
+    } }]);
+    assertEqual(status + ' measured temperature contributes', eligible.avgTemp, 60);
+    assertEqual(status + ' measured power contributes', eligible.totalPowerW, 100);
+    assertEqual(status + ' measured efficiency contributes', eligible.avgEff, 25);
+    assertEqual(status + ' measured latency contributes', eligible.avgLatency, 20);
+    assertEqual(status + ' shares contribute', eligible.effPct, 90);
+    assertEqual(status + ' stale-share counter contributes', eligible.stale, 2);
+  }
+  for (const status of ['OFFLINE', 'STALE', 'PAUSED', 'IDLE', 'UNKNOWN', '', null]) {
+    const excluded = ccKpiAggTest([{ status, latency_ms: 1, _telemetry: {
+      hashrate_hs: 0, last_known_hashrate_hs: 9e15, temperature: 99,
+      power_watts: 999, efficiency_jth: 99, shares_accepted: 999,
+      shares_rejected: 999, shares_stale: 999,
+    } }]);
+    assertEqual(String(status) + ' excluded from measured temperature', excluded.avgTemp, null);
+    assertEqual(String(status) + ' excluded from measured power', excluded.totalPowerW, null);
+    assertEqual(String(status) + ' excluded from measured efficiency', excluded.avgEff, null);
+    assertEqual(String(status) + ' excluded from measured latency', excluded.avgLatency, null);
+    assertEqual(String(status) + ' excluded from shares', excluded.acc + excluded.rej + excluded.stale, 0);
+    assertEqual(String(status) + ' keeps endpoint-authoritative zero HR', excluded.totalHr, 0);
+  }
+  const zeros = ccKpiAggTest([{ status: 'HASHING', latency_ms: 0, _telemetry: {
+    hashrate_hs: 0, power_watts: 0, temperature: 0, efficiency_jth: 0,
+  } }]);
+  for (const key of ['totalHr', 'totalPowerW', 'avgTemp', 'avgEff', 'avgLatency']) {
+    assertEqual('real zero ' + key + ' remains available', zeros[key], 0);
+  }
+  for (const invalid of [null, undefined, false, true, '', 'NOT AVAILABLE', NaN, Infinity, -Infinity]) {
+    const missing = ccKpiAggTest([{ status: 'WARNING', latency_ms: invalid, _telemetry: {
+      hashrate_hs: invalid, power_watts: invalid, temperature: invalid, efficiency_jth: invalid,
+    } }]);
+    for (const key of ['totalHr', 'totalPowerW', 'avgTemp', 'avgEff', 'avgLatency']) {
+      assertEqual('invalid ' + String(invalid) + ' is unavailable for ' + key, missing[key], null);
+    }
+  }
+  assertEqual('hashrate remains endpoint-authoritative, not re-derived by status',
+    ccKpiAggTest([{ status: 'OFFLINE', _telemetry: { hashrate_hs: 123, last_known_hashrate_hs: 999 } }]).totalHr, 123);
+  const mixed = ccKpiAggTest([
+    { status: 'ONLINE', latency_ms: 10, _telemetry: { hashrate_hs: 1, temperature: 40, power_watts: 100 } },
+    { status: 'HASHING', latency_ms: 20, _telemetry: { hashrate_hs: 2, temperature: 60, power_watts: 200 } },
+    { status: 'WARNING', latency_ms: 30, _telemetry: { hashrate_hs: 3, temperature: 80, power_watts: 300 } },
+    { status: 'STALE', latency_ms: 999, _telemetry: { hashrate_hs: 0, temperature: 999, power_watts: 999 } },
+    null,
+  ]);
+  assertEqual('mixed reachable fleet power sums only eligible contributions', mixed.totalPowerW, 600);
+  assertEqual('mixed reachable fleet averages only eligible temperature', mixed.avgTemp, 60);
+  assertEqual('mixed reachable fleet averages only eligible latency', mixed.avgLatency, 20);
+  assertEqual('mixed fleet retains supplied current hashrate values', mixed.totalHr, 6);
+  const absentTelemetry = ccKpiAggTest([{ status: 'WARNING' }]);
+  for (const key of ['totalHr', 'totalPowerW', 'avgTemp', 'avgEff', 'avgLatency', 'effPct']) {
+    assertEqual('reachable without telemetry keeps ' + key + ' unavailable', absentTelemetry[key], null);
+  }
 })();
 
 
@@ -5832,10 +5848,16 @@ for (const temperature of [-41, 151, Infinity, NaN, null, undefined, true, false
 // Issue #836: run async controller tests in an awaited child; importing node:test
 // here would let the legacy process.exit below discard pending test callbacks.
 {
-  const miniTests = spawnSync(process.execPath, ['--test', path.join(__dirname, 'test_mini_war_room_js.js')], { encoding: 'utf8' });
-  assertEqual('Mini War Room production controller suite', miniTests.status, 0);
-  if (miniTests.status !== 0) console.error(miniTests.stdout, miniTests.stderr);
+  const miniTests = runNodeTestFile(path.join(__dirname, 'test_mini_war_room_js.js'));
+  assertEqual('Mini War Room production controller suite', miniTests.ok, true);
+  if (!miniTests.ok) console.error(miniTests.reason, miniTests.stdout, miniTests.stderr);
+  else console.log(`Mini War Room: ${miniTests.report.executed} declared tests executed`);
 }
+
+// Execute the actual Energy Advisor module tests before printing final results.
+const energySuite = runNodeTestFile(path.join(__dirname, 'test_energy_advisor_js.js'));
+if (!energySuite.ok) { failed++; console.error(energySuite.reason, energySuite.stdout, energySuite.stderr); }
+else console.log(`Energy Advisor: ${energySuite.report.executed} declared tests executed`);
 
 console.log(`\n${'═'.repeat(50)}`);
 if (failed === 0) {
@@ -5845,7 +5867,4 @@ if (failed === 0) {
   failures.forEach(f => console.log(f));
 }
 
-// Execute the actual Energy Advisor module tests as part of the existing CI gate.
-const energySuite = spawnSync(process.execPath, ['--test', path.join(__dirname, 'test_energy_advisor_js.js')], { stdio: 'inherit' });
-if (energySuite.status !== 0) failed++;
 process.exit(failed > 0 ? 1 : 0);

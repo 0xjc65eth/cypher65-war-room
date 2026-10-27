@@ -422,9 +422,11 @@ def api_settings_test_auto_exclude_alert(tenant_id: str = ""):
 
     try:
         push_targets = notify_tenant_alert(tenant_id, severity, category, message)
-    except Exception as e:
+    except Exception:
         push_targets = 0
-        log.warning("[settings] test push error: %s", e)
+        from services.observability import emit_event
+
+        emit_event("notification_probe_failed", outcome="unconfirmed")
 
     success = bool(webhook_ok or push_targets > 0)
     guidance = ""
