@@ -85,7 +85,10 @@ jobs:
         run: npm run check:lockfile
 
       - name: Run JS core tests (app.js helpers)
-        run: node --test tests/test_app_js_core.js
+        run: |
+          node tests/test_node_child_runner.js
+          node --test tests/test_node_child_runner.js
+          node --test tests/test_app_js_core.js
 
       - name: Verify public-static-only service-worker policy
         run: node --test tests/test_public_static_worker.js
@@ -294,6 +297,9 @@ jobs:
 
       - name: Verify follow-redirects credential isolation
         run: npm run test:security-follow-redirects
+
+      - name: Verify compatible transitive validator and URI fixes
+        run: node --max-old-space-size=128 --test scripts/check-transitive-validation-fixes.test.cjs
 
       - name: Expo SDK compatibility
         run: npm run doctor
