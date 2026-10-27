@@ -306,15 +306,19 @@ def test_late_older_healthy_sample_cannot_rewrite_newer_under_delivery(db, monke
     assert after["evaluation"]["window_start"] == before["window_start"]
 
 
-def test_sample_coverage_distinguishes_zero_missing_invalid_and_unconfigured(db):
+def test_sample_coverage_distinguishes_zero_missing_invalid_and_unconfigured(db, monkeypatch):
+    clock = [1000.0]
+    monkeypatch.setattr(evidence, "time", SimpleNamespace(time=lambda: clock[0]))
     address = "bc1qtestaddress000"
-    _collect("tenant-a", address, _sample())
+    _collect("tenant-a", address, _sample(), started=999.9, completed=clock[0])
     cfg = _configure()
     start = cfg["created_at"] + 0.001
-    _collect("tenant-a", address, _sample(hashrate=0), started=start, completed=start + 0.001)
+    clock[0] = start + 0.001
+    _collect("tenant-a", address, _sample(hashrate=0), started=start, completed=clock[0])
     missing_start = start + 1
+    clock[0] = missing_start + 0.001
     _collect("tenant-a", address, {"workerData": [{"id": "pool-worker-1", "hashrate": None}]},
-             started=missing_start, completed=missing_start + 0.001)
+             started=missing_start, completed=clock[0])
     payload = evidence.read("tenant-a", "mrr", "rental-1")
     assert payload["coverage"] == {
         "status": "AVAILABLE",
@@ -336,6 +340,19 @@ def test_sample_coverage_distinguishes_zero_missing_invalid_and_unconfigured(db)
     assert unconfigured["evaluation"]["status"] == "unconfigured"
     assert unconfigured["coverage"]["status"] == "NO DATA"
     assert unconfigured["coverage"]["observed_pct"] is None
+
+
+@pytest.mark.parametrize("offset,expected_count", [(1.0, 1), (1.001, 0)])
+def test_collection_future_clock_boundary_is_not_relaxed(db, monkeypatch, offset, expected_count):
+    """Exactly one second is tolerated; greater skew cannot create evidence."""
+    monkeypatch.setattr(evidence, "time", SimpleNamespace(time=lambda: 1000.0))
+    address = "bc1qtestaddress000"
+    _collect("tenant-a", address, _sample(), started=999.9, completed=1000.0)
+    _configure()
+    evidence.collect("tenant-a", address, _sample(), 1000.1, 1000.0 + offset)
+    payload = evidence.read("tenant-a", "mrr", "rental-1")
+    assert len(payload["points"]) == expected_count
+    assert payload["coverage"]["observation_count"] == expected_count
 
 
 def test_observed_pool_point_preserves_unknown_window_and_collection_bounds(db):

@@ -42,6 +42,7 @@ _INFLUX_CIRCUIT_MAX_FAILS = 3
 _INFLUX_CIRCUIT_WINDOW = 60  # seconds
 _INFLUX_CIRCUIT_COOLDOWN = 300  # seconds (5 min)
 _CACHE_TTL = 300  # seconds (5 min warm cache)
+_CACHE_MAX_ENTRIES = 256  # per-manager bound, not a latency/production SLO
 
 
 class CircuitBreaker:
@@ -98,6 +99,8 @@ class DataManager:
     def __init__(self, db_path: str = DB_PATH):
         self.db_path = db_path
         self._lock = threading.Lock()
+        self._query_cache: Dict[tuple[str, str, int], Any] = {}
+        self._query_cache_ts: Dict[tuple[str, str, int], float] = {}
         self._influx = None
         self._influx_write_api = None
         self._influx_attempted = False
@@ -164,6 +167,12 @@ class DataManager:
                         (device_id, metric, fv, ts),
                     )
                     conn.commit()
+                    # Publish no stale cache after a successful durable write.
+                    # Query lookup/read/publication uses this same lock.
+                    for key in list(self._query_cache):
+                        if key[:2] == (device_id, metric):
+                            self._query_cache.pop(key)
+                            self._query_cache_ts.pop(key, None)
                 finally:
                     conn.close()
         except Exception as e:
@@ -183,26 +192,27 @@ class DataManager:
         return True
 
     # ── Queries (with warm 5-min cache) ─────────────────────────────────
-    _query_cache: Dict[str, Any] = {}
-    _query_cache_ts: Dict[str, float] = {}
-
     def query_recent(
         self, device_id: str, metric: str, minutes: int = 15
     ) -> List[Dict[str, Any]]:
         """Return samples for a device+metric over the last N minutes,
-        oldest first. Cached for 5 minutes (warm cache)."""
-        cache_key = f"{device_id}:{metric}:{minutes}"
-        now = time.time()
-        cached = self._query_cache.get(cache_key)
-        if (
-            cached is not None
-            and now - self._query_cache_ts.get(cache_key, 0) < _CACHE_TTL
-        ):
-            return cached
+        oldest first. Cached for 5 minutes (warm cache).
 
+        Cache scope is this manager only, capped at 256 queries (FIFO).
+        Successful local writes invalidate all matching time windows.
+        Example: ``manager.query_recent('device-a', 'power', minutes=15)``.
+        """
+        cache_key = (device_id, metric, minutes)
+        now = time.time()
         since = int(now) - minutes * 60
         rows: List[Dict[str, Any]] = []
         with self._lock:
+            cached = self._query_cache.get(cache_key)
+            if (
+                cached is not None
+                and now - self._query_cache_ts.get(cache_key, 0) < _CACHE_TTL
+            ):
+                return cached
             conn = sqlite3.connect(self.db_path)
             try:
                 conn.row_factory = sqlite3.Row
@@ -215,9 +225,15 @@ class DataManager:
                 rows = [{"time": r["ts"], "value": r["value"]} for r in cur.fetchall()]
             finally:
                 conn.close()
-
-        self._query_cache[cache_key] = rows
-        self._query_cache_ts[cache_key] = time.time()
+            if (
+                cache_key not in self._query_cache
+                and len(self._query_cache) >= _CACHE_MAX_ENTRIES
+            ):
+                oldest = next(iter(self._query_cache))
+                self._query_cache.pop(oldest)
+                self._query_cache_ts.pop(oldest, None)
+            self._query_cache[cache_key] = rows
+            self._query_cache_ts[cache_key] = time.time()
         return rows
 
     def query_historical(
