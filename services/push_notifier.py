@@ -17,7 +17,8 @@ import datetime as _dt
 from typing import Dict, Any, List, Optional
 from urllib.parse import urlparse, parse_qs
 
-import requests
+from services.observability import emit_event
+from services.webhook_delivery import deliver_webhook
 
 log = logging.getLogger("cypher65.push")
 
@@ -407,24 +408,25 @@ def send_webhook_notification(
         ts: Unix timestamp of the alert.
         worker: Worker / pool worker name (optional).
         address: BTC address (optional).
-        timeout: HTTP timeout in seconds.
+        timeout: Connect/read phase timeout in seconds (positive, at most 5).
 
     Returns:
         True if the POST succeeded (2xx), False otherwise.
-        Never raises — all exceptions are caught and logged.
+        Never raises. Logs omit URLs, response bodies and exception details.
+        Example: ``send_webhook_notification(url, "WARN", "thermal", "Hot")``.
     """
     if not url:
         return False
 
-    is_discord = "discord.com" in url.lower()
-    is_telegram = "api.telegram.org" in url.lower()
-
     try:
-        if is_discord:
+        # Provider routing must not be selected by path/query/userinfo tricks
+        # or lookalike domains. The shared transport validates the full URL.
+        host = (urlparse(url).hostname or "").lower()
+        if host == "discord.com":
             return _send_discord_webhook(
                 url, severity, category, message, ts, worker, address, timeout
             )
-        if is_telegram:
+        if host == "api.telegram.org":
             return _send_telegram_webhook(
                 url, severity, category, message, ts, worker, address, timeout
             )
@@ -438,11 +440,19 @@ def send_webhook_notification(
             "worker": worker,
             "address": address,
         }
-        resp = requests.post(url, json=payload, timeout=timeout)
-        return resp.ok
-    except Exception as e:
-        log.warning("[webhook] post error: %s", e)
+        return _deliver_payload(url, payload, timeout)
+    except Exception:
+        emit_event("webhook_delivery_failed", outcome="unconfirmed")
         return False
+
+
+def _deliver_payload(url: str, payload: dict, timeout: float) -> bool:
+    """Deliver one provider payload without following redirects or replaying it."""
+    status = deliver_webhook(url, payload, timeout=timeout)
+    accepted = 200 <= status < 300
+    if not accepted:
+        emit_event("webhook_delivery_rejected", outcome="not_accepted")
+    return accepted
 
 
 # Severity ordering for the webhook threshold filter. Single source of truth
@@ -539,16 +549,7 @@ def _send_discord_webhook(
         embed["fields"].append({"name": "Address", "value": addr_short, "inline": True})
 
     payload = {"embeds": [embed]}
-    resp = requests.post(url, json=payload, timeout=timeout)
-
-    if not resp.ok:
-        # Discord returns a helpful error body — log it once for debugging.
-        log.debug(
-            "[webhook] discord %s — %s",
-            resp.status_code,
-            resp.text[:200] if resp.text else "",
-        )
-    return resp.ok
+    return _deliver_payload(url, payload, timeout)
 
 
 def _send_telegram_webhook(
@@ -591,14 +592,7 @@ def _send_telegram_webhook(
     if chat_id:
         payload["chat_id"] = chat_id
 
-    resp = requests.post(url, json=payload, timeout=timeout)
-    if not resp.ok:
-        log.debug(
-            "[webhook] telegram %s — %s",
-            resp.status_code,
-            resp.text[:200] if resp.text else "",
-        )
-    return resp.ok
+    return _deliver_payload(url, payload, timeout)
 
 
 def _tg_escape(text: str) -> str:

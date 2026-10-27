@@ -49,7 +49,6 @@ from helpers import (
 import services.names as _names
 from services.settings import load_settings as _load_settings
 from services.db import get_db as _get_db
-from services.push_notifier import send_webhook_for_alert as _send_webhook_for_alert
 
 # ── Snapshot assembly (RFC #478 · PR B3) ─────────────────────────────────────
 # `_build_snapshot`, a cache global e a camada de fetchers saíram daqui para
@@ -94,10 +93,10 @@ def _fire_webhook_async(webhook_kwargs: dict):
     (up to 5s POST timeout) — at 1000+ user scale that would stall every
     worker's 15s cycle. Tests patch this helper to run synchronously.
 
-    Delivery guarantee: dispatch_webhook_or_queue tries the POST now and,
+    Delivery policy: dispatch_webhook_or_queue tries the POST now and,
     when Discord/Telegram is unreachable, persists the alert to the retry
-    queue (services/webhook_queue) so a CRIT is never lost to a transient
-    outage. The per-worker alert_seen dedup would otherwise swallow it.
+    queue (services/webhook_queue). This is best-effort: exhaustion or DB
+    failure can lose an alert and unknown delivery can duplicate on retry.
     """
 
     def _run():
@@ -106,11 +105,11 @@ def _fire_webhook_async(webhook_kwargs: dict):
 
             dispatch_webhook_or_queue(**webhook_kwargs)
         except Exception:
-            # Last-resort: never crash the daemon thread.
-            try:
-                _send_webhook_for_alert(**webhook_kwargs)
-            except Exception:
-                pass
+            # An exception may occur after delivery. Never send a second POST
+            # from a blind fallback; the queue owns all bounded delayed retries.
+            from services.observability import emit_event
+
+            emit_event("webhook_async_dispatch_failed", outcome="unconfirmed")
 
     threading.Thread(
         target=_run,

@@ -32,6 +32,7 @@ import path from 'node:path';
 import vm from 'node:vm';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { runNodeTestFile } from './helpers/node-child-runner.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -5847,10 +5848,16 @@ for (const temperature of [-41, 151, Infinity, NaN, null, undefined, true, false
 // Issue #836: run async controller tests in an awaited child; importing node:test
 // here would let the legacy process.exit below discard pending test callbacks.
 {
-  const miniTests = spawnSync(process.execPath, ['--test', path.join(__dirname, 'test_mini_war_room_js.js')], { encoding: 'utf8' });
-  assertEqual('Mini War Room production controller suite', miniTests.status, 0);
-  if (miniTests.status !== 0) console.error(miniTests.stdout, miniTests.stderr);
+  const miniTests = runNodeTestFile(path.join(__dirname, 'test_mini_war_room_js.js'));
+  assertEqual('Mini War Room production controller suite', miniTests.ok, true);
+  if (!miniTests.ok) console.error(miniTests.reason, miniTests.stdout, miniTests.stderr);
+  else console.log(`Mini War Room: ${miniTests.report.executed} declared tests executed`);
 }
+
+// Execute the actual Energy Advisor module tests before printing final results.
+const energySuite = runNodeTestFile(path.join(__dirname, 'test_energy_advisor_js.js'));
+if (!energySuite.ok) { failed++; console.error(energySuite.reason, energySuite.stdout, energySuite.stderr); }
+else console.log(`Energy Advisor: ${energySuite.report.executed} declared tests executed`);
 
 console.log(`\n${'═'.repeat(50)}`);
 if (failed === 0) {
@@ -5860,7 +5867,4 @@ if (failed === 0) {
   failures.forEach(f => console.log(f));
 }
 
-// Execute the actual Energy Advisor module tests as part of the existing CI gate.
-const energySuite = spawnSync(process.execPath, ['--test', path.join(__dirname, 'test_energy_advisor_js.js')], { stdio: 'inherit' });
-if (energySuite.status !== 0) failed++;
 process.exit(failed > 0 ? 1 : 0);
