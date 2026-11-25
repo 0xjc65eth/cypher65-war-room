@@ -218,16 +218,27 @@ def test_refresh_and_revoked_credentials_rejected(harness, path):
 @pytest.mark.parametrize("path", PATHS)
 def test_anonymous_remote_blocked_with_auth_configured(harness, path):
     response = send(harness[0], path)
-    assert response.status_code == 403
+    if path == "/api/set-address":
+        assert response.status_code == 401
+        assert response.json["code"] == "PRINCIPAL_REQUIRED"
+    else:
+        assert response.status_code == 403
     assert_untouched(harness, response)
 
 
-@pytest.mark.parametrize(
-    "mode", ("admin", "api-key", "legacy-token", "session", "localhost", "open")
-)
-def test_authorized_operator_mutation_preserves_existing_behavior(
-    harness, monkeypatch, mode
-):
+@pytest.mark.parametrize("mode", ("localhost", "open"))
+def test_loopback_and_open_mode_are_not_a_wallet_principal(harness, monkeypatch, mode):
+    if mode == "open":
+        monkeypatch.delenv("API_KEY")
+        monkeypatch.delenv("TENANT_API_KEYS")
+    response = send(harness[0], PATHS[0], {}, local=mode == "localhost")
+    assert response.status_code == 401
+    assert response.json["code"] == "PRINCIPAL_REQUIRED"
+    assert_untouched(harness, response)
+
+
+@pytest.mark.parametrize("mode", ("admin", "api-key", "legacy-token", "session"))
+def test_authorized_operator_mutation_preserves_existing_behavior(harness, mode):
     client, db_path, calls = harness
     headers = bearer()
     if mode == "api-key":
@@ -238,12 +249,7 @@ def test_authorized_operator_mutation_preserves_existing_behavior(
         headers = {}
         with client.session_transaction() as session:
             session.update(authenticated=True, tenant_id="default", role="admin")
-    elif mode in ("localhost", "open"):
-        headers = {}
-        if mode == "open":
-            monkeypatch.delenv("API_KEY")
-            monkeypatch.delenv("TENANT_API_KEYS")
-    response = send(client, PATHS[0], headers, local=mode == "localhost")
+    response = send(client, PATHS[0], headers, local=False)
     assert response.status_code == 200
     assert app_module.BTC_ADDRESS == NEW_ADDRESS
     assert calls["reset"] == calls["threads"] == 1
