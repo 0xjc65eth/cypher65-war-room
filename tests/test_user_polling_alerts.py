@@ -401,7 +401,7 @@ def test_session_id_cannot_cross_tenant_boundary(rclient):
     assert _app_module._session_manager.get_session(session.session_id) is not None
 
 
-def test_connect_wallet_anonymous_default_tenant(rclient, monkeypatch):
+def test_connect_wallet_anonymous_is_refused(rclient, monkeypatch):
     captured = {}
 
     class FakeWorker:
@@ -419,9 +419,11 @@ def test_connect_wallet_anonymous_default_tenant(rclient, monkeypatch):
     resp = rclient.post(
         "/api/connect-wallet",
         json={"address": "bc1q" + "a" * 39},
+        headers={},
     )
-    assert resp.status_code == 200
-    assert captured["tenant_id"] == "default"
+    assert resp.status_code == 401
+    assert resp.get_json()["code"] == "PRINCIPAL_REQUIRED"
+    assert captured == {}
 
 
 # ── app._webhook_dispatch resolves alert.tenant_id ──────────────────────────

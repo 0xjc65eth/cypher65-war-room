@@ -438,6 +438,13 @@ def diagnose_host(ip: str, timeout: float = HTTP_PROBE_TIMEOUT) -> dict:
         result["error_detail"] = "empty host"
         return result
 
+    from axe_fleet.cloud_egress import private_target_on_cloud
+
+    if private_target_on_cloud(ip)[0]:
+        result["error_detail"] = f"CLOUD_PRIVATE_TARGET · {private_ip_hint()}"
+        result["elapsed_ms"] = int((time.time() - t0) * 1000)
+        return result
+
     # DNS / IP validation
     try:
         ipaddress.ip_address(ip)
