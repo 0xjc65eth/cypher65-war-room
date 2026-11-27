@@ -454,7 +454,29 @@ def add_device(tenant_id: str = ""):
     #    (rare but reachable), and the wizard's diagnose gate still applies
     #    for non-cloud self-hosters.
     from config import is_cloud_deploy
+    from axe_fleet.cloud_egress import private_target_on_cloud
     from .scanner import is_private_ip
+
+    cloud_blocked, _cloud_reason = private_target_on_cloud(ip)
+    if is_cloud_deploy() and cloud_blocked and not is_private_ip(ip):
+        emit_event(
+            "manual_add.failed", tenant_id=tenant_id, reason="cloud_private_target"
+        )
+        return (
+            jsonify(
+                {
+                    "success": False,
+                    "is_cloud": True,
+                    "code": "CLOUD_PRIVATE_TARGET",
+                    "error": "private LAN target unreachable from cloud deploy",
+                    "message": (
+                        "Este dashboard está na nuvem e não abre socket para a LAN. "
+                        "Use um IP literal para enfileirar o AGENTE LOCAL, ou rode o self-host na mesma rede."
+                    ),
+                }
+            ),
+            400,
+        )
 
     if is_cloud_deploy() and is_private_ip(ip):
         queued = _registry.enqueue_agent_command(
@@ -1010,6 +1032,21 @@ def refresh_device(device_id: str, tenant_id: str = ""):
     device = _registry.get_device(device_id, tenant_id=tenant_id)
     if not device:
         return jsonify({"error": "device not found"}), 404
+
+    from axe_fleet.cloud_egress import private_target_on_cloud
+
+    if private_target_on_cloud(device.get("ip_address") or "")[0]:
+        return (
+            jsonify(
+                {
+                    "success": False,
+                    "is_cloud": True,
+                    "code": "CLOUD_PRIVATE_TARGET",
+                    "error": "private LAN target unreachable from cloud deploy",
+                }
+            ),
+            400,
+        )
 
     try:
         conn = AxeOSConnector(device["ip_address"])
@@ -2176,10 +2213,10 @@ def diagnose_device(ip_or_host: str):
     # AxeOS HTTP :80 and cgminer TCP :4028.
     port = request.args.get("port", 80, type=int)
     try:
-        from config import is_cloud_deploy
-        from .scanner import diagnose_host as _diagnose_host, is_private_ip
+        from axe_fleet.cloud_egress import private_target_on_cloud
+        from .scanner import diagnose_host as _diagnose_host
 
-        if is_cloud_deploy() and is_private_ip(ip_or_host):
+        if private_target_on_cloud(ip_or_host)[0]:
             return (
                 jsonify(
                     {
@@ -2188,7 +2225,8 @@ def diagnose_device(ip_or_host: str):
                         "is_cloud": True,
                         "reachable": False,
                         "error": True,
-                        "error_type": "CLOUD_PRIVATE_IP",
+                        "error_type": "CLOUD_PRIVATE_TARGET",
+                        "code": "CLOUD_PRIVATE_TARGET",
                         "error_detail": "Este dashboard está na nuvem e não alcança IPs da LAN. Use o AGENTE LOCAL (Fleet → CONNECT AGENT) ou adicione o IP para o agente sondar.",
                     }
                 ),
