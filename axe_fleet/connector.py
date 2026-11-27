@@ -32,6 +32,15 @@ class AxeOSConnectorError(Exception):
     pass
 
 
+class CloudEgressBlocked(AxeOSConnectorError):
+    """Cloud process refused to open a socket toward a non-public target."""
+
+    def __init__(self, target: str, reason: str):
+        self.target = target
+        self.reason = reason
+        super().__init__(f"cloud egress blocked for {target}: {reason}")
+
+
 class AxeOSConnector:
     """Low-level REST client for a single AxeOS/ESP-Miner device.
 
@@ -49,6 +58,11 @@ class AxeOSConnector:
         self.port = port
         self.timeout = timeout
         self.base_url = f"http://{ip_address}:{port}"
+        from axe_fleet.cloud_egress import private_target_on_cloud
+
+        blocked, reason = private_target_on_cloud(ip_address)
+        if blocked:
+            raise CloudEgressBlocked(ip_address, reason or "blocked")
 
     # ── Low-level request ─────────────────────────────────────────────
 

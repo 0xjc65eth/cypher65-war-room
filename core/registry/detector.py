@@ -129,6 +129,10 @@ def detect_firmware(ip_address: str, timeout: float = DETECT_TIMEOUT) -> dict:
         "capabilities": {},
         "reachable": False,
     }
+    from axe_fleet.cloud_egress import private_target_on_cloud
+
+    if private_target_on_cloud(ip_address)[0]:
+        return result
     failure_reasons = set()
 
     # 1. Try AxeOS/ESP-Miner REST API
