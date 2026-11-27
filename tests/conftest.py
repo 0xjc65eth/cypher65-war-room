@@ -78,6 +78,80 @@ def pytest_collection_finish(session):
 if len(os.environ.get("SECRET_KEY", "")) < 32:
     os.environ["SECRET_KEY"] = "test-secret-0123456789-0123456789-0123456789"
 
+# Behavior tests call mutation POSTs without a caller identity because open
+# mode and loopback used to count as admin. The gate now refuses that.
+# Present a real API-key principal unless the test already chose headers
+# (including an explicit empty set) or the test is the anonymous-gate suite.
+_MUTATION_PRINCIPAL_KEY = "fase0-mutation-principal"
+_MUTATION_PRINCIPAL_FLAG = "CYPHER65_TEST_PRINCIPAL"
+
+
+def _header_names(headers) -> set[str]:
+    if not headers:
+        return set()
+    return {str(name).lower() for name in headers}
+
+
+def _install_mutation_principal_header():
+    from flask.testing import FlaskClient
+
+    if getattr(FlaskClient.open, "_cypher65_principal", False):
+        return
+    original = FlaskClient.open
+
+    def open_with_principal(self, *args, **kwargs):
+        if os.environ.get(_MUTATION_PRINCIPAL_FLAG) != "1":
+            return original(self, *args, **kwargs)
+        if kwargs.get("method", "GET") != "POST":
+            return original(self, *args, **kwargs)
+        from services.mutation_auth import is_dangerous_mutation
+
+        target = args[0] if args else kwargs.get("path") or ""
+        if not is_dangerous_mutation(str(target), "POST"):
+            return original(self, *args, **kwargs)
+        provided = kwargs.get("headers") if "headers" in kwargs else None
+        # headers={} is an explicit anonymous call. Other headers (for example
+        # Idempotency-Key) still need a principal merged in.
+        if "headers" in kwargs and not provided:
+            return original(self, *args, **kwargs)
+        names = _header_names(provided)
+        if "authorization" in names or "x-api-key" in names:
+            return original(self, *args, **kwargs)
+        key = os.environ.get("API_KEY", "")
+        injected_env = False
+        if not key and not os.environ.get("TENANT_API_KEYS"):
+            key = _MUTATION_PRINCIPAL_KEY
+            os.environ["API_KEY"] = key
+            injected_env = True
+        if not key:
+            return original(self, *args, **kwargs)
+        merged = dict(provided or {})
+        merged["X-API-Key"] = key
+        kwargs["headers"] = merged
+        try:
+            return original(self, *args, **kwargs)
+        finally:
+            if injected_env:
+                os.environ.pop("API_KEY", None)
+
+    open_with_principal._cypher65_principal = True
+    FlaskClient.open = open_with_principal
+
+
+_install_mutation_principal_header()
+
+
+@pytest.fixture(autouse=True)
+def _present_mutation_principal(request, monkeypatch):
+    """Give handler tests a principal. Anonymous coverage lives in its own file."""
+    nodeid = request.node.nodeid
+    if nodeid.startswith("tests/test_mutation_principal.py"):
+        monkeypatch.delenv(_MUTATION_PRINCIPAL_FLAG, raising=False)
+        return
+    # The header is attached only on dangerous POSTs, and only for that
+    # request. Leaving API_KEY unset keeps open-mode assertions intact.
+    monkeypatch.setenv(_MUTATION_PRINCIPAL_FLAG, "1")
+
 
 class MockRow:
     """Mimics sqlite3.Row dict-like access for test mocking.
