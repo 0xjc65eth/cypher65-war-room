@@ -644,6 +644,26 @@ def rate_limit():
             del _rate_limit_store[k]
 
 
+@app.before_request
+def reject_unprincipled_mutation():
+    """Dangerous POSTs need a real principal. Runs in tests; localhost is not one."""
+    from services.mutation_auth import has_mutation_principal, is_dangerous_mutation
+
+    if not is_dangerous_mutation(request.path, request.method):
+        return None
+    if has_mutation_principal():
+        return None
+    return (
+        jsonify(
+            {
+                "error": "authentication required",
+                "code": "PRINCIPAL_REQUIRED",
+            }
+        ),
+        401,
+    )
+
+
 @app.after_request
 def add_cors_headers(response):
     """Env-gated CORS for the React Native mobile companion.

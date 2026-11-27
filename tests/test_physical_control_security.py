@@ -250,6 +250,7 @@ class TestPowerControlSafety:
         response = client.post(
             "/api/axe-fleet/power-plugs/plug-1/off",
             json={},
+            headers={},
             environ_overrides={"REMOTE_ADDR": "203.0.113.9"},
         )
         assert response.status_code == 401
